@@ -71,7 +71,13 @@ fn button_row(
 }
 
 /// The frame every text input wears: the dialog's own background inside an
-/// orange box, the label in the top border, an optional note in the bottom.
+/// orange box, with the label in the top border.
+///
+/// Only the label goes in a border. Notes used to hang in the bottom one,
+/// right-aligned, and they read as a break in the frame rather than a caption:
+/// the line stops, grey text runs across the gap, and the box looks
+/// unfinished. A label is short and sits in the corner where a frame expects a
+/// title; a sentence is neither.
 ///
 /// Inputs used to be an inset *well* — a patch of `BG_INSET`, two shades
 /// darker than the panel — which read as a hole cut in the dialog rather than
@@ -81,7 +87,7 @@ fn button_row(
 /// Every input is orange, so focus cannot be carried by hue: the focused box
 /// is bright and bold where the others are dim, and it is the only one
 /// wearing a cursor.
-fn input_block(label: &str, focused: bool, hint: &str) -> Block<'static> {
+fn input_block(label: &str, focused: bool) -> Block<'static> {
     let (border, label_style) = if focused {
         (
             Style::new().fg(theme::ORANGE_BRIGHT),
@@ -92,16 +98,11 @@ fn input_block(label: &str, focused: bool, hint: &str) -> Block<'static> {
     } else {
         (Style::new().fg(theme::ORANGE_DIM), theme::muted())
     };
-    let mut block = Block::bordered()
+    Block::bordered()
         .border_style(border)
         .style(Style::new().bg(theme::BG_PANEL))
         .padding(Padding::horizontal(1))
-        .title_top(Line::styled(format!(" {label} "), label_style));
-    if !hint.is_empty() {
-        block =
-            block.title_bottom(Line::styled(format!(" {hint} "), theme::faint()).right_aligned());
-    }
-    block
+        .title_top(Line::styled(format!(" {label} "), label_style))
 }
 
 /// One text input. `area` is the whole box, borders included — three rows.
@@ -112,17 +113,8 @@ fn input_box(
     value: &str,
     focused: bool,
     placeholder: &str,
-    hint: &str,
 ) {
-    // A note that does not fit is dropped, not clipped: the bottom title is
-    // right-aligned, so overflow eats the *start* of it and leaves something
-    // like `└uto from the host name`, which reads as a rendering bug.
-    let hint = if hint.chars().count() + 5 <= area.width as usize {
-        hint
-    } else {
-        ""
-    };
-    let block = input_block(label, focused, hint);
+    let block = input_block(label, focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -149,7 +141,7 @@ fn input_box(
 /// The protocol cycler wears the same box, so a row of controls reads as a row
 /// of controls rather than a field and a gadget.
 fn cycle_box(f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
-    let block = input_block(label, focused, "");
+    let block = input_block(label, focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -238,7 +230,6 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             &form.name,
             f_is(FormField::Name),
             "nickname, e.g. web-01",
-            "the mount point follows it",
         );
         if b > 0 {
             let ty = Rect::new(row.x + a + 1, row.y, b, 3);
@@ -260,14 +251,13 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             &form.addr,
             f_is(FormField::Addr),
             "host or IP",
-            "",
         );
         if b > 0 {
             let port = Rect::new(row.x + a + 1, row.y, b, 3);
             app.regions
                 .clicks
                 .push((port, Click::FocusField(FormField::Port)));
-            input_box(f, port, "Port", &form.port, f_is(FormField::Port), "22", "");
+            input_box(f, port, "Port", &form.port, f_is(FormField::Port), "22");
         }
     }
 
@@ -275,18 +265,21 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
         app.regions
             .clicks
             .push((row, Click::FocusField(FormField::Mount)));
+        // Whether the mount point still follows the host name is state, not
+        // advice: typing sets it, clearing the field restores it, and without
+        // a word for it the operator cannot tell which one they are looking
+        // at. It goes in the label, which is where a box carries its name.
         input_box(
             f,
             row,
-            "Mount point",
+            if form.mount_auto {
+                "Mount point · auto"
+            } else {
+                "Mount point · overridden"
+            },
             &mount_shown,
             f_is(FormField::Mount),
             "/net/<name>",
-            if form.mount_auto {
-                "auto from the host name — type to override"
-            } else {
-                "overridden · clear to restore auto"
-            },
         );
     }
 
@@ -303,7 +296,6 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             &form.login,
             f_is(FormField::Login),
             "user",
-            "",
         );
         if b > 0 {
             let pass = Rect::new(row.x + a + 1, row.y, b, 3);
@@ -318,7 +310,6 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
                 &masked,
                 f_is(FormField::Pass),
                 "optional with a key",
-                "",
             );
         }
     }
@@ -877,12 +868,59 @@ pub fn password_prompt(
             value,
             i == focus,
             "",
-            "",
         );
         y += 3;
     }
     y += 1;
     if y < bottom {
         line(f, y, Line::styled(hint.to_string(), theme::faint()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn row(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    /// A box's bottom border carries nothing.
+    ///
+    /// Notes used to hang there, right-aligned, and they read as a break in
+    /// the frame rather than a caption: the line stopped, grey text ran across
+    /// the gap, and the corner never arrived. Only the label goes in a border,
+    /// and only in the top one.
+    #[test]
+    fn an_input_puts_nothing_in_its_bottom_border() {
+        let mut term = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        term.draw(|f| {
+            input_box(
+                f,
+                Rect::new(0, 0, 30, 3),
+                "Mount point · auto",
+                "/net/web-01",
+                true,
+                "",
+            )
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(row(&buf, 0).trim_end(), "┌ Mount point · auto ────────┐");
+        assert_eq!(row(&buf, 2).trim_end(), "└────────────────────────────┘");
+    }
+
+    /// The cycler wears the same frame, so it cannot drift back either.
+    #[test]
+    fn the_cycler_puts_nothing_in_its_bottom_border() {
+        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        term.draw(|f| cycle_box(f, Rect::new(0, 0, 20, 3), "Type", "SSH", false))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(row(&buf, 2).trim_end(), "└──────────────────┘");
     }
 }

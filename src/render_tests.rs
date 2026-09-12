@@ -1798,6 +1798,11 @@ fn form_inputs_are_orange_boxes_on_the_panel_background() {
     ] {
         assert!(out.contains(label), "{label} is boxed: {out}");
     }
+
+    // The notes that used to hang in the bottom borders are gone; the mount
+    // field's state moved into its label, where it does not interrupt a frame.
+    assert!(!out.contains("the mount point follows it"), "{out}");
+    assert!(out.contains("Mount point · auto"), "{out}");
 }
 
 /// The same treatment on the two dialogs that stand between the operator and
