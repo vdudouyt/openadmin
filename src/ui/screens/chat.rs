@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             app.hosts.len()
         )
     } else {
-        " no model set · F2 to configure ".to_string()
+        " no model set · see [agent] in config.toml ".to_string()
     };
     let block = Block::bordered()
         .border_style(theme::border_idle())

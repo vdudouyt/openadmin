@@ -88,12 +88,12 @@ fn main() -> Result<()> {
     };
     std::fs::create_dir_all(&datadir).context("create data directory")?;
 
+    // Materialize every setting on disk, so the knobs are discoverable without
+    // reading the source — including ones added since the file was written. A
+    // file that predates a feature would otherwise never mention it, and the
+    // only way to configure it would be to know the field name already.
     let cfg = Config::load(&datadir)?;
-    // Materialize the defaults on first run so the knobs are discoverable
-    // without reading the source.
-    if !Config::path(&datadir).exists() {
-        cfg.save(&datadir)?;
-    }
+    cfg.save_if_changed(&datadir)?;
     let mut db = DataBase::new(datadir.join("openadmin.sqlite"));
 
     install_panic_hook();

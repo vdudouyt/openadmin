@@ -98,11 +98,22 @@ Completions** API, which is also what vLLM, Ollama, llama.cpp, OpenRouter and
 Azure speak — so you can point it at a model on your own network rather than
 send transcripts about your infrastructure to a third party.
 
-Configure it in `~/.openadmin/config.toml` under `[agent]`: `model` (empty by
-default — nothing is guessed), `base_url`, and `api_key`. `OPENAI_API_KEY`
-overrides the file, which is the better choice for anything shared or backed
-up, since the file holds a live credential in plaintext beside an encrypted
-database.
+**Configuration is by hand** — there is no setup dialog yet. Run OpenAdmin
+once so it writes `~/.openadmin/config.toml`, then fill in the `[agent]`
+section:
+
+```toml
+[agent]
+api_key = "sk-..."                          # or set OPENAI_API_KEY instead
+base_url = "https://api.openai.com/v1"      # or http://localhost:11434/v1, ...
+model = "gpt-5"                             # empty by default; nothing is guessed
+```
+
+`OPENAI_API_KEY` overrides the file and is the better choice for anything
+shared or backed up, since the file holds a live credential in plaintext beside
+an encrypted database. Every setting is written to the file at startup —
+including ones added since it was created — so the knobs are discoverable
+without reading the source.
 
 **The model may look, but it may not touch.** It has four tools and only one of
 them can change anything:

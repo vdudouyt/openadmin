@@ -35,8 +35,9 @@ pub struct AgentConfig {
     /// Anything that speaks the Chat Completions schema: OpenAI, Azure, vLLM,
     /// Ollama, llama.cpp, OpenRouter.
     pub base_url: String,
-    /// Empty until set — the Chat screen asks on first use rather than
-    /// guessing a name and failing with a 404.
+    /// Empty by default: nothing is guessed, because a wrong name fails as an
+    /// opaque 404 on the first message. Set it here before using the Chat
+    /// screen.
     pub model: String,
     /// Commands the agent may run unattended. Narrowing this narrows the
     /// boundary; widening it past the built-in rules is not possible.
@@ -110,6 +111,20 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
 
+    /// Write the config only when the file does not already match it.
+    ///
+    /// Run at startup so a file written before a setting existed gains it,
+    /// rather than leaving the operator to guess field names. Once the file
+    /// agrees, this is a no-op and never touches the mtime.
+    pub fn save_if_changed(&self, datadir: &Path) -> Result<()> {
+        let path = Config::path(datadir);
+        let rendered = toml::to_string_pretty(self)?;
+        if std::fs::read_to_string(&path).is_ok_and(|on_disk| on_disk == rendered) {
+            return Ok(());
+        }
+        self.save(datadir)
+    }
+
     pub fn save(&self, datadir: &Path) -> Result<()> {
         std::fs::create_dir_all(datadir).context("create data directory")?;
         let path = Config::path(datadir);
@@ -142,6 +157,47 @@ mod tests {
         let cfg = Config::load(&dir).unwrap();
         assert_eq!(cfg.scrollback, 5000);
         assert_eq!(cfg.mount_prefix, "/net");
+    }
+
+    /// A file written before a setting existed must gain it, or the operator
+    /// has no way to discover the field name.
+    #[test]
+    fn an_older_file_gains_settings_added_since() {
+        let dir = std::env::temp_dir().join(format!("openadmin-cfg-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // What the file looked like before the agent existed.
+        std::fs::write(
+            Config::path(&dir),
+            "term = \"xterm-256color\"\nscrollback = 1234\nmount_prefix = \"/net\"\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load(&dir).unwrap();
+        cfg.save_if_changed(&dir).unwrap();
+
+        let text = std::fs::read_to_string(Config::path(&dir)).unwrap();
+        assert!(
+            text.contains("[agent]"),
+            "the agent section appears: {text}"
+        );
+        assert!(text.contains("base_url"), "{text}");
+        assert!(text.contains("readonly_commands"), "{text}");
+        // And the operator's own setting survives untouched.
+        assert!(text.contains("scrollback = 1234"), "{text}");
+
+        // A second run changes nothing.
+        let before = std::fs::metadata(Config::path(&dir))
+            .unwrap()
+            .modified()
+            .unwrap();
+        Config::load(&dir).unwrap().save_if_changed(&dir).unwrap();
+        let after = std::fs::metadata(Config::path(&dir))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(before, after, "an unchanged config is not rewritten");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
