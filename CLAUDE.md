@@ -30,6 +30,35 @@ Three things keep that honest, and all three are load-bearing:
    at the moment it is needed. The system prompt points at it and says the
    lists are closed; it does not repeat them. A second verbatim copy adds
    nothing to read at call time.
+
+   Beside is not close enough when the contract is a closed set. A set of
+   permitted values belongs in the `enum` of the field it constrains, not only
+   in the description above it — `kind` on a plan step, `type` on a host, the
+   `what` of every probe. Weak local models decode a field steered by that
+   field's own schema and attend to a long description weakly, so a list eight
+   hundred tokens upstream loses to the model's prior about what the field
+   looks like. An enum also stops being advice: where the backend compiles the
+   schema into a decoding grammar, which llama.cpp, vLLM and Ollama all do, the
+   value cannot be emitted. That is the gate-is-a-type argument below, applied
+   to a field instead of a constructor.
+
+   And a field whose type is "string" or "array of string" states no contract at
+   all. `run_readonly` used to take `command` plus `args: [string]`; naming the
+   permitted commands in `command`'s enum fixed half of it and moved the problem
+   into `args`, because an argv is a token stream and a token stream is a thing
+   models put pipes in. The fix was to delete the token stream: `src/agent/probe.rs`
+   is one tool per question, every option a named typed field, and the argv
+   assembled from those fields here. `|` is then not refused, it is
+   unrepresentable — there is no field it fits in. Prefer that shape for anything
+   new. If a tool needs a free-form string or a list of them, ask what the model
+   could put in it that you would have to refuse, because it will.
+
+   Two layers, not one: `probe` decides the shape of a call and
+   `readonly::validate` still judges the argv that results. The second is the
+   boundary, unchanged from when the model wrote the argv itself, so the first
+   can only ever be narrower — and
+   `every_probe_renders_what_validate_accepts` fails rather than an operator
+   discovering the gap.
 3. **A refusal that does happen must end the thinking, not start it.** Name
    the fix, not just the rule. `journalctl -rn 50` used to be refused with a
    list containing both `-r` and `-n`, leaving the model to deduce that
@@ -37,8 +66,19 @@ Three things keep that honest, and all three are load-bearing:
    when splitting would actually work, because a hint that sends the model
    down a dead end costs another trip.
 
+4. **Say what makes the boundary unnecessary, not only where it is.** Every
+   refusal seen in practice was the model working around a guarantee nobody had
+   told it about: `| head -n 100` bounding output that `run_capture` already
+   caps, `2>&1` merging a stream it is already shown, `|| fallback` hedging
+   against a failure it would have been handed. The boundary was documented
+   exhaustively and the reasons to cross it were not documented at all, so the
+   model kept finding them. Naming the guarantee removes the motive; refusing
+   the syntax only removes the option, and it costs a round trip each time.
+
 Apply the same test to any tool added later: *could the model have known this
-would be refused before it called?* If not, the schema is incomplete.
+would be refused before it called?* If not, the schema is incomplete. And the
+second test, for a refusal seen in the wild: *what was the model trying to
+achieve, and does anything tell it that it already had it?*
 
 This is about latency, and it is worth real prefix tokens — those are cached
 and prefill fast, while a round trip is seconds the operator spends waiting.

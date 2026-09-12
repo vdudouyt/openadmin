@@ -15,6 +15,7 @@ pub mod exec;
 pub mod exec_plan;
 pub mod hosts;
 pub mod plan;
+pub mod probe;
 pub mod proto;
 pub mod readonly;
 pub mod tools;
@@ -153,36 +154,41 @@ pub fn system_prompt() -> String {
          \n\
          HOW YOU WORK\n\
          \n\
-         1. Look first. `{run}` needs no permission, so use it to establish what is \
-         actually true before you propose anything, and never guess at a configuration \
-         you could read.\n\
+         1. Look first. The `{ro}` tools need no permission, so use them to establish \
+         what is actually true before you propose anything, and never guess at a \
+         configuration you could read.\n\
          \n\
-         It is not free, and the cost is time the operator spends watching. Every call \
-         opens its own SSH connection — TCP, key exchange, authentication, one command, \
-         teardown. Nothing is reused between calls and they run one at a time, so a \
-         call is a second or more of a person waiting, and ten calls is a person \
+         They are not free, and the cost is time the operator spends watching. Every \
+         call opens its own SSH connection — TCP, key exchange, authentication, one \
+         command, teardown. Nothing is reused between calls and they run one at a time, \
+         so a call is a second or more of a person waiting, and ten calls is a person \
          waiting ten times.\n\
          \n\
          So make each call earn its place. Before you send one, name the question it \
-         answers; if its answer would only prompt an obvious next call, send the command \
-         that answers both. One `cat` over several paths beats one call per file. \
-         `grep -n <pattern> <file>` beats reading a file to search it by eye. \
-         `systemctl status <unit>` beats three probes for the same facts.\n\
+         answers; if its answer would only prompt an obvious next call, send the one \
+         that answers both. Where a field takes a list, use it: one `{read}` with three \
+         paths beats three calls, and one `{svc}` with three units beats three. \
+         `{search}` beats reading a file to search it by eye.\n\
          \n\
-         It reads the *state* of a machine: services, configuration, disks, logs, \
-         processes, packages. It is not a file browser and it is not a code reader. Do \
-         not walk a source tree, and do not page through a script to work out what a \
-         program does. What a program does shows in what it leaves behind — its unit \
-         status, its exit code, its log, the files it writes, the ports it holds — so \
-         diagnose from those. When one file's contents genuinely decide what to do \
+         Each tool is one question, and its typed fields are the whole of what it can \
+         do. There is no shell and no command line anywhere in them — nothing takes a \
+         pipe, a redirection or a list of arguments — so if what you want is not a \
+         field, no tool here does it and it belongs in a plan. Pick the tool whose name \
+         is your question, read its fields, and fill them in rather than working out \
+         what might be allowed.\n\
+         \n\
+         What comes back is the command's output, capped, with its stderr labelled and \
+         its exit status. You never have to arrange for any of that.\n\
+         \n\
+         They read the *state* of a machine: services, configuration, disks, logs, \
+         processes, packages. They are not a file browser and they are not a code \
+         reader. Do not walk a source tree, and do not page through a script to work out \
+         what a program does. What a program does shows in what it leaves behind — its \
+         unit status, its exit code, its log, the files it writes, the ports it holds — \
+         so diagnose from those. When one file's contents genuinely decide what to do \
          next, read that file in a single call, whole, and move on.\n\
          \n\
-         Its schema lists every command it will run and every option each one accepts. \
-         Those lists are complete and are the table that enforces them, so read them and \
-         pick from them rather than working out what is likely to be allowed — a command \
-         outside them is refused without connecting to anything, and you will have spent \
-         a turn learning what the schema already told you. Anything that writes belongs \
-         in a plan.\n\
+         Anything that writes belongs in a plan.\n\
          \n\
          2. Propose one large plan, not many small ones. When you know what needs to \
          change, put everything the task needs into a single `{plan}` call — every script, \
@@ -234,7 +240,10 @@ pub fn system_prompt() -> String {
          does in its summary; the operator reads that before the script.\n\
          \n\
          Be concise. The operator is reading a terminal, not a report.",
-        run = tools::RUN_READONLY,
+        ro = "readonly_",
+        read = "readonly_read_file",
+        svc = "readonly_service",
+        search = "readonly_search_files",
         plan = tools::PROPOSE_PLAN,
         list = tools::LIST_HOSTS,
         create = tools::CREATE_HOST,
@@ -485,17 +494,41 @@ impl Worker {
 fn describe_call(name: &str, arguments: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
     match name {
-        tools::RUN_READONLY => {
+        // A probe names itself and its fields. The old label could print the
+        // command line because there was one; now the fields *are* the call, so
+        // they are what the operator watching should see.
+        n if probe::is_probe(n) => {
             let host = v.get("host").and_then(|h| h.as_str()).unwrap_or("?");
-            let cmd = v.get("command").and_then(|c| c.as_str()).unwrap_or("?");
-            let args: Vec<&str> = v
-                .get("args")
-                .and_then(|a| a.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            let fields = v
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .filter(|(k, _)| k.as_str() != "host")
+                        .map(|(k, val)| match val {
+                            serde_json::Value::String(t) => format!("{k}={t}"),
+                            serde_json::Value::Bool(true) => k.clone(),
+                            serde_json::Value::Bool(false) => String::new(),
+                            serde_json::Value::Array(items) => format!(
+                                "{k}={}",
+                                items
+                                    .iter()
+                                    .filter_map(|i| i.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            other => format!("{k}={other}"),
+                        })
+                        .filter(|f| !f.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
                 .unwrap_or_default();
-            format!("{host} · {cmd} {}", args.join(" "))
-                .trim_end()
-                .to_string()
+            format!(
+                "{host} · {} {fields}",
+                n.strip_prefix("readonly_").unwrap_or(n)
+            )
+            .trim_end()
+            .to_string()
         }
         tools::PROPOSE_PLAN => v
             .get("title")
@@ -703,10 +736,13 @@ mod tests {
         let dir = scratch("refused");
         let (events, _stream, client) = run_turn(
             vec![
+                // There is no tool that deletes anything, and no field that
+                // takes a command, so the reachable refusal is a field this
+                // tool does not have.
                 ScriptedTurn::call(
                     "call_1",
-                    tools::RUN_READONLY,
-                    serde_json::json!({"host": "web-01", "command": "rm", "args": ["-rf", "/"]}),
+                    "readonly_logs",
+                    serde_json::json!({"host": "web-01", "args": ["rm", "-rf", "/"]}),
                 ),
                 ScriptedTurn::text("Understood, I cannot do that."),
             ],
@@ -768,12 +804,16 @@ mod tests {
         );
         assert!(p.contains("bash -s"), "{p}");
         assert!(p.contains("only those hosts"), "{p}");
-        // The grammar itself lives in the `run_readonly` schema, beside the
-        // arguments being filled in, which is where it is read at the moment
-        // it is needed. The prompt's job is to send the model there and to say
-        // the lists are closed, so it picks rather than guesses.
-        assert!(p.contains("complete"), "{p}");
-        assert!(p.contains("schema"), "{p}");
+        // The grammar itself is the probe schemas' own field types, which is
+        // where it is read at the moment a call is filled in. The prompt's job
+        // is to send the model there and to say the fields are the whole of it,
+        // so it picks a tool rather than reasoning about a command line.
+        assert!(p.contains("readonly_"), "{p}");
+        assert!(
+            p.contains("typed fields are the whole of what it can do"),
+            "{p}"
+        );
+        assert!(p.contains("read its fields"), "{p}");
         // Unattended is not the same as free: one SSH connection per call, run
         // one at a time, with somebody watching. Stated as the mechanism and
         // with a test that can be applied *before* a call, rather than an
@@ -794,6 +834,16 @@ mod tests {
         assert!(p.contains("own SSH connection"), "{p}");
         assert!(p.contains("name the question it answers"), "{p}");
         assert!(p.contains("not a code reader"), "{p}");
+        // Instruction 1 asks for one call that answers the whole question, and
+        // used to leave the model to work out how — where the only answers a
+        // shell offers are `|` and `;`. It now names the one that works here,
+        // which is a field that takes a list.
+        assert!(p.contains("no shell and no command line"), "{p}");
+        assert!(p.contains("Where a field takes a list"), "{p}");
+        // And says what comes back, so nothing is arranged for that is already
+        // guaranteed — the motive behind every `| head` and `2>&1`.
+        assert!(p.contains("capped"), "{p}");
+        assert!(p.contains("exit status"), "{p}");
     }
 
     #[test]
@@ -811,17 +861,25 @@ mod tests {
     fn tool_calls_are_labelled_for_the_transcript() {
         assert_eq!(
             describe_call(
-                tools::RUN_READONLY,
-                r#"{"host":"web-01","command":"systemctl","args":["status","nginx"]}"#
+                "readonly_service",
+                r#"{"host":"web-01","action":"status","units":["nginx","postgresql"]}"#
             ),
-            "web-01 · systemctl status nginx"
+            "web-01 · service action=status units=nginx,postgresql"
+        );
+        // A flag reads as its own name, and one left false says nothing.
+        assert_eq!(
+            describe_call(
+                "readonly_logs",
+                r#"{"host":"web-01","unit":"nginx","lines":50,"newest_first":true,"utc":false}"#
+            ),
+            "web-01 · logs lines=50 newest_first unit=nginx"
         );
         assert_eq!(
             describe_call(tools::PROPOSE_PLAN, r#"{"title":"restore env"}"#),
             "restore env"
         );
         // Malformed arguments must not panic the transcript.
-        assert_eq!(describe_call(tools::RUN_READONLY, "{"), "? · ?");
+        assert_eq!(describe_call("readonly_logs", "{"), "? · logs");
     }
     /// The host tools are the one place the boundary is an instruction rather
     /// than a type — nothing stops the model calling them — so the instruction
@@ -917,7 +975,7 @@ mod tests {
         let dir = scratch("cancel-tool");
         let (events, client) = run_two_turns(
             vec![
-                ScriptedTurn::call_cancelled("call_1", tools::RUN_READONLY, serde_json::json!({})),
+                ScriptedTurn::call_cancelled("call_1", "readonly_logs", serde_json::json!({})),
                 ScriptedTurn::text("all done"),
             ],
             "look at web-01",

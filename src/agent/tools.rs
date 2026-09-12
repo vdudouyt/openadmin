@@ -16,7 +16,7 @@ use super::exec::run_capture;
 use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
 use super::plan::{Plan, PlanRequest, resolve};
 use super::proto::ToolDef;
-use super::{artifacts, readonly};
+use super::{artifacts, probe, readonly};
 use crate::config::Config;
 // Note `HostRecord` is never serialised: it carries `pass` and `key_value`,
 // and a `derive(Serialize)` on it would put both on the wire the first time
@@ -25,7 +25,6 @@ use crate::config::Config;
 use crate::db::model::{HOST_TYPES, HostRecord};
 use crate::ssh;
 use crate::ui::widgets::sanitize;
-use serde::Deserialize;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -76,7 +75,6 @@ impl ToolOutcome {
     }
 }
 
-pub const RUN_READONLY: &str = "run_readonly";
 pub const LIST_HOSTS: &str = "list_hosts";
 pub const LIST_ARTIFACTS: &str = "list_artifacts";
 pub const PROPOSE_PLAN: &str = "propose_plan";
@@ -98,8 +96,7 @@ const NOT_SETTABLE: &str = "It cannot set an SSH key or the SOCKS-proxy flag, an
 
 /// The schemas sent with every request.
 pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
-    let allow = &cfg.agent.readonly_commands;
-    vec![
+    let mut defs = vec![
         ToolDef::function(
             LIST_HOSTS,
             "List the machines this installation knows about, by name. A name is \
@@ -110,34 +107,6 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
              a snapshot taken when the turn began; a host added mid-turn will not \
              appear.",
             serde_json::json!({"type": "object", "properties": {}}),
-        ),
-        ToolDef::function(
-            RUN_READONLY,
-            format!(
-                "Run one read-only command on one host and return its output and exit \
-                 status. Runs unattended, with no confirmation. Each call opens its own \
-                 SSH connection and calls run one at a time, so it is seconds of the \
-                 operator's time: send the command that answers the whole question \
-                 rather than several that narrow it. It reads machine state — services, \
-                 configuration, disks, logs, processes. It is not a file browser and not \
-                 a code reader: diagnose a program from what it leaves behind — unit \
-                 status, exit codes, logs, the files it writes — rather than paging \
-                 through its source. {}",
-                readonly::describe(allow)
-            ),
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "host": {"type": "string", "description": "Host name from list_hosts."},
-                    "command": {"type": "string", "description": "Program name, no path."},
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Arguments, one per element. Never a shell string."
-                    }
-                },
-                "required": ["host", "command"]
-            }),
         ),
         ToolDef::function(
             LIST_ARTIFACTS,
@@ -274,15 +243,12 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                 "required": ["host"]
             }),
         ),
-    ]
-}
-
-#[derive(Deserialize)]
-struct ReadonlyArgs {
-    host: String,
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
+    ];
+    // One tool per read-only question rather than one tool taking a command name
+    // and an argv: an argv is a token stream, and a token stream is where a weak
+    // model puts a pipe. Appended last so the host tools keep their position.
+    defs.extend(probe::definitions(&cfg.agent));
+    defs
 }
 
 /// Run one tool. A refusal or a failure is a *result*, not an error — the model
@@ -322,26 +288,47 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
             ),
             Err(e) => ToolOutcome::Text(format!("could not list artifacts: {e}")),
         },
-        RUN_READONLY => ToolOutcome::Text(run_readonly(ctx, arguments)),
         PROPOSE_PLAN => propose(ctx, arguments),
         CREATE_HOST => create_host(ctx, arguments),
         EDIT_HOST => edit_host(ctx, arguments),
+        name if probe::is_probe(name) => ToolOutcome::Text(run_probe(ctx, name, arguments)),
+        // Named in full rather than gestured at: a model that invented a tool
+        // name is one field away from a working call, and "the readonly_ tools"
+        // would leave it guessing which.
         other => ToolOutcome::Text(format!(
-            "there is no tool called {other:?}. Available: {LIST_HOSTS}, {RUN_READONLY}, \
-             {LIST_ARTIFACTS}, {PROPOSE_PLAN}, {CREATE_HOST}, {EDIT_HOST}."
+            "there is no tool called {other:?}. Available: {}.",
+            available(ctx.cfg).join(", ")
         )),
     }
 }
 
-fn run_readonly(ctx: &ToolCtx, arguments: &str) -> String {
-    let args: ReadonlyArgs = match serde_json::from_str(arguments) {
-        Ok(a) => a,
+/// Every tool name this configuration offers.
+fn available(cfg: &Config) -> Vec<&'static str> {
+    definitions(cfg)
+        .into_iter()
+        .map(|d| d.function.name)
+        .collect()
+}
+
+/// Run one probe: build its argv from the typed fields, check it, send it.
+///
+/// Two layers, and the order matters. `probe::render` decides *what* to run from
+/// fields the model filled in; `readonly::validate` then judges the argv that
+/// came out. The second is the boundary and is unchanged from when the model
+/// wrote the argv itself, so a mistake in the probe table cannot widen it — it
+/// shows up as a refusal here and as a failing test in `probe`.
+fn run_probe(ctx: &ToolCtx, name: &str, arguments: &str) -> String {
+    let Some(p) = probe::find(name) else {
+        return format!("there is no tool called {name:?}.");
+    };
+    let value: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
         Err(e) => return format!("could not read the arguments: {e}"),
     };
-    let Some(host) = ctx.hosts.iter().find(|h| h.name == args.host) else {
+    let host_name = value.get("host").and_then(|h| h.as_str()).unwrap_or("");
+    let Some(host) = ctx.hosts.iter().find(|h| h.name == host_name) else {
         return format!(
-            "unknown host {:?}. Known hosts: {}.",
-            args.host,
+            "unknown host {host_name:?}. Known hosts: {}.",
             ctx.hosts
                 .iter()
                 .map(|h| h.name.as_str())
@@ -349,12 +336,18 @@ fn run_readonly(ctx: &ToolCtx, arguments: &str) -> String {
                 .join(", ")
         );
     };
-    if let Err(e) = readonly::validate(&args.command, &args.args, &ctx.cfg.agent.readonly_commands)
-    {
+
+    let allow = &ctx.cfg.agent.readonly_commands;
+    let (program, args) = match probe::render(p, &value, allow) {
+        Ok(built) => built,
+        Err(e) => return format!("refused: {e}"),
+    };
+    // The whitelist still has the last word on what leaves this machine.
+    if let Err(e) = readonly::validate(program, &args, allow) {
         return format!("refused: {e}");
     }
 
-    let remote = ssh::quote_command(&args.command, &args.args);
+    let remote = ssh::quote_command(program, &args);
     let proxy = ctx.hosts.iter().find(|h| h.proxy);
     let launch = ssh::exec_command(host, ctx.datadir, ctx.cfg, &remote, ssh::Stdin::Null, proxy);
     match run_capture(
@@ -596,28 +589,43 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_command_explains_itself_rather_than_failing_the_turn() {
+    fn a_refused_call_explains_itself_rather_than_failing_the_turn() {
         let h = hosts();
         let cfg = Config::default();
         let cancel = AtomicBool::new(false);
         let c = ctx(&h, &cfg, Path::new("/tmp"), &cancel);
 
+        // There is no tool that writes and no field that takes a command, so the
+        // refusals a model can still reach are about its own fields.
         let out = dispatch(
             &c,
-            RUN_READONLY,
-            r#"{"host":"web-01","command":"rm","args":["-rf","/"]}"#,
+            "readonly_service",
+            r#"{"host":"web-01","action":"restart","units":["nginx"]}"#,
         );
         assert!(out.text().starts_with("refused:"), "{}", out.text());
+        assert!(out.text().contains("status"), "{}", out.text());
 
         let out = dispatch(
             &c,
-            RUN_READONLY,
-            r#"{"host":"nowhere","command":"ls","args":[]}"#,
+            "readonly_logs",
+            r#"{"host":"web-01","command":"journalctl -f"}"#,
+        );
+        assert!(out.text().contains("no field"), "{}", out.text());
+
+        let out = dispatch(
+            &c,
+            "readonly_read_file",
+            r#"{"host":"nowhere","paths":["/etc"]}"#,
         );
         assert!(out.text().contains("unknown host"), "{}", out.text());
 
-        let out = dispatch(&c, RUN_READONLY, "not json");
+        let out = dispatch(&c, "readonly_logs", "not json");
         assert!(out.text().contains("could not read"), "{}", out.text());
+
+        // A tool the model invented is answered with the ones that exist.
+        let out = dispatch(&c, "run_readonly", r#"{"host":"web-01","command":"ls"}"#);
+        assert!(out.text().contains("no tool called"), "{}", out.text());
+        assert!(out.text().contains("readonly_read_file"), "{}", out.text());
     }
 
     #[test]
@@ -661,7 +669,17 @@ mod tests {
     fn the_tool_schemas_name_the_boundary() {
         let cfg = Config::default();
         let defs = definitions(&cfg);
-        assert_eq!(defs.len(), 6);
+        // Five tools that are not read-only probes, plus one probe per
+        // read-only question. The count is asserted loosely on purpose: adding
+        // a probe is a normal change, and a test that fails on it teaches
+        // nothing.
+        assert_eq!(
+            defs.iter()
+                .filter(|d| !d.function.name.starts_with("readonly_"))
+                .count(),
+            5
+        );
+        assert!(defs.len() > 15, "the probes are there too: {}", defs.len());
         let plan = defs
             .iter()
             .find(|d| d.function.name == PROPOSE_PLAN)
@@ -672,26 +690,58 @@ mod tests {
         // And that one big plan is wanted.
         assert!(plan.function.description.contains("ONE plan"));
 
-        let ro = defs
+        // One tool per read-only question, each with typed fields and no field
+        // that holds a command line. This is what stopped a weak model reaching
+        // for a shell: there is nowhere left to put one.
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name).collect();
+        for expected in [
+            "readonly_logs",
+            "readonly_service",
+            "readonly_network",
+            "readonly_read_file",
+            "readonly_search_files",
+        ] {
+            assert!(names.contains(&expected), "{names:?}");
+        }
+        assert!(
+            !names.contains(&"run_readonly"),
+            "the argv tool is gone: {names:?}"
+        );
+
+        for d in defs
             .iter()
-            .find(|d| d.function.name == RUN_READONLY)
-            .unwrap();
-        assert!(ro.function.description.contains("no confirmation"));
-        // The cost, and what it is not for, stated where the call is
-        // constructed rather than only in the system prompt.
-        assert!(ro.function.description.contains("own SSH connection"));
-        assert!(ro.function.description.contains("not a code reader"));
-        // The cost and the two things it is not for are stated where the call
-        // is constructed, not only in the system prompt.
-        assert!(ro.function.description.contains("own SSH connection"));
-        assert!(ro.function.description.contains("not a code reader"));
-        // The schema carries the whole grammar, not a summary of it: this is
-        // the copy the model reads while filling in the arguments, and every
-        // gap in it is a refusal and a round trip.
-        let d = &ro.function.description;
-        assert!(d.contains("exhaustive"), "{d}");
-        assert!(d.contains("first word one of: status show cat"), "{d}");
-        assert!(d.contains("-maxdepth"), "{d}");
+            .filter(|d| d.function.name.starts_with("readonly_"))
+        {
+            let props = d.function.parameters["properties"].as_object().unwrap();
+            assert_eq!(
+                d.function.parameters["additionalProperties"],
+                serde_json::json!(false),
+                "{} is open",
+                d.function.name
+            );
+            for f in ["command", "args", "argv", "options", "shell"] {
+                assert!(
+                    !props.contains_key(f),
+                    "{} still has a {f} field",
+                    d.function.name
+                );
+            }
+        }
+
+        // The operator's narrowing reaches the tool list itself.
+        let narrow = Config {
+            agent: crate::config::AgentConfig {
+                readonly_commands: vec!["cat".into()],
+                ..Config::default().agent
+            },
+            ..Config::default()
+        };
+        let names: Vec<&str> = definitions(&narrow)
+            .iter()
+            .map(|d| d.function.name)
+            .collect();
+        assert!(names.contains(&"readonly_read_file"), "{names:?}");
+        assert!(!names.contains(&"readonly_logs"), "{names:?}");
     }
 
     #[test]

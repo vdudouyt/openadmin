@@ -115,23 +115,47 @@ an encrypted database. Every setting is written to the file at startup —
 including ones added since it was created — so the knobs are discoverable
 without reading the source.
 
-**The model may look, but it may not touch.** It has four tools and only one of
-them can change anything:
+**The model may look, but it may not touch.** Reading is unattended so the agent
+can find out what is actually true before it suggests anything, and it reads
+through one tool per question rather than one tool that takes a command line:
 
 | | |
 |---|---|
-| `run_readonly` | one command on one host, no confirmation |
+| `readonly_*` | eighteen read-only questions — logs, services, network, disks, files, processes |
 | `list_hosts` | the known SSH machines, by name — never an address, login or password |
 | `list_artifacts` | files staged in `~/.openadmin/artifacts/` |
 | `propose_plan` | proposes changes; **executes nothing** |
+| `create_host` · `edit_host` | write the host database, and only on request |
 
-Reading is unattended so the agent can find out what is actually true before it
-suggests anything. `run_readonly` is restricted to a whitelist of commands *and*
-of their options, because the program name alone decides nothing: `systemctl
-status` reads and `systemctl restart` does not, `find -exec` runs anything at
-all. An option nobody whitelisted is refused rather than assumed harmless. The
-list is in `config.toml` and narrowing it narrows the boundary; widening it past
+**There is no shell, and no field that could hold one.** `readonly_logs` takes
+`unit`, `lines`, `priority`, `since`; `readonly_service` takes an `action` from a
+closed list and a list of `units`. Every option a command accepts is a named,
+typed field, and the argv is assembled here from the fields — so `|`, `2>&1` and
+`|| fallback` are not refused, they are unrepresentable. Each schema is closed
+(`additionalProperties: false`), so a field that does not exist is named as such
+rather than ignored.
+
+This matters most on small local models. A single tool taking `command` and
+`args: [string]` puts a token stream in front of a model whose prior says a
+command line is a thing you type a pipe into; it writes one, spends a round trip
+being refused, and leaves the refusal in its context to imitate next turn. A
+field called `lines` with type `integer` has no such failure mode, and on any
+backend that compiles tool schemas into a decoding grammar — llama.cpp with
+`--jinja`, vLLM's guided decoding, Ollama's structured output — the malformed
+call cannot be emitted at all.
+
+The whitelist is still the boundary, and still a whitelist of commands *and* of
+their options: `src/agent/probe.rs` decides the shape of a call, and
+`readonly::validate` judges the argv that comes out of it, exactly as it did
+when the model wrote that argv itself. So the tool layer can only ever be
+narrower than the boundary, and a test fails if a probe renders something the
+whitelist would refuse. The command list is in `config.toml`; narrowing it
+removes tools and removes options from the `what` enums, and widening it past
 the built-in rules is not possible.
+
+What comes back is the output capped at `output_cap_bytes` with the middle
+elided, stderr labelled, and the exit status — so nothing needs to arrange for
+any of that. A command still running after `command_timeout_secs` is killed.
 
 Changing anything goes through a **plan** — scripts and artifact uploads, with
 the hosts for each — which you review in a dialog with a checkbox per step and

@@ -468,6 +468,64 @@ pub const DEFAULT_COMMANDS: &[&str] = &[
     "vmstat",
 ];
 
+/// Tokens that mean something only to a shell.
+///
+/// There is no shell here. `ssh` hands sshd one string, but every token of it
+/// has been single-quoted (`ssh::quote_command`), so `|` arrives at the program
+/// as a literal argument. That used to be the end of the matter — harmless,
+/// because nothing could execute. It stops being harmless once the model
+/// believes it is typing at a prompt: `lsblk | head -n 100` becomes
+/// `'lsblk' '|' 'head' '-n' '100'`, and lsblk answers with a complaint about a
+/// device called `|`. A confusing error from the far end is worse than a
+/// refusal, because nothing in it says what this tool would not do.
+///
+/// Matched as whole tokens and never as substrings. `grep -E 'a|b'` is an
+/// ordinary pattern and `find / -name '*>*'` an ordinary one; what is being
+/// recognised is not a dangerous character but a model that thinks it has a
+/// shell.
+const SHELL_TOKENS: &[&str] = &[
+    "|", "||", "&&", "&", ";", ";;", "<", "<<", "<<<", "2>&1", "1>&2",
+];
+
+fn shell_token(arg: &str) -> bool {
+    SHELL_TOKENS.contains(&arg)
+        || arg.starts_with('>')
+        || arg.starts_with("2>")
+        || arg.starts_with("1>")
+        || arg.starts_with("$(")
+        || arg.starts_with('`')
+}
+
+/// What to do instead, named per operator.
+///
+/// "There is no shell" says what the model may not do and leaves it to work out
+/// what to do instead, which is the round trip this module exists to avoid. Each
+/// operator has a substitution, and the reason it is unnecessary is usually that
+/// the tool already does the thing the operator was reaching for.
+fn no_shell_fix(tok: &str) -> &'static str {
+    match tok {
+        "|" | "||" => {
+            "To bound output, use the command's own option — `head -n`, `tail -n`, \
+             `journalctl -n`; it is capped for you in any case. To search a file, \
+             `grep -n <pattern> <file>` is the whole command."
+        }
+        "2>&1" | "1>&2" => "stderr is captured and returned to you already, labelled.",
+        ";" | ";;" | "&&" | "&" => {
+            "To answer two questions in one call, give one command several operands — \
+             `cat /etc/os-release /etc/hostname`, `systemctl status nginx postgresql`. \
+             Otherwise make two calls."
+        }
+        t if t.starts_with('>') || t.starts_with("2>") || t.starts_with("1>") => {
+            "Nothing here may write to a file; the output is returned to you."
+        }
+        t if t.starts_with("$(") || t.starts_with('`') => {
+            "Nothing is substituted or expanded. Read the value in one call and use it \
+             in the next."
+        }
+        _ => "Pass the program its own options instead.",
+    }
+}
+
 /// Is `arg` an option, or an operand?
 fn is_option(arg: &str) -> bool {
     arg.chars().count() > 1 && arg.starts_with('-') && arg != "--"
@@ -514,10 +572,37 @@ pub fn validate(program: &str, args: &[String], allowed: &[String]) -> Result<()
     if program.trim().is_empty() {
         bail!("no command given");
     }
+    // A whole command line where a program name belongs. No model can reach this
+    // any more — `probe` builds the argv from typed fields and the program comes
+    // out of its own table — but it is checked before the allow-list because of
+    // what the old message did when a model *could*: `lsblk | head -n 100` was
+    // compared against the allow-list as if it were a program name and refused
+    // as "not a permitted command" by a message that then listed `lsblk` among
+    // the permitted ones. No rule can be extracted from a refusal that
+    // contradicts itself, so the model guessed again, which is how one mistake
+    // became a session of them. Kept as a guard on the boundary rather than a
+    // message to a model: a caller that builds an argv wrongly is told plainly.
+    if let Some(first) = program.split_whitespace().next()
+        && first != program.trim()
+    {
+        let rest: Vec<&str> = program.split_whitespace().skip(1).collect();
+        if rest.iter().any(|t| shell_token(t)) {
+            bail!(
+                "{program:?} is a command line, not a program, and there is no shell \
+                 here. Only {first:?} could run."
+            );
+        }
+        bail!(
+            "{program:?} is a command line, not a program: {first:?} is the program and \
+             {rest:?} are its arguments."
+        );
+    }
+
     // A path would sidestep the name check entirely.
     if program.contains('/') || program.contains("..") {
         bail!("command must be a bare name, not a path: {program:?}");
     }
+
     if !allowed.iter().any(|a| a == program) {
         bail!(
             "{program:?} is not a permitted read-only command. Permitted: {}. \
@@ -531,6 +616,33 @@ pub fn validate(program: &str, args: &[String], allowed: &[String]) -> Result<()
              Put it in a plan instead."
         );
     };
+
+    // Before the rule, because this reaches every program — including the ones
+    // whose options are unpoliced, which is where it used to happen: `lsblk`
+    // takes any option, so `["|", "head"]` passed the whitelist and went out to
+    // be quoted into `'lsblk' '|' 'head'`, which lsblk answered with a complaint
+    // about a device named `|`. A confusing error from the far end is worse than
+    // a refusal, because nothing in it says what this tool would not do.
+    //
+    // `probe` cannot produce one of these now, since no field is a token stream.
+    // This stays as the check that keeps that true: a probe table entry that
+    // rendered shell syntax would be caught here, and by the test that renders
+    // every probe.
+    //
+    // Stops at `--`, which already means "operands from here" everywhere else in
+    // this module, so a path that really is called `|` is still a path.
+    if let Some(tok) = args
+        .iter()
+        .take_while(|a| *a != "--")
+        .find(|a| shell_token(a))
+    {
+        bail!(
+            "{tok:?} is shell syntax, and {program} is run without a shell — it would \
+             reach {program} as a literal argument. Nothing here is piped, redirected or \
+             chained. {}",
+            no_shell_fix(tok)
+        );
+    }
 
     let Args::Only {
         allow,
@@ -623,81 +735,6 @@ fn bundling_hint(token: &str, allow: &[&str], clustered: bool) -> String {
         );
     }
     String::new()
-}
-
-/// The whole policy, rendered from the table that enforces it.
-///
-/// The model is told this up front, in the `run_readonly` schema, because the
-/// alternative is that it works the boundary out by being refused — which
-/// costs a round trip each time, and before that costs it the reasoning to
-/// guess. Generated rather than written, so a description can never drift from
-/// the rule: edit the table and this follows.
-pub fn describe(allowed: &[String]) -> String {
-    let mut free: Vec<&str> = Vec::new();
-    let mut restricted: Vec<String> = Vec::new();
-
-    for name in allowed {
-        match rule_for(name) {
-            // Configured but with no rule: `validate` refuses it, so it is not
-            // advertised as available.
-            None => continue,
-            Some(Args::Free) => free.push(name),
-            Some(Args::Only {
-                allow,
-                subcommands,
-                verbs,
-                operand_must_not_contain,
-                clustered,
-                ..
-            }) => {
-                let mut parts: Vec<String> = Vec::new();
-                if let Some(subs) = subcommands {
-                    parts.push(format!("first word one of: {}", subs.join(" ")));
-                }
-                if let Some(vs) = verbs {
-                    parts.push(format!(
-                        "if a second word follows, one of: {}",
-                        vs.join(" ")
-                    ));
-                }
-                if !allow.is_empty() {
-                    parts.push(format!(
-                        "options{}: {}",
-                        if clustered { "" } else { ", never bundled" },
-                        allow.join(" ")
-                    ));
-                } else {
-                    parts.push("no options".to_string());
-                }
-                if !operand_must_not_contain.is_empty() {
-                    parts.push(format!(
-                        "no argument may contain: {}",
-                        operand_must_not_contain.join(" ")
-                    ));
-                }
-                restricted.push(format!("{name} — {}", parts.join("; ")));
-            }
-        }
-    }
-
-    let mut out = String::from(
-        "These are the only commands that run unattended, and the option lists are \
-         exhaustive: anything not named here is refused before a connection is made. \
-         Prefer a listed option to a clever one; anything else belongs in a plan.\n\n",
-    );
-    if !free.is_empty() {
-        out.push_str(&format!(
-            "Any options (nothing they accept writes): {}.\n",
-            free.join(" ")
-        ));
-    }
-    if !restricted.is_empty() {
-        out.push_str("\nRestricted — each line is the whole grammar:\n");
-        for line in &restricted {
-            out.push_str(&format!("  {line}\n"));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -856,35 +893,6 @@ mod tests {
         assert!(err.contains("no read-only rule"), "{err}");
     }
 
-    /// The description is generated from the same table `validate` reads, so
-    /// the two cannot drift. This checks the rendering carries every part of a
-    /// rule the model has to obey — options, the required first word, the verb
-    /// after it, and bundling.
-    #[test]
-    fn the_description_is_the_rule_itself() {
-        let d = describe(&allowed());
-        assert!(d.contains("exhaustive"), "{d}");
-        assert!(d.contains("ls cat head"), "free-form commands listed: {d}");
-        assert!(
-            d.contains("first word one of: status show cat"),
-            "systemctl's subcommands: {d}"
-        );
-        assert!(
-            d.contains("if a second word follows, one of: show list"),
-            "ip's read-only verbs: {d}"
-        );
-        assert!(d.contains("-maxdepth"), "find's primaries: {d}");
-        // `-executable` is permitted and contains the substring, so match the
-        // whole token.
-        assert!(!d.contains(" -exec "), "and not the ones it refuses: {d}");
-        assert!(!d.contains("-delete"), "{d}");
-        assert!(d.contains("never bundled"), "clustering is stated: {d}");
-        assert!(
-            d.contains("no argument may contain: ="),
-            "sysctl cannot assign: {d}"
-        );
-    }
-
     /// A refusal should cost a substitution, not a fresh round of reasoning.
     #[test]
     fn a_refused_bundle_names_the_rewrite() {
@@ -906,15 +914,76 @@ mod tests {
         assert!(validate("tail", &["-qv".into()], &allowed()).is_ok());
     }
 
-    /// Every permitted command must reach the model with its grammar. A rule
-    /// added to the table but left out of the description is the drift this
-    /// whole approach exists to prevent — and each omission is a refusal the
-    /// model pays for with a round trip.
+    /// The second layer's guard against a caller that builds an argv wrongly.
+    /// No model can reach it — `probe` renders the program from its own table —
+    /// but this is the shape that produced the refusal loop this whole change
+    /// came from, so the boundary still names it for what it is rather than
+    /// reporting a command line as an unknown program.
     #[test]
-    fn every_permitted_command_is_described() {
-        let d = describe(&allowed());
-        for c in DEFAULT_COMMANDS {
-            assert!(d.contains(c), "{c} is permitted but not described: {d}");
+    fn a_command_line_where_a_program_belongs_is_named_as_one() {
+        let err = validate("lsblk | head -n 100", &[], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no shell"), "{err}");
+        assert!(
+            err.contains("\"lsblk\""),
+            "it names the program it found: {err}"
+        );
+        // And never the self-contradiction: the program was not the fault, so
+        // the permitted list has no business in the message.
+        assert!(!err.contains("is not a permitted"), "{err}");
+        assert!(!err.contains("journalctl"), "no command list: {err}");
+
+        // The other paste from the same session.
+        let err = validate("lsblk --list=all 2>&1 || lsblk", &[], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no shell"), "{err}");
+
+        // A line with no shell syntax in it is still a line, and is taken apart
+        // rather than reported as a missing program.
+        let err = validate("cat /etc/os-release", &[], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("\"cat\" is the program"), "{err}");
+        assert!(err.contains("/etc/os-release"), "it names the rest: {err}");
+        // Not reported as a path, which is what the `/` check would have said.
+        assert!(!err.contains("bare name"), "{err}");
+    }
+
+    /// Shell syntax among the arguments used to be *accepted*: `lsblk` takes any
+    /// option, so `["|", "head"]` passed the whitelist, was quoted, and came
+    /// back as a complaint about a device named `|`. Nothing a probe renders can
+    /// contain one now; this is what keeps that a fact rather than an intention.
+    #[test]
+    fn shell_syntax_among_the_arguments_is_refused_with_the_substitution() {
+        let err = validate("lsblk", &["|".into(), "head".into()], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("shell syntax"), "{err}");
+        assert!(err.contains("literal argument"), "{err}");
+        assert!(err.contains("head -n"), "it names the substitution: {err}");
+        assert!(!err.contains("is not a permitted"), "{err}");
+
+        for (tok, fix) in [
+            ("2>&1", "stderr is captured"),
+            (";", "several operands"),
+            ("&&", "several operands"),
+            (">/tmp/x", "may write to a file"),
+            ("$(which", "substituted"),
+        ] {
+            let err = validate("cat", &[tok.to_string()], &allowed())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(fix), "{tok}: {err}");
         }
+
+        // Whole tokens only. An alternation is an ordinary pattern, and a
+        // refusal here would break a call that works today.
+        ok("grep", &["-E", "nginx|apache", "/etc/hosts"]);
+        ok("find", &["/etc", "-name", "*>*"]);
+        // And `--` still means "operands from here", so one of these characters
+        // can be searched for as itself.
+        ok("grep", &["--", "|", "/etc/hosts"]);
     }
 }
