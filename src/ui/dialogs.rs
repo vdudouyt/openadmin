@@ -468,12 +468,20 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                         }
                     }
                     StepKind::Upload { artifact } => {
+                        // The whole destination, not just its directory: a staged
+                        // path is kept on the far side, so `nginx/site.conf`
+                        // lands in a `nginx/` of its own and the operator should
+                        // see where the file actually goes before approving it.
                         body.push((
                             Line::from(vec![
                                 Span::styled("    │ ", theme::border_idle()),
                                 Span::styled(sanitize(artifact), theme::muted()),
                                 Span::styled(
-                                    format!(" → /tmp/openadmin-plan-{}/", sel.plan.id),
+                                    format!(
+                                        " → /tmp/openadmin-plan-{}/{}",
+                                        sel.plan.id,
+                                        sanitize(artifact)
+                                    ),
                                     theme::faint(),
                                 ),
                             ]),

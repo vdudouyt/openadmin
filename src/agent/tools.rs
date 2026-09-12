@@ -110,7 +110,10 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
         ),
         ToolDef::function(
             LIST_ARTIFACTS,
-            "List files staged for upload. Use the exact name in an upload step.",
+            "List the files the operator has staged for upload, with their sizes. Scans \
+             subdirectories, so a name may be a path like `nginx/site.conf` — use it \
+             exactly as given in an upload step. Every file under the artifacts directory \
+             can be uploaded, including any this list was too long to name.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
         ToolDef::function(
@@ -134,7 +137,7 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload"]},
                                 "script": {"type": "string", "description": "For kind=scriptlet: the bash to run."},
-                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts."},
+                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory."},
                                 "hosts": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -274,18 +277,30 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
             )
         }
         LIST_ARTIFACTS => match artifacts::list(ctx.datadir) {
-            Ok(list) if list.is_empty() => ToolOutcome::Text(
+            Ok(l) if l.items.is_empty() => ToolOutcome::Text(
                 "No artifacts staged. The operator puts files in ~/.openadmin/artifacts/."
                     .to_string(),
             ),
-            Ok(list) => ToolOutcome::Text(
-                serde_json::to_string_pretty(&serde_json::json!(
-                    list.iter()
+            Ok(l) => {
+                let body = serde_json::to_string_pretty(&serde_json::json!(
+                    l.items
+                        .iter()
                         .map(|a| serde_json::json!({"name": a.name, "bytes": a.size}))
                         .collect::<Vec<_>>()
                 ))
-                .unwrap_or_default(),
-            ),
+                .unwrap_or_default();
+                // A truncated list said out loud, because the alternative is a
+                // model concluding a file is not staged when it is.
+                ToolOutcome::Text(if l.truncated {
+                    format!(
+                        "{body}\nThere are more files than this list names. Anything under \
+                         the artifacts directory can still be uploaded by its path, listed \
+                         or not."
+                    )
+                } else {
+                    body
+                })
+            }
             Err(e) => ToolOutcome::Text(format!("could not list artifacts: {e}")),
         },
         PROPOSE_PLAN => propose(ctx, arguments),

@@ -109,6 +109,22 @@ fn upload_dir(plan_id: u64) -> String {
     format!("/tmp/openadmin-plan-{plan_id}")
 }
 
+/// Where one staged file lands: `(directory to create, full path)`.
+///
+/// The staged path is kept rather than flattened to a basename, because
+/// `nginx/site.conf` and `apache/site.conf` are two different files and
+/// flattening them would have the second silently overwrite the first. It also
+/// lets a scriptlet in the same plan name an upload by the path it already knows
+/// from `list_artifacts`.
+fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
+    let base = upload_dir(plan_id);
+    let dir = match rel.rsplit_once('/') {
+        Some((parent, _)) => format!("{base}/{parent}"),
+        None => base.clone(),
+    };
+    (dir, format!("{base}/{rel}"))
+}
+
 /// Run the plan, one step at a time, one host at a time.
 ///
 /// `on_line` receives each output line as it arrives; `on_step` brackets each
@@ -223,9 +239,11 @@ fn run_one(
         }
         StepKind::Upload { artifact } => {
             // Resolved and containment-checked: a name cannot escape the
-            // artifacts directory, by `..` or by symlink.
-            let local = artifacts::resolve(datadir, artifact)?;
-            let dir = upload_dir(plan.plan_id());
+            // artifacts directory, by `..`, by symlink, or by a subdirectory.
+            // `rel` comes back from the canonicalized path, so it is a clean
+            // relative path whatever the model wrote.
+            let (local, rel) = artifacts::staged(datadir, artifact)?;
+            let (dir, dest) = upload_target(plan.plan_id(), &rel);
             let mkdir = ssh::exec_command(
                 host,
                 datadir,
@@ -241,12 +259,7 @@ fn run_one(
             let launch = ssh::scp_command(host, datadir, cfg, &local, &dir, proxy);
             let out = run_capture(&launch, None, timeout, cap, Some(&tx));
             if out.as_ref().is_ok_and(|c| c.success()) {
-                on_line(format!(
-                    "uploaded {} to {}/{}",
-                    artifact,
-                    dir,
-                    local.file_name().unwrap_or_default().to_string_lossy()
-                ));
+                on_line(format!("uploaded {artifact} to {dest}"));
             }
             out
         }
@@ -327,6 +340,35 @@ mod tests {
     #[test]
     fn uploads_land_in_a_directory_of_their_own() {
         assert_eq!(upload_dir(7), "/tmp/openadmin-plan-7");
+    }
+
+    /// A staged subdirectory survives the upload, so two files of the same name
+    /// from different directories stay two files.
+    #[test]
+    fn a_staged_path_keeps_its_shape_on_the_far_side() {
+        assert_eq!(
+            upload_target(3, "hotfix.sh"),
+            (
+                "/tmp/openadmin-plan-3".to_string(),
+                "/tmp/openadmin-plan-3/hotfix.sh".to_string()
+            )
+        );
+        assert_eq!(
+            upload_target(3, "nginx/site.conf"),
+            (
+                "/tmp/openadmin-plan-3/nginx".to_string(),
+                "/tmp/openadmin-plan-3/nginx/site.conf".to_string()
+            )
+        );
+        assert_eq!(
+            upload_target(3, "a/b/c/deep.conf").1,
+            "/tmp/openadmin-plan-3/a/b/c/deep.conf"
+        );
+        // The collision this exists to prevent.
+        assert_ne!(
+            upload_target(3, "nginx/site.conf").1,
+            upload_target(3, "apache/site.conf").1
+        );
     }
 
     #[test]
