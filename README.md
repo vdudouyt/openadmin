@@ -64,9 +64,11 @@ mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
 shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
 `Ctrl+A`, vim keeps a zero-latency `Esc`.
 
-This screen also draws **no function bar** — every key there belongs to the
-terminal, so the row would cost a line of your shell to advertise nothing.
-Chrome is one header row, the tab strip, a per-pane title and one status line.
+This screen also draws **no chrome below the body** — no function bar and no
+status line. Every key here belongs to the terminal, so neither row would earn
+the line of your shell it costs. What is left is three rows: the header, the
+tab strip, and a title per pane. The tab strip carries the one reminder you
+need, in the space beside the tabs.
 
 That means **the mouse is how you drive the app while a pane is focused**:
 

@@ -217,6 +217,49 @@ fn the_help_dialog_explains_the_shells_keyboard() {
     assert!(!out.contains("Esc then"), "stale chord docs: {out}");
 }
 
+/// The Shells screen spends three rows on itself — header, tab strip, pane
+/// title — and nothing below the body. Pinned so chrome cannot creep back.
+#[test]
+fn the_shells_screen_reaches_the_bottom_row() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("chromebudget");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "sleep 30".into()];
+    app.term
+        .open_tab(
+            vec![("local".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
+    app.screen = Screen::Shells;
+
+    const H: u16 = 24;
+    let _ = render(&mut app, 100, H);
+    let (pane, _) = *app.regions.panes.first().expect("a rendered pane");
+    assert_eq!(pane.y + pane.height, H, "the pane must run to the last row");
+
+    // header(1) + tab strip(1) + pane title(1) = 3 rows of chrome.
+    let id = app.term.focused_session().unwrap();
+    assert_eq!(app.term.session(id).unwrap().size(), (H - 3, 100));
+
+    // For contrast, Hosts keeps its status line and function bar.
+    app.screen = Screen::Hosts;
+    let out = render(&mut app, 130, H);
+    let rows: Vec<&str> = out.lines().collect();
+    assert!(
+        rows[H as usize - 1].contains("F10"),
+        "Hosts keeps its footer"
+    );
+    assert!(
+        rows[H as usize - 2].contains("hosts"),
+        "and its status line"
+    );
+    app.term.shutdown();
+}
+
 /// The screen tabs are the only mouse route off a focused pane, so they must
 /// survive a narrow terminal even when their labels cannot.
 #[test]

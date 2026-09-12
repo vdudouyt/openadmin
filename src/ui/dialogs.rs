@@ -513,9 +513,9 @@ pub fn help(f: &mut Frame, app: &App) {
     ));
     lines.push(Line::styled("completely unimpaired.", theme::faint()));
     lines.push(Line::default());
-    lines.push(k("click", "the 1/2/3 tabs above switch screens"));
-    lines.push(k("click", "the bar below: Pane · Tab · Close · Quit"));
+    lines.push(k("click", "the 1/2/3 tabs switch screens — the way out"));
     lines.push(k("click", "a shell tab selects it, its × closes it"));
+    lines.push(k("quit", "switch to Hosts, then F10"));
     lines.push(Line::styled(
         "With no shell open the F-keys work here again.",
         theme::faint(),

@@ -173,6 +173,27 @@ fn render_tab_bar(f: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(Line::from(spans)).style(theme::statusbar()),
         area,
     );
+
+    // This screen has no status line, so the tab strip carries the one thing a
+    // user needs to know here: the keyboard is gone, and the way out is above.
+    let hint = if app.term.focused_session().is_some() {
+        " keys go to the terminal · click 1/2/3 above "
+    } else {
+        ""
+    };
+    // `x` is the first free column after the last tab; clip to it, because a
+    // Paragraph pads its whole area and would otherwise blank the strip.
+    let free = (area.x + area.width).saturating_sub(x);
+    if !hint.is_empty() && free >= hint.chars().count() as u16 {
+        let hint_area = Rect::new(x, area.y, free, area.height);
+        f.render_widget(
+            Paragraph::new(
+                Line::styled(hint, theme::faint().bg(theme::STATUSBAR_BG)).right_aligned(),
+            )
+            .style(theme::statusbar()),
+            hint_area,
+        );
+    }
 }
 
 fn render_empty(f: &mut Frame, area: Rect) {

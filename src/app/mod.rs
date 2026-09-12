@@ -776,7 +776,9 @@ impl App {
 
     fn write_terminal(&mut self, bytes: &[u8]) {
         if let Err(e) = self.term.write_focused(bytes) {
-            self.fail(format!("Terminal write failed: {e}"));
+            // The Shells screen has no status line, so a silent `fail` here
+            // would be swallowed entirely; an alert cannot be missed.
+            self.alert = Some(format!("Terminal write failed: {e}"));
         }
     }
 

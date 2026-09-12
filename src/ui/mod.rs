@@ -28,15 +28,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    // The Shells screen drops the function bar entirely: its keys all belong
-    // to the terminal anyway, so the row was costing a line of somebody's
-    // shell to advertise nothing. The header tabs remain the mouse route out.
-    let footer = if app.screen == Screen::Shells { 0 } else { 1 };
+    // The Shells screen keeps no chrome of its own below the body: every key
+    // there belongs to the terminal, so neither a function bar nor a status
+    // line would earn the row it costs. Its guidance lives on the tab strip
+    // instead, which exists anyway.
+    let chrome = if app.screen == Screen::Shells { 0 } else { 1 };
     let [header_a, body_a, status_a, fn_a] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(1),
-        Constraint::Length(footer),
+        Constraint::Length(chrome),
+        Constraint::Length(chrome),
     ])
     .areas(area);
 
@@ -46,8 +47,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Shells => screens::shells::render(f, body_a, app),
         Screen::Chat => screens::chat::render(f, body_a, app),
     }
-    status_fn::render_status(f, status_a, app);
-    if footer > 0 {
+    if chrome > 0 {
+        status_fn::render_status(f, status_a, app);
         status_fn::render_function_bar(f, fn_a, app);
     }
 
