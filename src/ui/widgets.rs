@@ -97,9 +97,103 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     cell
 }
 
+/// Strip terminal control sequences from text that came from somewhere else.
+///
+/// Remote output is full of them — `journalctl` colours its levels, `ls
+/// --color` colours its names — and ratatui does not filter: a `Span`'s
+/// characters go into buffer cells and the backend writes them straight out.
+/// An `ESC` from a host you are debugging would therefore be interpreted by
+/// *your* terminal, which is a machine you did not intend to give control of.
+///
+/// Tabs become spaces because a raw tab in a cell breaks the column alignment
+/// the whole grid depends on.
+#[allow(dead_code)] // used by the chat transcript renderer, next commit
+pub fn sanitize(text: &str) -> String {
+    const TAB_STOP: usize = 8;
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // CSI: ESC [ params… final-byte in 0x40..=0x7e.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: ESC ] … terminated by BEL or ST (ESC \).
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Anything else is a two-character escape; both are dropped.
+                _ => {}
+            },
+            '\t' => {
+                let pad = TAB_STOP - (out.chars().count() % TAB_STOP);
+                out.extend(std::iter::repeat_n(' ', pad));
+            }
+            // Other C0 and the C1 range carry no text.
+            c if (c as u32) < 0x20 || ('\u{80}'..='\u{9f}').contains(&c) => {}
+            '\u{7f}' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::wrap;
+    use super::{sanitize, wrap};
+
+    #[test]
+    fn sanitize_strips_colour_without_eating_the_text() {
+        // What `journalctl` and `ls --color` actually emit.
+        assert_eq!(sanitize("\x1b[31mFAILED\x1b[0m"), "FAILED");
+        assert_eq!(sanitize("\x1b[1;32m ok \x1b[m rest"), " ok  rest");
+        assert_eq!(sanitize("plain"), "plain");
+    }
+
+    /// The reason this exists: a host being debugged must not be able to drive
+    /// the operator's terminal.
+    #[test]
+    fn sanitize_defuses_screen_control() {
+        // Clear screen, cursor home, scroll region, and a title-setting OSC.
+        assert_eq!(sanitize("\x1b[2J\x1b[H\x1b[1;5rgotcha"), "gotcha");
+        assert_eq!(sanitize("\x1b]0;pwned\x07after"), "after");
+        assert_eq!(sanitize("\x1b]0;pwned\x1b\\after"), "after");
+        // A bare escape, and a two-character sequence.
+        assert_eq!(sanitize("a\x1bZb"), "ab");
+        assert_eq!(sanitize("a\x1b"), "a");
+        // No ESC survives, whatever the input.
+        for evil in ["\x1b[2J", "\x1b]0;x\x07", "\x1b(B", "\x1b[?1049h"] {
+            assert!(!sanitize(evil).contains('\x1b'), "{evil:?} leaked an ESC");
+        }
+    }
+
+    #[test]
+    fn sanitize_expands_tabs_and_drops_other_controls() {
+        assert_eq!(sanitize("a\tb"), "a       b");
+        assert_eq!(sanitize("ab\tc"), "ab      c");
+        assert_eq!(sanitize("carriage\rreturn"), "carriagereturn");
+        assert_eq!(sanitize("bell\x07"), "bell");
+        assert_eq!(sanitize("nul\0byte"), "nulbyte");
+    }
+
+    #[test]
+    fn sanitize_keeps_unicode() {
+        assert_eq!(sanitize("héllo ✓ 日本"), "héllo ✓ 日本");
+    }
 
     #[test]
     fn wraps_on_words_newlines_and_long_words() {

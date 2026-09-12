@@ -6,6 +6,7 @@
 //! cannot see any callers — hence the allow, which goes away with that commit.
 #![allow(dead_code)]
 
+pub mod artifacts;
 pub mod client;
 pub mod exec;
 pub mod proto;
