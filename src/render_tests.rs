@@ -211,7 +211,12 @@ fn chat_screen_renders_the_transcript_and_composer() {
     assert!(out.contains("Agent"), "{out}");
     // No model is guessed, so the panel says so instead of showing a blank.
     assert!(out.contains("no model set"), "{out}");
-    assert!(out.contains("»"), "the composer prompt is missing");
+    // The composer is a text area in its own orange box now, so it says what
+    // it is for rather than wearing a "»" that would only mark its first line.
+    assert!(
+        out.contains("ask the agent"),
+        "the composer invitation is missing: {out}"
+    );
     // The transcript starts empty: a fabricated sample above the operator's
     // first real message would be worse than useless.
     assert!(app.chat.turns.is_empty());
@@ -1070,10 +1075,10 @@ fn chat_composer_accepts_typing() {
     for c in "restart api".chars() {
         key(&mut app, KeyCode::Char(c));
     }
-    assert_eq!(app.chat.draft.value(), "restart api");
+    assert_eq!(app.chat.draft_text(), "restart api");
     key(&mut app, KeyCode::Esc);
     assert!(
-        app.chat.draft.value().is_empty(),
+        app.chat.draft_text().is_empty(),
         "Esc clears the draft when idle"
     );
 }
@@ -1097,7 +1102,7 @@ fn sending_without_a_model_warns_and_keeps_the_draft() {
         "{}",
         app.status.text
     );
-    assert_eq!(app.chat.draft.value(), "hello", "the message is not lost");
+    assert_eq!(app.chat.draft_text(), "hello", "the message is not lost");
     assert!(app.chat.turns.is_empty(), "nothing was recorded");
     assert!(!app.busy);
 }
@@ -1107,7 +1112,7 @@ fn paste_routes_to_whatever_is_focused() {
     let (mut app, _rx) = test_app("paste");
     app.screen = Screen::Chat;
     app.on_paste("hello");
-    assert_eq!(app.chat.draft.value(), "hello");
+    assert_eq!(app.chat.draft_text(), "hello");
 
     app.screen = Screen::Hosts;
     app.open_add();
@@ -1594,7 +1599,7 @@ fn a_waiting_plan_does_not_interrupt_a_half_typed_message() {
     use crate::agent::AgentEvent;
     let (mut app, _rx) = test_app("autoopen-draft");
     app.screen = Screen::Chat;
-    app.chat.draft = "no, wait — check the".into();
+    app.chat.draft = tui_textarea::TextArea::from(["no, wait — check the"]);
     app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
 
     assert!(!tick(&mut app), "not over a draft");
@@ -1605,7 +1610,7 @@ fn a_waiting_plan_does_not_interrupt_a_half_typed_message() {
         "the card still offers it: {out}"
     );
 
-    app.chat.draft.reset();
+    app.chat.draft = tui_textarea::TextArea::default();
     assert!(tick(&mut app), "and it appears once the draft is gone");
 }
 
@@ -1861,35 +1866,78 @@ fn the_password_dialogs_use_the_same_boxes() {
     }
 }
 
-/// The composer is a text field like the ones in the dialogs, and edits like
-/// one: it used to be append-and-backspace only.
+/// The composer is a text area now: `Enter` sends, `Ctrl+J` opens a line, and
+/// it grows to fit what is in it.
 #[test]
-fn the_composer_edits_like_a_line_not_a_stack() {
-    let (mut app, _rx) = test_app("composer-edit");
+fn the_composer_takes_more_than_one_line() {
+    let (mut app, _rx) = test_app("composer-multiline");
     app.screen = Screen::Chat;
-    for c in "restart nginx".chars() {
+    for c in "check the disks".chars() {
         key(&mut app, KeyCode::Char(c));
     }
-    key(&mut app, KeyCode::Home);
-    for c in "please ".chars() {
+    app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    for c in "on every host".chars() {
         key(&mut app, KeyCode::Char(c));
     }
-    assert_eq!(app.chat.draft.value(), "please restart nginx");
+    assert_eq!(app.chat.draft_text(), "check the disks\non every host");
+    assert_eq!(app.chat.draft.lines().len(), 2, "^J opened a line");
 
-    key(&mut app, KeyCode::End);
-    key(&mut app, KeyCode::Backspace);
-    assert_eq!(app.chat.draft.value(), "please restart ngin");
+    // Both lines are on screen, so the box grew rather than hiding the first.
+    let out = render(&mut app, 100, 30);
+    assert!(out.contains("check the disks"), "{out}");
+    assert!(out.contains("on every host"), "{out}");
 
-    // And the caret is drawn where it is, not parked at the end.
-    key(&mut app, KeyCode::Home);
-    let buf = render_buf(&mut app, 80, 20);
-    let caret = (0..buf.area.height)
-        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
-        .find(|&(x, y)| buf[(x, y)].bg == crate::ui::theme::ORANGE_BRIGHT);
-    let (cx, cy) = caret.expect("a caret cell is drawn");
+    // Sending takes the whole thing, not just the line the caret is on.
+    // (Driven through `take_draft` rather than Enter, because `send_chat`
+    // needs a configured model and this is about the composer.)
+    let sent = app.chat.take_draft().expect("a draft to send");
     assert_eq!(
-        buf[(cx, cy)].symbol(),
-        "p",
-        "the caret sits on the first character, not after the last"
+        sent, "check the disks\non every host",
+        "both lines were sent"
+    );
+    assert!(app.chat.draft.is_empty(), "and the composer is cleared");
+}
+
+/// A pasted block keeps its lines. Flattening a log into one line is what the
+/// old composer did, and the reason this one exists.
+#[test]
+fn a_pasted_block_keeps_its_lines() {
+    // All three line endings a terminal might send. CR is not a curiosity: it
+    // is what tmux and most emulators put inside a bracketed paste, and
+    // crossterm forwards the bytes untouched — so testing only "\n" passes
+    // while every real paste arrives as one flattened line.
+    for sep in ["\n", "\r", "\r\n"] {
+        let (mut app, _rx) = test_app("composer-paste");
+        app.screen = Screen::Chat;
+        app.on_paste(&["line one", "line two", "line three"].join(sep));
+        assert_eq!(
+            app.chat.draft.lines().len(),
+            3,
+            "{sep:?} did not break lines: {:?}",
+            app.chat.draft_text()
+        );
+        let out = render(&mut app, 100, 30);
+        for l in ["line one", "line two", "line three"] {
+            assert!(out.contains(l), "{l} is missing: {out}");
+        }
+    }
+}
+
+/// The transcript shows a multi-line message as it was written.
+#[test]
+fn a_multiline_message_keeps_its_shape_in_the_transcript() {
+    let (mut app, _rx) = test_app("composer-transcript");
+    app.screen = Screen::Chat;
+    app.on_paste("first line\n\nthird line");
+    app.chat.take_draft().expect("a draft to send");
+    let out = render(&mut app, 100, 30);
+    let rows: Vec<&str> = out.lines().collect();
+    let first = rows
+        .iter()
+        .position(|r| r.contains("first line"))
+        .expect("the message is shown");
+    assert!(
+        rows[first + 2].contains("third line"),
+        "the blank line between them survives: {out}"
     );
 }

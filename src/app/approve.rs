@@ -305,7 +305,7 @@ impl crate::app::App {
             || self.mode != super::Mode::Normal
             || self.screen != super::Screen::Chat
             || self.alert.is_some()
-            || !self.chat.draft.value().trim().is_empty()
+            || !self.chat.draft_text().trim().is_empty()
         {
             return false;
         }

@@ -1102,6 +1102,7 @@ dependencies = [
  "toml",
  "tui-input",
  "tui-term",
+ "tui-textarea-2",
  "ureq",
  "vt100",
 ]
@@ -2092,6 +2093,20 @@ dependencies = [
  "ratatui-core",
  "ratatui-widgets",
  "vt100",
+]
+
+[[package]]
+name = "tui-textarea-2"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdf2865f7f32ae9e779f6185986fd920fa6b00ac878e906927ec7e78d32316ed"
+dependencies = [
+ "crossterm",
+ "portable-atomic",
+ "ratatui-core",
+ "ratatui-widgets",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

@@ -21,7 +21,7 @@ use approve::{ConfirmedPlan, PlanSelection};
 use chat::{ChatState, PlanState};
 use form::{FormField, FormState};
 use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
 use std::collections::HashSet;
@@ -30,7 +30,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
-use tui_input::backend::crossterm::to_input_request;
 
 /// How long a transient status message stays before reverting.
 const STATUS_REVERT: Duration = Duration::from_millis(3400);
@@ -1005,15 +1004,21 @@ impl App {
         match key.code {
             KeyCode::Enter => self.send_chat(),
             KeyCode::Esc if self.busy => self.cancel_agent(),
-            KeyCode::Esc => self.chat.draft.reset(),
+            KeyCode::Esc => self.chat.draft = tui_textarea::TextArea::default(),
             KeyCode::PageUp => self.chat.scroll_by(10),
             KeyCode::PageDown => self.chat.scroll_by(-10),
-            // Everything else is line editing: the composer is a text field
-            // like the ones in the dialogs, and behaves like one.
+            // Ctrl+J opens a line. It *is* LF, so crossterm reports it in raw
+            // mode on every terminal — unlike Shift+Enter, which needs a
+            // keyboard protocol xterm, Terminal.app and plain tmux do not
+            // speak, and which would therefore work on the author's machine
+            // and nowhere else.
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.chat.draft.insert_newline();
+            }
+            // Everything else is editing: the composer is a text area, and
+            // behaves like one.
             _ => {
-                if let Some(req) = to_input_request(&Event::Key(key)) {
-                    self.chat.draft.handle(req);
-                }
+                self.chat.draft.input(key);
             }
         }
     }
@@ -1093,12 +1098,19 @@ impl App {
                 let bytes = crate::term::keys::encode_paste(text, bracketed);
                 self.write_terminal(&bytes);
             }
+            // A pasted block keeps its lines: flattening a log into one line
+            // was the main reason the composer needed to grow up.
+            //
+            // The line endings have to be normalised first. A terminal sends
+            // the *input* form of a newline inside a bracketed paste — tmux
+            // and most emulators send CR — and crossterm hands the bytes over
+            // untouched, so a paste arrives full of `\r` that nothing
+            // downstream treats as a line break. Only the composer needs this:
+            // a paste bound for a shell is that shell's business.
             Screen::Chat if self.mode == Mode::Normal => {
-                for c in text.chars().filter(|c| !c.is_control()) {
-                    self.chat
-                        .draft
-                        .handle(tui_input::InputRequest::InsertChar(c));
-                }
+                self.chat
+                    .draft
+                    .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
             }
             _ => {
                 if self.mode == Mode::HostForm {

@@ -9,11 +9,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Padding, Paragraph};
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let [body, composer] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(area);
+        Layout::vertical([Constraint::Min(3), Constraint::Length(composer_height(app))])
+            .areas(area);
 
     // Say plainly when there is no model rather than rendering an empty label.
     let right = if app.cfg.agent.configured() {
@@ -164,67 +165,57 @@ fn status_style(s: crate::app::chat::ToolStatus) -> Style {
     }
 }
 
-fn render_composer(f: &mut Frame, area: Rect, app: &App) {
+/// How tall the composer wants to be, borders included.
+///
+/// It grows with the draft and stops at `MAX`, past which the text area
+/// scrolls inside itself — the transcript above is the thing being paid for,
+/// and a composer that could eat the whole screen would be a worse trade than
+/// scrolling a long prompt.
+fn composer_height(app: &App) -> u16 {
+    const MIN: u16 = 3;
+    const MAX: u16 = 10;
+    (app.chat.draft.lines().len() as u16 + 2).clamp(MIN, MAX)
+}
+
+fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let hint = if app.busy {
         " ^C cancel   PgUp/PgDn scroll "
     } else if app.pending_plan.is_some() {
-        " F2 review the plan   Enter send   PgUp/PgDn scroll "
+        " F2 review   ↵ send   ^J newline "
     } else {
-        " Enter send   PgUp/PgDn scroll "
+        " ↵ send   ^J newline   PgUp/PgDn scroll "
     };
     let block = Block::bordered()
         .border_style(theme::border_focused())
         .style(Style::new().bg(theme::BG_BASE))
+        // The same breathing room the dialog inputs have, so text does not sit
+        // against the frame.
+        .padding(Padding::horizontal(1))
         .title_bottom(Line::styled(hint, theme::faint()).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
 
-    const PROMPT: u16 = 2;
-    let mut spans = vec![Span::styled(
-        "» ",
-        theme::proxied().add_modifier(Modifier::BOLD),
-    )];
-    if app.busy && app.chat.draft.value().is_empty() {
-        spans.push(Span::styled("working… ^C to stop", theme::proxied()));
-        f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    // While a turn is running the composer says so rather than inviting input
+    // it would only queue behind the model.
+    if app.busy && app.chat.draft.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("» ", theme::proxied().add_modifier(Modifier::BOLD)),
+                Span::styled("working… ^C to stop", theme::proxied()),
+            ])),
+            inner,
+        );
         return;
     }
-    if app.chat.draft.value().is_empty() {
-        spans.push(Span::styled(
-            "ask the agent to inspect or change a host…",
-            theme::faint(),
-        ));
-        f.render_widget(Paragraph::new(Line::from(spans)), inner);
-    } else {
-        f.render_widget(Paragraph::new(Line::from(spans)), inner);
-        // The draft is drawn in its own area, right of the prompt, so the
-        // scroll `tui-input` computes is measured against the width the text
-        // actually has.
-        let field = Rect::new(
-            inner.x + PROMPT,
-            inner.y,
-            inner.width.saturating_sub(PROMPT),
-            1,
-        );
-        if field.width == 0 {
-            return;
-        }
-        let scroll = app
-            .chat
-            .draft
-            .visual_scroll(field.width.saturating_sub(1) as usize);
-        f.render_widget(
-            Paragraph::new(Line::styled(
-                app.chat.draft.value().to_string(),
-                theme::body(),
-            ))
-            .scroll((0, scroll as u16)),
-            field,
-        );
-        let col = app.chat.draft.visual_cursor().saturating_sub(scroll) as u16;
-        if col < field.width {
-            f.buffer_mut()[(field.x + col, field.y)]
-                .set_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
-        }
-    }
+
+    // The text area draws itself, so it is handed our frame rather than
+    // bringing its own: one orange box, the same as every other input.
+    let draft = &mut app.chat.draft;
+    draft.set_block(block);
+    draft.set_style(theme::body());
+    draft.set_cursor_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
+    draft.set_cursor_line_style(Style::default());
+    draft.set_placeholder_text("ask the agent to inspect or change a host…");
+    draft.set_placeholder_style(theme::faint());
+    f.render_widget(&*draft, area);
 }
