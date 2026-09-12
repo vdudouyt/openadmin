@@ -27,7 +27,9 @@ impl ToolStatus {
     pub fn label(self) -> &'static str {
         match self {
             ToolStatus::Ok => "ok",
-            ToolStatus::Fail => "exit 1",
+            // Not "exit 1": the real code is in the output, and
+            // inventing one that contradicts it is worse than saying less.
+            ToolStatus::Fail => "failed",
             ToolStatus::Empty => "no output",
             ToolStatus::Running => "running",
         }

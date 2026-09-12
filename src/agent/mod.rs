@@ -12,6 +12,7 @@
 pub mod artifacts;
 pub mod client;
 pub mod exec;
+pub mod exec_plan;
 pub mod plan;
 pub mod proto;
 pub mod readonly;
@@ -35,6 +36,13 @@ const MAX_STEPS: usize = 24;
 
 /// What the UI asks the worker to do.
 pub enum AgentCommand {
+    /// Run a plan the operator confirmed. The payload can only be built by
+    /// `crate::app::approve`, which is what makes execution unreachable from
+    /// here.
+    Execute {
+        plan: crate::app::approve::ConfirmedPlan,
+        hosts: Vec<HostRecord>,
+    },
     /// Begin a turn. `hosts` is a snapshot because `DataBase` is not `Sync` and
     /// lives on the UI thread — the worker is handed what it may see.
     Send {
@@ -49,9 +57,27 @@ pub enum AgentCommand {
 /// flood the channel.
 pub enum AgentEvent {
     Delta,
-    ToolStarted { name: String, arg: String },
-    ToolFinished { ok: bool, out: Vec<String> },
+    ToolStarted {
+        name: String,
+        arg: String,
+    },
+    ToolFinished {
+        ok: bool,
+        out: Vec<String>,
+    },
     Proposed(Box<Plan>),
+    /// One (step, host) pair is starting.
+    ExecStarted {
+        step: usize,
+        host: String,
+        summary: String,
+    },
+    /// Coalesced wake: drain `ExecStream`.
+    ExecLine,
+    ExecFinished {
+        exit: Option<i32>,
+        timed_out: bool,
+    },
     Done,
     Cancelled,
     Error(String),
@@ -85,6 +111,33 @@ impl Stream {
         };
         self.pending.store(false, Ordering::Release);
         std::mem::take(&mut *t)
+    }
+}
+
+/// Execution output, shared between the executor and the UI. Same
+/// edge-triggered coalescing as `Stream`: a noisy step produces about one
+/// redraw a frame rather than one per line.
+#[derive(Default)]
+pub struct ExecStream {
+    lines: Mutex<Vec<String>>,
+    pending: AtomicBool,
+}
+
+impl ExecStream {
+    fn push(&self, line: String) -> bool {
+        if let Ok(mut l) = self.lines.lock() {
+            l.push(line);
+        }
+        !self.pending.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn take(&self) -> Vec<String> {
+        let mut l = match self.lines.lock() {
+            Ok(l) => l,
+            Err(e) => e.into_inner(),
+        };
+        self.pending.store(false, Ordering::Release);
+        std::mem::take(&mut *l)
     }
 }
 
@@ -138,6 +191,7 @@ pub struct Worker {
     datadir: PathBuf,
     history: Vec<Message>,
     stream: Arc<Stream>,
+    exec: Arc<ExecStream>,
     cancel: Arc<AtomicBool>,
     events: Sender<AgentEvent>,
     next_plan_id: u64,
@@ -149,6 +203,7 @@ impl Worker {
         cfg: Config,
         datadir: PathBuf,
         stream: Arc<Stream>,
+        exec: Arc<ExecStream>,
         cancel: Arc<AtomicBool>,
         events: Sender<AgentEvent>,
     ) -> Self {
@@ -159,6 +214,7 @@ impl Worker {
             datadir,
             history,
             stream,
+            exec,
             cancel,
             events,
             next_plan_id: 1,
@@ -175,14 +231,68 @@ impl Worker {
                         let _ = self.events.send(AgentEvent::Error(e));
                     }
                 }
+                AgentCommand::Execute { plan, hosts } => {
+                    self.cancel.store(false, Ordering::Release);
+                    if let Err(e) = self.execute(plan, &hosts) {
+                        let _ = self.events.send(AgentEvent::Error(e));
+                    }
+                }
                 AgentCommand::Shutdown => return,
             }
         }
     }
 
+    /// Run a confirmed plan, then let the model react to the report.
+    fn execute(
+        &mut self,
+        plan: crate::app::approve::ConfirmedPlan,
+        hosts: &[HostRecord],
+    ) -> Result<(), String> {
+        let report = {
+            let events = self.events.clone();
+            let ev2 = self.events.clone();
+            let exec2 = Arc::clone(&self.exec);
+            let ev3 = self.events.clone();
+            let mut on_line = move |line: String| {
+                if exec2.push(line) {
+                    let _ = ev2.send(AgentEvent::ExecLine);
+                }
+            };
+            exec_plan::execute(
+                &plan,
+                hosts,
+                &self.datadir,
+                &self.cfg,
+                &self.cancel,
+                move |step, host, summary| {
+                    let _ = events.send(AgentEvent::ExecStarted {
+                        step,
+                        host: host.to_string(),
+                        summary: summary.to_string(),
+                    });
+                },
+                &mut on_line,
+                move |exit, timed_out| {
+                    let _ = ev3.send(AgentEvent::ExecFinished { exit, timed_out });
+                },
+            )
+        };
+
+        // The report is a fresh user message, not a tool result: propose_plan
+        // was already answered when the plan was recorded, and answering the
+        // same tool_call_id twice is a protocol error.
+        self.history.push(Message::user(report.to_text()));
+        self.continue_turn(hosts)
+    }
+
     /// One user message, through however many tool round-trips it takes.
     fn turn(&mut self, text: String, hosts: &[HostRecord]) -> Result<(), String> {
         self.history.push(Message::user(text));
+        self.continue_turn(hosts)
+    }
+
+    /// Drive the model until it stops, proposes, or runs out of steps.
+    fn continue_turn(&mut self, hosts: &[HostRecord]) -> Result<(), String> {
         let defs = tools::definitions(&self.cfg);
 
         for _ in 0..MAX_STEPS {
@@ -348,6 +458,7 @@ mod tests {
             Config::default(),
             dir.to_path_buf(),
             Arc::clone(&stream),
+            Arc::new(ExecStream::default()),
             cancel,
             ev_tx,
         );

@@ -69,6 +69,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::HostForm => dialogs::host_form(f, app),
         Mode::ConfirmDelete => dialogs::confirm_delete(f, app),
+        Mode::ConfirmPlan => dialogs::confirm_plan(f, app),
         Mode::ShowKey => dialogs::show_key(f, app),
         Mode::Help => dialogs::help(f, app),
         Mode::Normal => {}

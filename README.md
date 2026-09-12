@@ -93,7 +93,53 @@ shell therefore never strands you.
 
 ### 3 · Chat
 
-Renders an agent transcript and accepts input, but **no model is called yet**.
+An agent that helps you diagnose and fix the fleet. It speaks the **OpenAI Chat
+Completions** API, which is also what vLLM, Ollama, llama.cpp, OpenRouter and
+Azure speak — so you can point it at a model on your own network rather than
+send transcripts about your infrastructure to a third party.
+
+Configure it in `~/.openadmin/config.toml` under `[agent]`: `model` (empty by
+default — nothing is guessed), `base_url`, and `api_key`. `OPENAI_API_KEY`
+overrides the file, which is the better choice for anything shared or backed
+up, since the file holds a live credential in plaintext beside an encrypted
+database.
+
+**The model may look, but it may not touch.** It has four tools and only one of
+them can change anything:
+
+| | |
+|---|---|
+| `run_readonly` | one command on one host, no confirmation |
+| `list_hosts` | the known machines — never their passwords |
+| `list_artifacts` | files staged in `~/.openadmin/artifacts/` |
+| `propose_plan` | proposes changes; **executes nothing** |
+
+Reading is unattended so the agent can find out what is actually true before it
+suggests anything. `run_readonly` is restricted to a whitelist of commands *and*
+of their options, because the program name alone decides nothing: `systemctl
+status` reads and `systemctl restart` does not, `find -exec` runs anything at
+all. An option nobody whitelisted is refused rather than assumed harmless. The
+list is in `config.toml` and narrowing it narrows the boundary; widening it past
+the built-in rules is not possible.
+
+Changing anything goes through a **plan** — scripts and artifact uploads, with
+the hosts for each — which you review in a dialog with a checkbox per step and
+per host. The script is shown in full, never elided: a plan you cannot read end
+to end is one you cannot judge. Confirm runs exactly what is still checked.
+
+**Nothing halts on failure.** Every checked step runs on every checked host,
+and the report — each pair with its exit status — goes back to the model, which
+is asked to propose a follow-up plan scoped to just the hosts that failed.
+Halting early would leave the fleet in a state nobody asked for and nobody can
+see.
+
+The agent *cannot* execute anything itself, and this is structural rather than a
+rule it is asked to follow. What the model builds is a `Plan`; what the executor
+takes is a `ConfirmedPlan`, whose constructor is private to the dialog's module.
+A model ignoring every word of its system prompt still has no function it can
+reach that accepts what it can make.
+
+`Ctrl+C` cancels a turn in flight. `PgUp`/`PgDn` scroll the transcript.
 
 ## Data
 

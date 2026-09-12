@@ -118,6 +118,15 @@ fn entries(app: &App) -> Vec<Entry> {
                 e("↵", save, 0xff, false),
             ];
         }
+        Mode::ConfirmPlan => {
+            let danger = app.plan.as_ref().is_some_and(|p| !p.is_empty());
+            return vec![
+                e("Esc", "Reject", 0xff, false),
+                e("Space", "Toggle", 0xff, false),
+                e("a/x", "All / none", 0xff, false),
+                e("↵", "Run", 0xff, danger),
+            ];
+        }
         Mode::ConfirmDelete => {
             return vec![e("N", "Cancel", 0xff, false), e("Y", "Delete", 0xff, true)];
         }

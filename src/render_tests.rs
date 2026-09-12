@@ -1302,3 +1302,194 @@ fn proxy_toggle_is_exclusive() {
     assert_eq!(app.hosts.iter().filter(|h| h.proxy).count(), 1);
     assert_eq!(app.proxy_host().unwrap().name, "db-main");
 }
+
+// ---- the plan gate -------------------------------------------------------
+
+use crate::agent::plan::{Plan, PlanStep, StepKind};
+
+fn a_plan(script: &str, hosts: Vec<i64>) -> Plan {
+    Plan {
+        id: 1,
+        title: "tidy up".into(),
+        steps: vec![PlanStep {
+            summary: "clean the cache".into(),
+            kind: StepKind::Scriptlet {
+                script: script.into(),
+            },
+            hosts,
+        }],
+    }
+}
+
+/// A proposal must never open its own dialog. A modal appearing under the
+/// fingers is how a reflexive Enter authorizes a fleet-wide run.
+#[test]
+fn a_proposal_does_not_open_the_dialog_by_itself() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("noautoopen");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan(
+        "apt-get clean",
+        vec![1],
+    ))));
+
+    assert_eq!(app.mode, Mode::Normal, "no modal appeared");
+    assert!(app.plan.is_none());
+    assert!(app.pending_plan.is_some(), "but it is waiting");
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("plan #1"), "a card names it: {out}");
+    assert!(out.contains("awaiting review"), "{out}");
+}
+
+#[test]
+fn the_dialog_shows_every_step_host_and_the_script_verbatim() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("dialog");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan(
+        "set -euo pipefail\napt-get clean",
+        vec![1, 2],
+    ))));
+    app.function_key(2);
+    assert_eq!(app.mode, Mode::ConfirmPlan);
+
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("Confirm Plan"), "{out}");
+    assert!(out.contains("Nothing has run yet"), "{out}");
+    assert!(out.contains("clean the cache"), "{out}");
+    // The script is shown in full — an elided one is unreviewable.
+    assert!(out.contains("set -euo pipefail"), "{out}");
+    assert!(out.contains("apt-get clean"), "{out}");
+    // Both hosts, by name, each with a box.
+    assert!(out.contains("web-01"), "{out}");
+    assert!(out.contains("db-main"), "{out}");
+    assert!(out.contains("[x]"), "{out}");
+    assert!(out.contains("Run 1 step(s) on 2 host(s)"), "{out}");
+}
+
+#[test]
+fn unchecking_a_host_changes_what_would_run() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("uncheck");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1, 2]))));
+    app.function_key(2);
+    let _ = render(&mut app, 120, 34);
+
+    // Move to the first host row and toggle it off.
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' '));
+    let sel = app.plan.as_ref().unwrap();
+    assert_eq!(sel.counts(), (1, 1));
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("Run 1 step(s) on 1 host(s)"), "{out}");
+
+    // Turning everything off leaves nothing to run, and no button to press.
+    key(&mut app, KeyCode::Char('x'));
+    assert!(app.plan.as_ref().unwrap().is_empty());
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("Nothing selected"), "{out}");
+    assert!(!out.contains("Run 1 step"), "{out}");
+}
+
+/// Confirming with nothing selected must not close the dialog on a no-op.
+#[test]
+fn confirming_an_empty_selection_keeps_the_dialog() {
+    use crate::agent::AgentEvent;
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("emptyconfirm");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1]))));
+    app.function_key(2);
+    key(&mut app, KeyCode::Char('x'));
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.mode, Mode::ConfirmPlan, "the dialog stays up");
+    assert_eq!(app.status.kind, StatusKind::Warn);
+    assert!(app.status.text.contains("Nothing selected"));
+}
+
+#[test]
+fn rejecting_a_plan_runs_nothing_and_marks_the_card() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("reject");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1]))));
+    app.function_key(2);
+    key(&mut app, KeyCode::Esc);
+
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.plan.is_none());
+    assert!(app.pending_plan.is_none());
+    assert!(!app.busy, "nothing was started");
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("rejected"), "{out}");
+}
+
+/// Clicking a checkbox must toggle the row that was drawn there.
+#[test]
+fn dialog_checkbox_hitboxes_land_on_the_rows_drawn() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("planclicks");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1, 2]))));
+    app.function_key(2);
+    let _ = render(&mut app, 120, 34);
+
+    let host_clicks: Vec<_> = app
+        .regions
+        .clicks
+        .iter()
+        .filter_map(|(r, c)| match c {
+            Click::ToggleHost(i, j) => Some((*r, *i, *j)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(host_clicks.len(), 2, "one hitbox per host row");
+
+    let (rect, i, j) = host_clicks[1];
+    click(&mut app, rect.x + 6, rect.y);
+    assert!(
+        !app.plan.as_ref().unwrap().host_on[i as usize][j as usize],
+        "the clicked host was the one toggled"
+    );
+}
+
+/// A plan too tall for the dialog scrolls rather than truncating.
+#[test]
+fn a_long_plan_scrolls_and_keeps_the_cursor_visible() {
+    use crate::agent::AgentEvent;
+    let steps: Vec<PlanStep> = (0..12)
+        .map(|i| PlanStep {
+            summary: format!("step number {i}"),
+            kind: StepKind::Scriptlet {
+                script: format!("echo {i}"),
+            },
+            hosts: vec![1, 2],
+        })
+        .collect();
+    let (mut app, _rx) = test_app("longplan");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(Plan {
+        id: 2,
+        title: "big".into(),
+        steps,
+    })));
+    app.function_key(2);
+
+    let out = render(&mut app, 120, 24);
+    assert!(out.contains("more"), "the hint says there is more: {out}");
+    assert!(out.contains("step number 0"), "{out}");
+
+    // Walk to the bottom; the last step must come into view.
+    for _ in 0..60 {
+        key(&mut app, KeyCode::Down);
+    }
+    let out = render(&mut app, 120, 24);
+    assert!(
+        out.contains("step number 11"),
+        "the cursor stays visible: {out}"
+    );
+    // 12 steps across 2 hosts is 24 host-runs, and the button says so.
+    assert!(out.contains("Run 12 step(s) on 24 host(s)"), "{out}");
+}

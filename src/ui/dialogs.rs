@@ -4,10 +4,12 @@
 //! a `Vec<Line>` in one `Paragraph`, with `button_row` registering its own
 //! hitboxes (`/root/cfdns/src/ui/dialogs.rs:16-51`).
 
+use crate::agent::plan::StepKind;
+use crate::app::approve::Row;
 use crate::app::form::FormField;
 use crate::app::{App, Click};
 use crate::ui::theme;
-use crate::ui::widgets::{centered, padl, wrap};
+use crate::ui::widgets::{centered, padl, sanitize, wrap};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -315,6 +317,213 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             ),
         ],
     );
+    lines.push(row);
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The plan confirmation dialog: one row per step, one per host under it, each
+/// with its own checkbox.
+///
+/// The script body is rendered in full and wrapped, never elided. A plan the
+/// operator cannot read end to end is one they cannot judge, and that would
+/// turn the whole confirmation into theatre.
+pub fn confirm_plan(f: &mut Frame, app: &mut App) {
+    let Some(sel) = app.plan.clone() else { return };
+    let area = f.area();
+    let width = 78u16.min(area.width);
+    let height = (area.height as i32 - 4).clamp(12, 34) as u16;
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+    // Double-line frame: this is the destructive confirmation.
+    let block = danger_block("Confirm Plan");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 6 {
+        return;
+    }
+
+    let (steps_on, runs) = sel.counts();
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled(
+                sanitize(&sel.plan.title),
+                theme::bright().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("   plan #{}", sel.plan.id), theme::faint()),
+        ]),
+        Line::styled("Nothing has run yet.", theme::muted()),
+        Line::default(),
+    ];
+
+    let rows = sel.rows();
+    let body_w = inner.width.saturating_sub(6) as usize;
+    // `(line, row index)` so the window can be anchored on the cursor's row.
+    let mut body: Vec<(Line, Option<usize>)> = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        let focused = r == sel.cursor;
+        match *row {
+            Row::Step(i) => {
+                let step = &sel.plan.steps[i];
+                let on = sel.step_on[i];
+                body.push((
+                    Line::from(vec![
+                        Span::styled(if focused { "▸" } else { " " }, theme::proxied()),
+                        Span::styled(
+                            if on { "[x] " } else { "[ ] " },
+                            if on { theme::ok() } else { theme::faint() },
+                        ),
+                        Span::styled(format!("{} ", i + 1), theme::faint()),
+                        Span::styled(
+                            sanitize(&step.summary),
+                            if on { theme::bright() } else { theme::muted() },
+                        ),
+                        Span::styled(format!("  ({})", step.kind.label()), theme::faint()),
+                    ]),
+                    Some(r),
+                ));
+                // What the step actually does, verbatim.
+                match &step.kind {
+                    StepKind::Scriptlet { script } => {
+                        for l in script.lines().flat_map(|l| wrap(&sanitize(l), body_w)) {
+                            body.push((
+                                Line::from(vec![
+                                    Span::styled("    │ ", theme::border_idle()),
+                                    Span::styled(l, theme::muted()),
+                                ]),
+                                None,
+                            ));
+                        }
+                    }
+                    StepKind::Upload { artifact } => {
+                        body.push((
+                            Line::from(vec![
+                                Span::styled("    │ ", theme::border_idle()),
+                                Span::styled(sanitize(artifact), theme::muted()),
+                                Span::styled(
+                                    format!(" → /tmp/openadmin-plan-{}/", sel.plan.id),
+                                    theme::faint(),
+                                ),
+                            ]),
+                            None,
+                        ));
+                    }
+                }
+            }
+            Row::Host(i, j) => {
+                let id = sel.plan.steps[i].hosts[j];
+                let name = app
+                    .hosts
+                    .iter()
+                    .find(|h| h.id == id)
+                    .map(|h| h.name.clone())
+                    .unwrap_or_else(|| format!("#{id} (gone)"));
+                let on = sel.host_on[i][j];
+                let active = sel.host_active(i, j);
+                body.push((
+                    Line::from(vec![
+                        Span::styled(if focused { "▸" } else { " " }, theme::proxied()),
+                        Span::styled("    ", theme::faint()),
+                        Span::styled(
+                            if on { "[x] " } else { "[ ] " },
+                            if active { theme::ok() } else { theme::faint() },
+                        ),
+                        Span::styled(
+                            name,
+                            if active {
+                                theme::body()
+                            } else {
+                                theme::faint()
+                            },
+                        ),
+                    ]),
+                    Some(r),
+                ));
+            }
+        }
+    }
+
+    // A plan the operator cannot read end to end is one they cannot judge, so
+    // the body scrolls rather than truncating. The window follows the cursor.
+    let header = lines.len();
+    let footer = 3; // blank + hint + buttons
+    let view = (inner.height as usize)
+        .saturating_sub(header + footer)
+        .max(1);
+    let cursor_line = body
+        .iter()
+        .position(|(_, r)| *r == Some(sel.cursor))
+        .unwrap_or(0);
+    let max_scroll = body.len().saturating_sub(view);
+    let mut scroll = sel.scroll.min(max_scroll);
+    if cursor_line < scroll {
+        scroll = cursor_line;
+    } else if cursor_line >= scroll + view {
+        scroll = cursor_line + 1 - view;
+    }
+    if let Some(s) = app.plan.as_mut() {
+        s.scroll = scroll;
+    }
+    let shown = body.len().saturating_sub(scroll).min(view);
+    for (k, (line, row)) in body.iter().skip(scroll).take(view).enumerate() {
+        let y = inner.y + (header + k) as u16;
+        // Hitboxes are registered only for rows actually on screen, so a click
+        // can never land on a step scrolled out of view.
+        if let Some(r) = row {
+            match rows[*r] {
+                Row::Step(i) => app.regions.clicks.push((
+                    Rect::new(inner.x, y, inner.width, 1),
+                    Click::ToggleStep(i as u16),
+                )),
+                Row::Host(i, j) => app.regions.clicks.push((
+                    Rect::new(inner.x, y, inner.width, 1),
+                    Click::ToggleHost(i as u16, j as u16),
+                )),
+            }
+        }
+        lines.push(line.clone());
+    }
+    let hidden = body.len() - scroll - shown;
+
+    lines.push(Line::default());
+    // Kept short enough to fit the dialog: a clipped hint helps nobody.
+    let mut hint = "↑↓ move · Space toggle · a/x all/none · ↵ run · Esc reject".to_string();
+    if hidden > 0 {
+        hint.push_str(&format!(" · ↓{hidden} more"));
+    }
+    lines.push(Line::styled(hint, theme::faint()));
+
+    // A dead button registers no hitbox, which is the cleanest way to make it
+    // dead — there is nothing to click.
+    let run_label = if runs == 0 {
+        " Nothing selected ".to_string()
+    } else {
+        format!(" Run {steps_on} step(s) on {runs} host(s) ")
+    };
+    let buttons: Vec<(String, ratatui::style::Style, Click)> = if runs == 0 {
+        vec![(
+            "[ Reject ]".to_string(),
+            theme::body(),
+            Click::Key(ratatui::crossterm::event::KeyCode::Esc),
+        )]
+    } else {
+        vec![
+            (
+                run_label.clone(),
+                theme::danger_btn(),
+                Click::Key(ratatui::crossterm::event::KeyCode::Enter),
+            ),
+            (
+                "[ Reject ]".to_string(),
+                theme::body(),
+                Click::Key(ratatui::crossterm::event::KeyCode::Esc),
+            ),
+        ]
+    };
+    if runs == 0 {
+        lines.push(Line::styled(run_label, theme::faint()).right_aligned());
+    }
+    let row = button_row(app, inner, lines.len() as u16, &buttons);
     lines.push(row);
 
     f.render_widget(Paragraph::new(lines), inner);

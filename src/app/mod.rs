@@ -5,17 +5,19 @@
 //! and a `Click` enum whose dominant variant synthesizes a key event so the
 //! mouse reuses the keyboard handlers verbatim.
 
+pub mod approve;
 pub mod chat;
 pub mod form;
 
 use crate::agent::plan::Plan;
-use crate::agent::{AgentCommand, AgentEvent, Stream, Worker};
+use crate::agent::{AgentCommand, AgentEvent, ExecStream, Stream, Worker};
 use crate::config::Config;
 use crate::db::DataBase;
 use crate::db::model::{HostRecord, mount_for};
 use crate::term::manager::TerminalManager;
 use crate::term::session::{Spawn, TermEvent};
 use crate::{keys, mount, mtab, ssh};
+use approve::{ConfirmedPlan, PlanSelection};
 use chat::{ChatState, PlanState};
 use form::{FormField, FormState};
 use ratatui::crossterm::event::{
@@ -62,6 +64,8 @@ impl Screen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
+    /// Reviewing a proposed plan. The only mode that can authorize execution.
+    ConfirmPlan,
     HostForm,
     ConfirmDelete,
     ShowKey,
@@ -99,6 +103,10 @@ impl Default for Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     Key(KeyCode),
+    /// Indices into the plan dialog. `Click` is `Copy`, so hitboxes carry
+    /// positions rather than owned data.
+    ToggleStep(u16),
+    ToggleHost(u16, u16),
     FocusField(FormField),
     CycleType(i32),
     GenKey,
@@ -147,6 +155,8 @@ pub struct AgentHandle {
     tx: Sender<AgentCommand>,
     /// Streamed text, drained on every `Delta`.
     stream: Arc<Stream>,
+    /// Execution output, drained on every `ExecLine`.
+    exec: Arc<ExecStream>,
     /// Raised to stop an in-flight turn; the worker polls it.
     cancel: Arc<AtomicBool>,
 }
@@ -175,6 +185,8 @@ pub struct App {
     /// automatically — a modal appearing under the fingers is how a reflexive
     /// Enter authorizes a fleet-wide run.
     pub pending_plan: Option<Plan>,
+    /// The plan dialog's state while `Mode::ConfirmPlan` is up.
+    pub plan: Option<PlanSelection>,
     pub term: TerminalManager,
 
     pub status: Status,
@@ -220,6 +232,7 @@ impl App {
             agent: None,
             agent_events,
             pending_plan: None,
+            plan: None,
             term: TerminalManager::new(),
             status: Status::default(),
             spinner_frame: 0,
@@ -259,12 +272,14 @@ impl App {
         };
         let (tx, rx) = channel();
         let stream = Arc::new(Stream::default());
+        let exec = Arc::new(ExecStream::default());
         let cancel = Arc::new(AtomicBool::new(false));
         let worker = Worker::new(
             Box::new(client),
             self.cfg.clone(),
             self.datadir.clone(),
             Arc::clone(&stream),
+            Arc::clone(&exec),
             Arc::clone(&cancel),
             self.agent_events.clone(),
         );
@@ -276,7 +291,12 @@ impl App {
             self.fail("could not start the agent worker");
             return;
         }
-        self.agent = Some(AgentHandle { tx, stream, cancel });
+        self.agent = Some(AgentHandle {
+            tx,
+            stream,
+            exec,
+            cancel,
+        });
     }
 
     /// Hand the composed message to the worker.
@@ -312,6 +332,28 @@ impl App {
         }
         self.busy = true;
         self.flash("Thinking…", StatusKind::Loading);
+    }
+
+    /// Hand a confirmed plan to the worker for execution.
+    fn start_execution(&mut self, plan: ConfirmedPlan) {
+        let Some(handle) = self.agent.as_ref() else {
+            self.fail("the agent worker has stopped");
+            return;
+        };
+        handle.cancel.store(false, Ordering::Release);
+        if handle
+            .tx
+            .send(AgentCommand::Execute {
+                plan,
+                hosts: self.hosts.clone(),
+            })
+            .is_err()
+        {
+            self.agent = None;
+            self.fail("the agent worker has stopped");
+            return;
+        }
+        self.busy = true;
     }
 
     /// Stop an in-flight turn. The worker notices between stream lines.
@@ -366,6 +408,53 @@ impl App {
                 });
                 self.pending_plan = Some(*plan);
                 self.flash("Plan proposed — nothing has run.", StatusKind::Warn);
+            }
+            AgentEvent::ExecStarted {
+                step,
+                host,
+                summary,
+            } => {
+                self.chat.finish_stream();
+                self.chat.turns.push(chat::Turn::Tool {
+                    name: format!("step {step}"),
+                    arg: format!("{host} · {summary}"),
+                    status: chat::ToolStatus::Running,
+                    out: Vec::new(),
+                });
+            }
+            AgentEvent::ExecLine => {
+                if let Some(h) = self.agent.as_ref() {
+                    let lines = h.exec.take();
+                    if let Some(chat::Turn::Tool { out, .. }) = self.chat.turns.last_mut() {
+                        out.extend(lines);
+                        // The transcript keeps a window, not the whole log; the
+                        // model's report keeps head and tail separately.
+                        let excess = out.len().saturating_sub(200);
+                        if excess > 0 {
+                            out.drain(..excess);
+                        }
+                    }
+                }
+            }
+            AgentEvent::ExecFinished { exit, timed_out } => {
+                if let Some(chat::Turn::Tool { status, out, .. }) = self.chat.turns.last_mut() {
+                    *status = if timed_out || exit != Some(0) {
+                        chat::ToolStatus::Fail
+                    } else if out.is_empty() {
+                        chat::ToolStatus::Empty
+                    } else {
+                        chat::ToolStatus::Ok
+                    };
+                    let note = if timed_out {
+                        "timed out".to_string()
+                    } else {
+                        match exit {
+                            Some(c) => format!("exit {c}"),
+                            None => "killed".to_string(),
+                        }
+                    };
+                    out.push(note);
+                }
             }
             AgentEvent::Done => {
                 self.chat.finish_stream();
@@ -796,6 +885,7 @@ impl App {
         }
         match self.mode {
             Mode::HostForm => self.key_host_form(key),
+            Mode::ConfirmPlan => self.key_confirm_plan(key),
             Mode::ConfirmDelete => self.key_confirm_delete(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
@@ -1044,11 +1134,11 @@ impl App {
                 9 => self.cycle_screen(),
                 _ => {}
             },
-            Screen::Chat => {
-                if n == 9 {
-                    self.cycle_screen();
-                }
-            }
+            Screen::Chat => match n {
+                2 => self.open_plan(),
+                9 => self.cycle_screen(),
+                _ => {}
+            },
         }
     }
 
@@ -1090,6 +1180,39 @@ impl App {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 form.type_char(c, &prefix);
+            }
+            _ => {}
+        }
+    }
+
+    fn key_confirm_plan(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => self.reject_plan(),
+            KeyCode::Enter => self.confirm_plan(),
+            KeyCode::Char(' ') => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.toggle_cursor();
+                }
+            }
+            KeyCode::Up => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.move_cursor(-1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.move_cursor(1);
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.set_all(true);
+                }
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.set_all(false);
+                }
             }
             _ => {}
         }
@@ -1321,6 +1444,16 @@ impl App {
             Click::CycleType(d) => {
                 if let Some(form) = self.form.as_mut() {
                     form.cycle_type(d);
+                }
+            }
+            Click::ToggleStep(i) => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.toggle_step(i as usize);
+                }
+            }
+            Click::ToggleHost(i, j) => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.toggle_host(i as usize, j as usize);
                 }
             }
             Click::GenKey => {
