@@ -1718,3 +1718,24 @@ fn a_new_proposal_shows_itself_even_after_the_last_was_hidden() {
     assert!(tick(&mut app), "the new one opens");
     assert_eq!(app.plan.as_ref().unwrap().plan.id, 2);
 }
+
+/// Every tool the model has goes over SSH, so an FTP entry is a name it could
+/// use for nothing. It never learns one exists.
+#[test]
+fn the_agent_is_shown_ssh_hosts_only() {
+    let (mut app, _rx) = test_app("agenthosts");
+    app.hosts.push(crate::db::model::HostRecord {
+        id: 99,
+        name: "files-01".into(),
+        proto: "ftp".into(),
+        addr: "10.0.9.9".into(),
+        port: 21,
+        ..Default::default()
+    });
+    let seen: Vec<String> = app.agent_hosts().into_iter().map(|h| h.name).collect();
+    assert!(!seen.is_empty(), "the ssh ones are still there");
+    assert!(
+        !seen.iter().any(|n| n == "files-01"),
+        "but not ftp: {seen:?}"
+    );
+}

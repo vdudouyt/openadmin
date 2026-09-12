@@ -308,6 +308,22 @@ impl App {
         });
     }
 
+    /// The hosts the agent is allowed to see and act on.
+    ///
+    /// SSH only: every tool the model has — reading a file, running a
+    /// scriptlet, uploading an artifact — goes over SSH, so an FTP entry is
+    /// something it could name but never use. Filtering here rather than in
+    /// each tool means `list_hosts`, `run_readonly` and plan resolution cannot
+    /// disagree about what exists: to the model, an FTP host simply is not a
+    /// host, and naming one gets the ordinary "unknown host" refusal.
+    pub(crate) fn agent_hosts(&self) -> Vec<HostRecord> {
+        self.hosts
+            .iter()
+            .filter(|h| h.proto.eq_ignore_ascii_case("ssh"))
+            .cloned()
+            .collect()
+    }
+
     /// Hand the composed message to the worker.
     fn send_chat(&mut self) {
         if self.busy {
@@ -331,7 +347,7 @@ impl App {
             .tx
             .send(AgentCommand::Send {
                 text,
-                hosts: self.hosts.clone(),
+                hosts: self.agent_hosts(),
             })
             .is_err()
         {
@@ -354,7 +370,7 @@ impl App {
             .tx
             .send(AgentCommand::Execute {
                 plan,
-                hosts: self.hosts.clone(),
+                hosts: self.agent_hosts(),
             })
             .is_err()
         {

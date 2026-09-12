@@ -11,48 +11,17 @@ use super::plan::{Plan, PlanRequest, resolve};
 use super::proto::ToolDef;
 use super::{artifacts, readonly};
 use crate::config::Config;
+// Note `HostRecord` is never serialised: it carries `pass` and `key_value`,
+// and a `derive(Serialize)` on it would put both on the wire the first time
+// anyone listed a host. Tools name their fields one at a time, or — as
+// `list_hosts` now does — send nothing but the name.
 use crate::db::model::HostRecord;
 use crate::ssh;
 use crate::ui::widgets::sanitize;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-
-/// What the model is told about a host.
-///
-/// Built field by field, and deliberately *not* a `Serialize` derive on
-/// `HostRecord`: that would put `pass` and `key_value` on the wire the first
-/// time anyone called `list_hosts`.
-#[derive(Debug, Serialize)]
-struct HostView<'a> {
-    name: &'a str,
-    proto: String,
-    addr: &'a str,
-    port: i64,
-    login: &'a str,
-    mount_point: &'a str,
-    mounted: bool,
-    /// Whether a key is installed — never the key, and never the passphrase.
-    has_key: bool,
-    is_proxy: bool,
-}
-
-impl<'a> From<&'a HostRecord> for HostView<'a> {
-    fn from(h: &'a HostRecord) -> Self {
-        HostView {
-            name: &h.name,
-            proto: h.proto.to_uppercase(),
-            addr: &h.addr,
-            port: h.port,
-            login: &h.login,
-            mount_point: &h.mount_point,
-            mounted: h.mounted,
-            has_key: !h.key_name.is_empty(),
-            is_proxy: h.proxy,
-        }
-    }
-}
 
 /// Everything a tool may touch. No executor, by construction.
 pub struct ToolCtx<'a> {
@@ -96,9 +65,13 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
     vec![
         ToolDef::function(
             LIST_HOSTS,
-            "List the machines this installation knows about. Returns a snapshot \
-             taken when the turn began; adding a host mid-turn will not appear here. \
-             Passwords are never returned.",
+            "List the machines this installation knows about, by name. A name is \
+             the only identifier you need: it is what every other tool takes, and \
+             OpenAdmin supplies the address, port, login and credentials itself. \
+             They are not available to you, and you do not need them — never ask \
+             the operator for them, and never write one into a script. The list is \
+             a snapshot taken when the turn began; a host added mid-turn will not \
+             appear.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
         ToolDef::function(
@@ -178,10 +151,21 @@ struct ReadonlyArgs {
 /// should see why and correct itself rather than the turn collapsing.
 pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
     match name {
+        // Names and nothing else. A name is the whole of what the model needs:
+        // it is the handle every other tool takes, and OpenAdmin fills in the
+        // address, port, login and credentials itself when it runs something.
+        // Anything more would be detail the model cannot use and an operator's
+        // infrastructure on somebody else's server.
         LIST_HOSTS => {
-            let views: Vec<HostView> = ctx.hosts.iter().map(HostView::from).collect();
+            let names: Vec<&str> = ctx.hosts.iter().map(|h| h.name.as_str()).collect();
+            if names.is_empty() {
+                return ToolOutcome::Text(
+                    "No hosts are configured. The operator adds them on the Hosts screen."
+                        .to_string(),
+                );
+            }
             ToolOutcome::Text(
-                serde_json::to_string_pretty(&views)
+                serde_json::to_string(&names)
                     .unwrap_or_else(|e| format!("could not list hosts: {e}")),
             )
         }
@@ -324,23 +308,40 @@ mod tests {
         }
     }
 
-    /// The single most important property of `list_hosts`.
+    /// The single most important property of `list_hosts`: a name is all it
+    /// gives, so there is no field a future edit could widen into a leak.
     #[test]
-    fn listing_hosts_never_leaks_a_secret() {
+    fn listing_hosts_gives_names_and_nothing_else() {
         let h = hosts();
         let cfg = Config::default();
         let cancel = AtomicBool::new(false);
         let out = dispatch(&ctx(&h, &cfg, Path::new("/tmp"), &cancel), LIST_HOSTS, "{}");
         let text = out.text();
-        assert!(text.contains("web-01"));
-        assert!(text.contains("10.0.4.11"));
-        assert!(text.contains("\"has_key\": true"));
-        assert!(!text.contains("hunter2"), "password leaked: {text}");
-        assert!(
-            !text.contains("passphrase"),
-            "key passphrase leaked: {text}"
+        assert_eq!(text, r#"["web-01","db-main"]"#, "{text}");
+        for secret in ["hunter2", "passphrase", "s3cret"] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        // Not secrets, but not the model's business either — and an address
+        // is the part that turns a transcript into somebody's inventory.
+        for detail in ["10.0.4.11", "10.0.8.3", "deploy", "postgres", "/net/"] {
+            assert!(!text.contains(detail), "{detail} leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn with_no_hosts_it_says_so_rather_than_returning_an_empty_list() {
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&[], &cfg, Path::new("/tmp"), &cancel),
+            LIST_HOSTS,
+            "{}",
         );
-        assert!(!text.contains("s3cret"), "password leaked: {text}");
+        assert!(
+            out.text().contains("No hosts are configured"),
+            "{}",
+            out.text()
+        );
     }
 
     #[test]

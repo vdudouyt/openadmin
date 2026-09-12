@@ -121,7 +121,7 @@ them can change anything:
 | | |
 |---|---|
 | `run_readonly` | one command on one host, no confirmation |
-| `list_hosts` | the known machines — never their passwords |
+| `list_hosts` | the known SSH machines, by name — never an address, login or password |
 | `list_artifacts` | files staged in `~/.openadmin/artifacts/` |
 | `propose_plan` | proposes changes; **executes nothing** |
 
