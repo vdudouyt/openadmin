@@ -5,6 +5,8 @@
 //! ids and no spinner state, while this one has the reverse — so neither is
 //! rebuilt from the other.
 
+use tui_input::Input;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Running is part of the vocabulary; no backend emits it yet.
 pub enum ToolStatus {
@@ -69,7 +71,9 @@ pub enum Turn {
 #[derive(Debug, Clone, Default)]
 pub struct ChatState {
     pub turns: Vec<Turn>,
-    pub draft: String,
+    /// The composer. An `Input` like the form fields, so the line the operator
+    /// is composing edits the same way as everything else.
+    pub draft: Input,
     /// Index of the assistant turn currently being streamed into, if any.
     pub streaming: Option<usize>,
     /// Lines scrolled up from the bottom. 0 pins to the newest, which is where
@@ -129,12 +133,12 @@ impl ChatState {
     /// Returns the text so the caller can hand it to the worker — the previous
     /// signature returned only `bool` and dropped it.
     pub fn take_draft(&mut self) -> Option<String> {
-        let text = self.draft.trim().to_string();
+        let text = self.draft.value().trim().to_string();
         if text.is_empty() {
             return None;
         }
         self.turns.push(Turn::User(text.clone()));
-        self.draft.clear();
+        self.draft.reset();
         self.scroll = 0;
         Some(text)
     }
@@ -211,10 +215,10 @@ mod tests {
     fn taking_the_draft_records_a_turn_and_yields_the_text() {
         let mut c = ChatState::seeded();
         let before = c.turns.len();
-        c.draft = "  restart it  ".into();
+        c.draft = Input::new("  restart it  ".into());
         assert_eq!(c.take_draft().as_deref(), Some("restart it"));
         assert_eq!(c.turns.len(), before + 1);
-        assert!(c.draft.is_empty());
+        assert!(c.draft.value().is_empty());
         match c.turns.last().unwrap() {
             Turn::User(t) => assert_eq!(t, "restart it"),
             _ => panic!("expected a user turn"),
@@ -225,7 +229,7 @@ mod tests {
     fn an_empty_draft_sends_nothing() {
         let mut c = ChatState::seeded();
         let before = c.turns.len();
-        c.draft = "   ".into();
+        c.draft = Input::new("   ".into());
         assert!(c.take_draft().is_none());
         assert_eq!(c.turns.len(), before);
     }

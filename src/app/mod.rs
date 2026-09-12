@@ -21,7 +21,7 @@ use approve::{ConfirmedPlan, PlanSelection};
 use chat::{ChatState, PlanState};
 use form::{FormField, FormState};
 use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
 use std::collections::HashSet;
@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
+use tui_input::backend::crossterm::to_input_request;
 
 /// How long a transient status message stays before reverting.
 const STATUS_REVERT: Duration = Duration::from_millis(3400);
@@ -1004,20 +1005,16 @@ impl App {
         match key.code {
             KeyCode::Enter => self.send_chat(),
             KeyCode::Esc if self.busy => self.cancel_agent(),
-            KeyCode::Esc => self.chat.draft.clear(),
+            KeyCode::Esc => self.chat.draft.reset(),
             KeyCode::PageUp => self.chat.scroll_by(10),
             KeyCode::PageDown => self.chat.scroll_by(-10),
-            KeyCode::Backspace => {
-                self.chat.draft.pop();
+            // Everything else is line editing: the composer is a text field
+            // like the ones in the dialogs, and behaves like one.
+            _ => {
+                if let Some(req) = to_input_request(&Event::Key(key)) {
+                    self.chat.draft.handle(req);
+                }
             }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.chat.draft.push(c);
-            }
-            _ => {}
         }
     }
 
@@ -1096,13 +1093,22 @@ impl App {
                 let bytes = crate::term::keys::encode_paste(text, bracketed);
                 self.write_terminal(&bytes);
             }
-            Screen::Chat if self.mode == Mode::Normal => self.chat.draft.push_str(text),
+            Screen::Chat if self.mode == Mode::Normal => {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    self.chat
+                        .draft
+                        .handle(tui_input::InputRequest::InsertChar(c));
+                }
+            }
             _ => {
                 if self.mode == Mode::HostForm {
                     let prefix = self.cfg.mount_prefix.clone();
                     if let Some(form) = self.form.as_mut() {
                         for c in text.chars().filter(|c| !c.is_control()) {
-                            form.type_char(c, &prefix);
+                            form.handle_key(
+                                KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()),
+                                &prefix,
+                            );
                         }
                     }
                 }
@@ -1197,17 +1203,14 @@ impl App {
         match key.code {
             KeyCode::Tab | KeyCode::Down => form.focus_next(),
             KeyCode::BackTab | KeyCode::Up => form.focus_prev(),
+            // The cycler owns the arrows only while it is the focused field.
+            // Everywhere else they move the caret, which is what a person
+            // pressing ← in a text field means by it.
             KeyCode::Left if form.focus == FormField::Type => form.cycle_type(-1),
             KeyCode::Right if form.focus == FormField::Type => form.cycle_type(1),
-            KeyCode::Backspace => form.backspace(&prefix),
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                form.type_char(c, &prefix);
+            _ => {
+                form.handle_key(key, &prefix);
             }
-            _ => {}
         }
     }
 
@@ -1526,7 +1529,7 @@ impl App {
                 let name = self
                     .form
                     .as_ref()
-                    .map(|f| f.name.clone())
+                    .map(|f| f.name.value().to_string())
                     .unwrap_or_default();
                 if name.trim().is_empty() {
                     self.fail("Name the host before generating a key.");

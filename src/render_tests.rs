@@ -1070,9 +1070,12 @@ fn chat_composer_accepts_typing() {
     for c in "restart api".chars() {
         key(&mut app, KeyCode::Char(c));
     }
-    assert_eq!(app.chat.draft, "restart api");
+    assert_eq!(app.chat.draft.value(), "restart api");
     key(&mut app, KeyCode::Esc);
-    assert!(app.chat.draft.is_empty(), "Esc clears the draft when idle");
+    assert!(
+        app.chat.draft.value().is_empty(),
+        "Esc clears the draft when idle"
+    );
 }
 
 /// With no model configured, Enter must say so and keep what was typed —
@@ -1094,7 +1097,7 @@ fn sending_without_a_model_warns_and_keeps_the_draft() {
         "{}",
         app.status.text
     );
-    assert_eq!(app.chat.draft, "hello", "the message is not lost");
+    assert_eq!(app.chat.draft.value(), "hello", "the message is not lost");
     assert!(app.chat.turns.is_empty(), "nothing was recorded");
     assert!(!app.busy);
 }
@@ -1104,13 +1107,13 @@ fn paste_routes_to_whatever_is_focused() {
     let (mut app, _rx) = test_app("paste");
     app.screen = Screen::Chat;
     app.on_paste("hello");
-    assert_eq!(app.chat.draft, "hello");
+    assert_eq!(app.chat.draft.value(), "hello");
 
     app.screen = Screen::Hosts;
     app.open_add();
     app.on_paste("web-99\n");
     assert_eq!(
-        app.form.as_ref().unwrap().name,
+        app.form.as_ref().unwrap().name.value(),
         "web-99",
         "control chars are dropped"
     );
@@ -1602,7 +1605,7 @@ fn a_waiting_plan_does_not_interrupt_a_half_typed_message() {
         "the card still offers it: {out}"
     );
 
-    app.chat.draft.clear();
+    app.chat.draft.reset();
     assert!(tick(&mut app), "and it appears once the draft is gone");
 }
 
@@ -1810,11 +1813,14 @@ fn form_inputs_are_orange_boxes_on_the_panel_background() {
 #[test]
 fn the_password_dialogs_use_the_same_boxes() {
     use crate::ui::dialogs::password_prompt;
+    use tui_input::Input;
+    let three = Input::new("•••".to_string());
+    let empty = Input::default();
     for (title, fields, err) in [
-        ("Unlock Database", &[("Password", "•••")][..], None),
+        ("Unlock Database", &[("Password", &three)][..], None),
         (
             "Create Database",
-            &[("New password", "•••"), ("Confirm", "")][..],
+            &[("New password", &three), ("Confirm", &empty)][..],
             Some("Passwords do not match."),
         ),
     ] {
@@ -1853,4 +1859,37 @@ fn the_password_dialogs_use_the_same_boxes() {
             "no wells here either"
         );
     }
+}
+
+/// The composer is a text field like the ones in the dialogs, and edits like
+/// one: it used to be append-and-backspace only.
+#[test]
+fn the_composer_edits_like_a_line_not_a_stack() {
+    let (mut app, _rx) = test_app("composer-edit");
+    app.screen = Screen::Chat;
+    for c in "restart nginx".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Home);
+    for c in "please ".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.chat.draft.value(), "please restart nginx");
+
+    key(&mut app, KeyCode::End);
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.chat.draft.value(), "please restart ngin");
+
+    // And the caret is drawn where it is, not parked at the end.
+    key(&mut app, KeyCode::Home);
+    let buf = render_buf(&mut app, 80, 20);
+    let caret = (0..buf.area.height)
+        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+        .find(|&(x, y)| buf[(x, y)].bg == crate::ui::theme::ORANGE_BRIGHT);
+    let (cx, cy) = caret.expect("a caret cell is drawn");
+    assert_eq!(
+        buf[(cx, cy)].symbol(),
+        "p",
+        "the caret sits on the first character, not after the last"
+    );
 }

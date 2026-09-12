@@ -15,6 +15,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use tui_input::Input;
 
 fn modal_block(title: &str) -> Block<'static> {
     Block::bordered()
@@ -110,7 +111,7 @@ fn input_box(
     f: &mut Frame,
     area: Rect,
     label: &str,
-    value: &str,
+    input: &Input,
     focused: bool,
     placeholder: &str,
 ) {
@@ -120,22 +121,35 @@ fn input_box(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if value.is_empty() && !focused {
-        spans.push(Span::styled(placeholder.to_string(), theme::faint()));
-    } else {
-        // A value longer than the box shows its tail: that is where the typing
-        // is, and a cursor scrolled off the right edge is a cursor nobody can
-        // follow.
-        let room = inner.width as usize - usize::from(focused);
-        let len = value.chars().count();
-        let shown: String = value.chars().skip(len.saturating_sub(room)).collect();
-        spans.push(Span::styled(shown, theme::body()));
+    if input.value().is_empty() && !focused {
+        f.render_widget(
+            Paragraph::new(Line::styled(placeholder.to_string(), theme::faint())),
+            inner,
+        );
+        return;
     }
-    if focused {
-        spans.push(Span::styled("█", Style::new().fg(theme::ORANGE_BRIGHT)));
+    // A value wider than the box scrolls, and the caret is what it follows;
+    // one column is kept for the caret itself so it is never flush against the
+    // border with nothing under it. Both numbers come from `tui-input`, in
+    // display columns, so a double-width character does not slide the caret
+    // away from the text it points at.
+    let scroll = input.visual_scroll(inner.width.saturating_sub(1) as usize);
+    f.render_widget(
+        Paragraph::new(Line::styled(input.value().to_string(), theme::body()))
+            .scroll((0, scroll as u16)),
+        inner,
+    );
+    if !focused {
+        return;
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    // The caret is a reversed cell rather than a block glyph, so the character
+    // under it stays readable — which is what tells you whether Delete is
+    // about to take the one you meant.
+    let col = input.visual_cursor().saturating_sub(scroll) as u16;
+    if col < inner.width {
+        f.buffer_mut()[(inner.x + col, inner.y)]
+            .set_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
+    }
 }
 
 /// The protocol cycler wears the same box, so a row of controls reads as a row
@@ -194,9 +208,10 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let auto_mount = app.auto_mount_for(&form.name);
+    // While the mount point is automatic the field shows what the name would
+    // generate; the caret still belongs to the field's own input.
     let mount_shown = if form.mount_auto {
-        auto_mount
+        Input::new(app.auto_mount_for(form.name.value())).with_cursor(form.mount.cursor())
     } else {
         form.mount.clone()
     };
@@ -302,7 +317,11 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             app.regions
                 .clicks
                 .push((pass, Click::FocusField(FormField::Pass)));
-            let masked = "•".repeat(form.pass.chars().count());
+            // Bullets, one per character, with the caret where it really is:
+            // moving through a password you cannot see is the case that needs
+            // a caret most.
+            let masked = Input::new("•".repeat(form.pass.value().chars().count()))
+                .with_cursor(form.pass.cursor());
             input_box(
                 f,
                 pass,
@@ -828,7 +847,7 @@ pub fn alert(f: &mut Frame, msg: &str) {
 pub fn password_prompt(
     f: &mut Frame,
     title: &str,
-    fields: &[(&str, &str)],
+    fields: &[(&str, &Input)],
     focus: usize,
     error: Option<&str>,
     hint: &str,
@@ -903,7 +922,7 @@ mod tests {
                 f,
                 Rect::new(0, 0, 30, 3),
                 "Mount point · auto",
-                "/net/web-01",
+                &Input::new("/net/web-01".to_string()),
                 true,
                 "",
             )

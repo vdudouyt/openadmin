@@ -34,6 +34,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use term::session::TermEvent;
+use tui_input::Input;
+use tui_input::backend::crossterm::to_input_request;
 
 /// Everything the event loop can wake on.
 enum AppEvent {
@@ -274,6 +276,13 @@ fn is_hard_quit(k: &KeyEvent, app: &App) -> bool {
 /// Pre-loop bootstrap: unlock an existing database, or create a new one. Runs
 /// its own miniature event loop before `App` exists, the same shape as cfdns's
 /// token setup (`/root/cfdns/src/main.rs:49-91`).
+/// A password as the dialog shows it: one bullet per character, carrying the
+/// real caret so it lands between the same two characters it would in the
+/// value itself.
+fn mask(input: &Input) -> Input {
+    Input::new("•".repeat(input.value().chars().count())).with_cursor(input.cursor())
+}
+
 fn unlock(
     terminal: &mut DefaultTerminal,
     db: &mut DataBase,
@@ -290,15 +299,18 @@ fn unlock(
         return Ok(true);
     }
 
-    let mut first = String::new();
-    let mut confirm = String::new();
+    let mut first = Input::default();
+    let mut confirm = Input::default();
     let mut focus = 0usize;
     let mut error: Option<String> = None;
 
     loop {
         terminal.draw(|f| {
-            let masked_first = "•".repeat(first.chars().count());
-            let masked_confirm = "•".repeat(confirm.chars().count());
+            // What is shown is bullets, but the caret is the real one: moving
+            // through a password you cannot read is the case that needs it
+            // most. One bullet per character keeps the two in step.
+            let masked_first = mask(&first);
+            let masked_confirm = mask(&confirm);
             if creating {
                 ui::dialogs::password_prompt(
                     f,
@@ -334,36 +346,32 @@ fn unlock(
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
             KeyCode::Tab | KeyCode::Down if creating => focus = (focus + 1) % 2,
             KeyCode::BackTab | KeyCode::Up if creating => focus = (focus + 1) % 2,
-            KeyCode::Backspace => {
+            // Everything else is line editing, so these fields navigate like
+            // any other: arrows, Home/End, word motions, the readline kills.
+            _ if to_input_request(&Event::Key(k)).is_some() => {
+                let req = to_input_request(&Event::Key(k)).expect("just checked");
                 if focus == 0 {
-                    first.pop();
+                    first.handle(req);
                 } else {
-                    confirm.pop();
-                }
-            }
-            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
-                if focus == 0 {
-                    first.push(c);
-                } else {
-                    confirm.push(c);
+                    confirm.handle(req);
                 }
             }
             KeyCode::Enter => {
                 if creating {
                     // Same rules as qhostman's CreateDatabaseDialog.
-                    if first.chars().count() < 6 {
+                    if first.value().chars().count() < 6 {
                         error = Some("Password must be at least 6 characters.".into());
-                    } else if first != confirm {
+                    } else if first.value() != confirm.value() {
                         error = Some("The passwords do not match.".into());
                     } else {
-                        db.create(&first)?;
+                        db.create(first.value())?;
                         return Ok(true);
                     }
-                } else if db.open(&first)? {
+                } else if db.open(first.value())? {
                     return Ok(true);
                 } else {
                     error = Some("Wrong password.".into());
-                    first.clear();
+                    first.reset();
                 }
             }
             _ => {}

@@ -179,23 +179,52 @@ fn render_composer(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    const PROMPT: u16 = 2;
     let mut spans = vec![Span::styled(
         "» ",
         theme::proxied().add_modifier(Modifier::BOLD),
     )];
-    if app.busy && app.chat.draft.is_empty() {
+    if app.busy && app.chat.draft.value().is_empty() {
         spans.push(Span::styled("working… ^C to stop", theme::proxied()));
         f.render_widget(Paragraph::new(Line::from(spans)), inner);
         return;
     }
-    if app.chat.draft.is_empty() {
+    if app.chat.draft.value().is_empty() {
         spans.push(Span::styled(
             "ask the agent to inspect or change a host…",
             theme::faint(),
         ));
+        f.render_widget(Paragraph::new(Line::from(spans)), inner);
     } else {
-        spans.push(Span::styled(app.chat.draft.clone(), theme::body()));
+        f.render_widget(Paragraph::new(Line::from(spans)), inner);
+        // The draft is drawn in its own area, right of the prompt, so the
+        // scroll `tui-input` computes is measured against the width the text
+        // actually has.
+        let field = Rect::new(
+            inner.x + PROMPT,
+            inner.y,
+            inner.width.saturating_sub(PROMPT),
+            1,
+        );
+        if field.width == 0 {
+            return;
+        }
+        let scroll = app
+            .chat
+            .draft
+            .visual_scroll(field.width.saturating_sub(1) as usize);
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                app.chat.draft.value().to_string(),
+                theme::body(),
+            ))
+            .scroll((0, scroll as u16)),
+            field,
+        );
+        let col = app.chat.draft.visual_cursor().saturating_sub(scroll) as u16;
+        if col < field.width {
+            f.buffer_mut()[(field.x + col, field.y)]
+                .set_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
+        }
     }
-    spans.push(Span::styled("█", theme::proxied()));
-    f.render_widget(Paragraph::new(Line::from(spans)), inner);
 }

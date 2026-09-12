@@ -6,6 +6,9 @@
 //! open.
 
 use crate::db::model::{HOST_TYPES, HostRecord, default_port, mount_for};
+use ratatui::crossterm::event::{Event, KeyEvent};
+use tui_input::Input;
+use tui_input::backend::crossterm::to_input_request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
@@ -33,16 +36,20 @@ pub const FORM_FIELDS: [FormField; 7] = [
 pub struct FormState {
     /// 0 for a new host; the existing row id when editing.
     pub id: i64,
-    pub name: String,
+    /// The editable fields are `tui_input::Input` rather than `String`: each
+    /// carries its own caret and steps by *grapheme*, so `é` written as `e`
+    /// plus a combining accent moves and deletes as the one character a
+    /// person sees. Read them with `.value()`.
+    pub name: Input,
     pub proto: String,
-    pub addr: String,
-    pub port: String,
-    pub mount: String,
+    pub addr: Input,
+    pub port: Input,
+    pub mount: Input,
     /// While true the mount point tracks the host name. Cleared the moment the
     /// user types in the mount field, restored when they empty it.
     pub mount_auto: bool,
-    pub login: String,
-    pub pass: String,
+    pub login: Input,
+    pub pass: Input,
     pub key_name: String,
     pub key_value: String,
     pub proxy: bool,
@@ -54,14 +61,14 @@ impl FormState {
         let _ = mount_prefix;
         FormState {
             id: 0,
-            name: String::new(),
+            name: Input::default(),
             proto: HOST_TYPES[0].to_string(),
-            addr: String::new(),
-            port: default_port(HOST_TYPES[0]).to_string(),
-            mount: String::new(),
+            addr: Input::default(),
+            port: Input::new(default_port(HOST_TYPES[0]).to_string()),
+            mount: Input::default(),
             mount_auto: true,
-            login: String::new(),
-            pass: String::new(),
+            login: Input::default(),
+            pass: Input::default(),
             key_name: String::new(),
             key_value: String::new(),
             proxy: false,
@@ -76,14 +83,16 @@ impl FormState {
             rec.mount_point.is_empty() || rec.mount_point == mount_for(mount_prefix, &rec.name);
         FormState {
             id: rec.id,
-            name: rec.name.clone(),
+            // `Input::new` parks each caret after the value, so editing a host
+            // continues a field rather than typing in front of it.
+            name: Input::new(rec.name.clone()),
             proto: rec.proto.to_ascii_uppercase(),
-            addr: rec.addr.clone(),
-            port: rec.port.to_string(),
-            mount: rec.mount_point.clone(),
+            addr: Input::new(rec.addr.clone()),
+            port: Input::new(rec.port.to_string()),
+            mount: Input::new(rec.mount_point.clone()),
             mount_auto: auto,
-            login: rec.login.clone(),
-            pass: rec.pass.clone(),
+            login: Input::new(rec.login.clone()),
+            pass: Input::new(rec.pass.clone()),
             key_name: rec.key_name.clone(),
             key_value: rec.key_value.clone(),
             proxy: rec.proxy,
@@ -127,86 +136,88 @@ impl FormState {
         let n = HOST_TYPES.len() as i32;
         let old_default = default_port(&self.proto).to_string();
         self.proto = HOST_TYPES[(i + dir).rem_euclid(n) as usize].to_string();
-        if self.port.is_empty() || self.port == old_default {
-            self.port = default_port(&self.proto).to_string();
+        if self.port.value().is_empty() || self.port.value() == old_default {
+            self.port = Input::new(default_port(&self.proto).to_string());
         }
     }
 
     /// The mount point shown for the current name, honoring the override latch.
     pub fn effective_mount(&self, prefix: &str) -> String {
         if self.mount_auto {
-            mount_for(prefix, &self.name)
+            mount_for(prefix, self.name.value())
         } else {
-            self.mount.clone()
+            self.mount.value().to_string()
         }
     }
 
-    pub fn type_char(&mut self, c: char, prefix: &str) {
-        match self.focus {
-            FormField::Name => {
-                self.name.push(c);
-                self.sync_mount(prefix);
-            }
-            FormField::Type => {}
-            FormField::Addr => self.addr.push(c),
-            // The port field only accepts digits.
-            FormField::Port => {
-                if c.is_ascii_digit() {
-                    self.port.push(c);
-                }
-            }
-            FormField::Mount => {
-                self.mount.push(c);
-                self.mount_auto = false;
-            }
-            FormField::Login => self.login.push(c),
-            FormField::Pass => self.pass.push(c),
+    /// Feed a keystroke to the focused field.
+    ///
+    /// `tui-input` owns the editing vocabulary — arrows, Home/End, word
+    /// motions, the readline kills — so this only adds the two rules that are
+    /// this form's own: the port takes digits, and the mount point follows the
+    /// host name for exactly as long as it is empty.
+    ///
+    /// Returns whether the key was consumed, so the caller can tell a field
+    /// edit from a key the dialog should handle.
+    pub fn handle_key(&mut self, key: KeyEvent, prefix: &str) -> bool {
+        let Some(req) = to_input_request(&Event::Key(key)) else {
+            return false;
+        };
+        // A non-digit typed into the port is not an error, it is a key this
+        // field has no use for.
+        if self.focus == FormField::Port
+            && let tui_input::InputRequest::InsertChar(c) = req
+            && !c.is_ascii_digit()
+        {
+            return true;
         }
+        let focus = self.focus;
+        let Some(field) = self.field_mut() else {
+            return false;
+        };
+        let changed = field.handle(req).is_some_and(|s| s.value);
+        if changed {
+            match focus {
+                FormField::Name => self.sync_mount(prefix),
+                // Emptying the field hands control back to the host name, by
+                // any route: Backspace, ^U, or a word kill that took the last
+                // of it.
+                FormField::Mount => self.mount_auto = self.mount.value().trim().is_empty(),
+                _ => {}
+            }
+        }
+        true
     }
 
-    pub fn backspace(&mut self, prefix: &str) {
-        match self.focus {
-            FormField::Name => {
-                self.name.pop();
-                self.sync_mount(prefix);
-            }
-            FormField::Type => {}
-            FormField::Addr => {
-                self.addr.pop();
-            }
-            FormField::Port => {
-                self.port.pop();
-            }
-            FormField::Mount => {
-                self.mount.pop();
-                // Emptying the field hands control back to the host name. The
-                // buffer stays empty; `effective_mount` supplies the display,
-                // so further backspaces cannot chew into the automatic value.
-                self.mount_auto = self.mount.trim().is_empty();
-            }
-            FormField::Login => {
-                self.login.pop();
-            }
-            FormField::Pass => {
-                self.pass.pop();
-            }
-        }
+    /// The focused field, or `None` on the protocol cycler, which is not text.
+    fn field_mut(&mut self) -> Option<&mut Input> {
+        Some(match self.focus {
+            FormField::Name => &mut self.name,
+            FormField::Type => return None,
+            FormField::Addr => &mut self.addr,
+            FormField::Port => &mut self.port,
+            FormField::Mount => &mut self.mount,
+            FormField::Login => &mut self.login,
+            FormField::Pass => &mut self.pass,
+        })
     }
 
     fn sync_mount(&mut self, prefix: &str) {
         if self.mount_auto {
-            self.mount = mount_for(prefix, &self.name);
+            // Keep the caret at the end: the operator is typing the *name*,
+            // and this field is following along behind them.
+            self.mount = Input::new(mount_for(prefix, self.name.value()));
         }
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() {
+        if self.name.value().trim().is_empty() {
             return Err("Host name is required.".to_string());
         }
-        if self.addr.trim().is_empty() {
+        if self.addr.value().trim().is_empty() {
             return Err("Address is required.".to_string());
         }
-        if !self.port.is_empty() && self.port.parse::<u16>().is_err() {
+        if !self.port.value().is_empty() && self.port.value().parse::<u16>().is_err() {
             return Err("Port must be a number between 0 and 65535.".to_string());
         }
         Ok(())
@@ -216,24 +227,25 @@ impl FormState {
         let mount = {
             let m = self.effective_mount(prefix);
             if m.trim().is_empty() {
-                mount_for(prefix, &self.name)
+                mount_for(prefix, self.name.value())
             } else {
                 m
             }
         };
         HostRecord {
             id: self.id,
-            name: self.name.trim().to_string(),
+            name: self.name.value().trim().to_string(),
             // qhostman stores the protocol lowercased and displays it upper.
             proto: self.proto.to_lowercase(),
-            addr: self.addr.trim().to_string(),
+            addr: self.addr.value().trim().to_string(),
             mount_point: mount,
             port: self
                 .port
+                .value()
                 .parse::<i64>()
                 .unwrap_or_else(|_| default_port(&self.proto)),
-            login: self.login.clone(),
-            pass: self.pass.clone(),
+            login: self.login.value().to_string(),
+            pass: self.pass.value().to_string(),
             key_name: self.key_name.clone(),
             key_value: self.key_value.clone(),
             proxy: self.proxy,
@@ -245,10 +257,15 @@ impl FormState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    fn press(f: &mut FormState, code: KeyCode) {
+        f.handle_key(KeyEvent::new(code, KeyModifiers::empty()), "/net");
+    }
 
     fn typed(f: &mut FormState, s: &str) {
         for c in s.chars() {
-            f.type_char(c, "/net");
+            press(f, KeyCode::Char(c));
         }
     }
 
@@ -256,18 +273,18 @@ mod tests {
     fn mount_point_follows_the_name_until_overridden() {
         let mut f = FormState::new("/net");
         typed(&mut f, "web-01");
-        assert_eq!(f.mount, "/net/web-01");
+        assert_eq!(f.mount.value(), "/net/web-01");
 
         // Typing in the mount field latches the override off.
         f.focus = FormField::Mount;
         typed(&mut f, "!");
         assert!(!f.mount_auto);
-        let overridden = f.mount.clone();
+        let overridden = f.mount.value().to_string();
 
         // Further name edits no longer move it.
         f.focus = FormField::Name;
         typed(&mut f, "x");
-        assert_eq!(f.mount, overridden);
+        assert_eq!(f.mount.value(), overridden);
         assert_eq!(f.effective_mount("/net"), overridden);
     }
 
@@ -280,12 +297,12 @@ mod tests {
         assert!(!f.mount_auto);
         // Delete back through the override.
         for _ in 0..40 {
-            f.backspace("/net");
+            press(&mut f, KeyCode::Backspace);
         }
         assert!(f.mount_auto, "an emptied mount field goes back to auto");
         assert_eq!(f.effective_mount("/net"), "/net/nas");
         // Backspacing past empty must not start eating the automatic value.
-        f.backspace("/net");
+        press(&mut f, KeyCode::Backspace);
         assert_eq!(f.effective_mount("/net"), "/net/nas");
     }
 
@@ -312,26 +329,96 @@ mod tests {
     fn cycling_type_swaps_the_default_port_but_keeps_a_custom_one() {
         let mut f = FormState::new("/net");
         assert_eq!(f.proto, "SSH");
-        assert_eq!(f.port, "22");
+        assert_eq!(f.port.value(), "22");
         f.cycle_type(1);
         assert_eq!(f.proto, "FTP");
-        assert_eq!(f.port, "21");
+        assert_eq!(f.port.value(), "21");
         f.cycle_type(-1);
         assert_eq!(f.proto, "SSH");
-        assert_eq!(f.port, "22");
+        assert_eq!(f.port.value(), "22");
 
-        f.port = "2222".to_string();
+        f.port = Input::new("2222".to_string());
         f.cycle_type(1);
-        assert_eq!(f.port, "2222", "a hand-typed port survives a type change");
+        assert_eq!(
+            f.port.value(),
+            "2222",
+            "a hand-typed port survives a type change"
+        );
     }
 
     #[test]
     fn the_port_field_rejects_non_digits() {
         let mut f = FormState::new("/net");
         f.focus = FormField::Port;
-        f.port.clear();
+        f.port.reset();
         typed(&mut f, "2a2!2");
-        assert_eq!(f.port, "222");
+        assert_eq!(f.port.value(), "222");
+    }
+
+    fn ctrl(f: &mut FormState, c: char) {
+        f.handle_key(
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            "/net",
+        );
+    }
+
+    /// The fields were append-only: typing appended, Backspace took the last
+    /// character, and nothing reached the middle of a value. Fixing the third
+    /// character of an address meant deleting everything after it.
+    #[test]
+    fn a_field_can_be_edited_anywhere_not_just_at_the_end() {
+        let mut f = FormState::new("/net");
+        f.focus = FormField::Addr;
+        typed(&mut f, "10.0.0.1");
+
+        press(&mut f, KeyCode::Home);
+        typed(&mut f, "  ");
+        assert_eq!(f.addr.value(), "  10.0.0.1", "Home reaches the front");
+
+        press(&mut f, KeyCode::End);
+        press(&mut f, KeyCode::Left);
+        press(&mut f, KeyCode::Backspace);
+        assert_eq!(
+            f.addr.value(),
+            "  10.0.01",
+            "and the caret deletes beside it"
+        );
+
+        ctrl(&mut f, 'a');
+        press(&mut f, KeyCode::Delete);
+        press(&mut f, KeyCode::Delete);
+        assert_eq!(f.addr.value(), "10.0.01", "^A and Delete work too");
+
+        ctrl(&mut f, 'k');
+        assert_eq!(f.addr.value(), "", "^K cuts to the end");
+    }
+
+    /// The rules that predate line editing hold for every way of changing the
+    /// text, not just for typing at the end.
+    #[test]
+    fn the_field_rules_survive_caret_editing() {
+        let mut f = FormState::new("/net");
+        f.focus = FormField::Port;
+        f.port.reset();
+        typed(&mut f, "2222");
+        press(&mut f, KeyCode::Home);
+        typed(&mut f, "x9");
+        assert_eq!(
+            f.port.value(),
+            "92222",
+            "a non-digit is refused mid-value too"
+        );
+
+        // The mount latch releases however the field is emptied, including by
+        // a word kill rather than a run of backspaces.
+        let mut f = FormState::new("/net");
+        typed(&mut f, "nas");
+        f.focus = FormField::Mount;
+        typed(&mut f, "Z");
+        assert!(!f.mount_auto);
+        ctrl(&mut f, 'u');
+        assert!(f.mount_auto, "^U to empty hands it back to the host name");
+        assert_eq!(f.effective_mount("/net"), "/net/nas");
     }
 
     #[test]
@@ -354,7 +441,7 @@ mod tests {
         typed(&mut f, "10.0.0.1");
         assert!(f.validate().is_ok());
 
-        f.port = "99999".to_string();
+        f.port = Input::new("99999".to_string());
         assert!(f.validate().is_err(), "a port outside u16 is rejected");
     }
 
