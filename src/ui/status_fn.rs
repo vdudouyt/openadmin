@@ -30,8 +30,10 @@ pub fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Screen::Shells => {
             let n = app.term.tab_count();
             let s = format!("{n} shell{} open", if n == 1 { "" } else { "s" });
+            // With no function bar here, this line is the only place that can
+            // point at the way out of a focused pane.
             if app.term.focused_session().is_some() {
-                format!("{s} · all keys go to the terminal · click to act")
+                format!("{s} · keys go to the terminal · click 1/2/3 above")
             } else {
                 s
             }

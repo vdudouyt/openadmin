@@ -126,6 +126,9 @@ impl Regions {
     /// Cleared at the top of every frame; the renderers refill it.
     pub fn clear(&mut self) {
         self.screen_tabs.clear();
+        // u16::MAX is off-screen, so a screen that draws no function bar
+        // cannot inherit the previous one's row.
+        self.fn_bar_y = u16::MAX;
         self.fkeys.clear();
         self.genkeys.clear();
         self.shell_tabs.clear();

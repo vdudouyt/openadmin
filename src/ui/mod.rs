@@ -23,17 +23,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.regions.clear();
 
     // A terminal too small for the chrome gets the body and nothing else.
-    if area.height < 8 || area.width < 30 {
+    if area.height < 6 || area.width < 30 {
         screens::shells::render(f, area, app);
         return;
     }
 
-    let [_pad, header_a, body_a, status_a, fn_a] = Layout::vertical([
+    // The Shells screen drops the function bar entirely: its keys all belong
+    // to the terminal anyway, so the row was costing a line of somebody's
+    // shell to advertise nothing. The header tabs remain the mouse route out.
+    let footer = if app.screen == Screen::Shells { 0 } else { 1 };
+    let [header_a, body_a, status_a, fn_a] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(footer),
     ])
     .areas(area);
 
@@ -44,7 +47,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Chat => screens::chat::render(f, body_a, app),
     }
     status_fn::render_status(f, status_a, app);
-    status_fn::render_function_bar(f, fn_a, app);
+    if footer > 0 {
+        status_fn::render_function_bar(f, fn_a, app);
+    }
 
     match app.mode {
         Mode::HostForm => dialogs::host_form(f, app),

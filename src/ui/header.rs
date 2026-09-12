@@ -1,42 +1,49 @@
-//! Header band: brand mark + wordmark on the left, numbered screen tabs right,
-//! then a full-width rule (`design/ui_kits/openadmin/AppChrome.jsx:10-37`).
+//! Header band: brand mark and wordmark on the left, numbered screen tabs on
+//! the right — all on a single row, so the chrome costs as little of the
+//! terminal as possible.
+//!
+//! The design's mark is a solid orange block two rows tall
+//! (`design/assets/cloudflare-ascii-logo.txt`); at this height it is the same
+//! honest primitive drawn once.
 
 use crate::app::{App, Screen};
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
-    let [top, divider] =
-        Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(area);
+    // Draw the tabs first: they own the right edge, and how much room they
+    // leave decides how much of the brand fits.
+    let used = render_tabs(f, area, app);
+    let room = area.width.saturating_sub(used);
 
-    let brand = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("▟███▙ ", theme::proxied()),
+    // Shed the wordmark whole rather than truncating it mid-word; the mark
+    // alone still reads as the brand.
+    let brand: Vec<Span> = if room >= 14 {
+        vec![
+            Span::styled("███ ", theme::proxied()),
             Span::styled("OpenAdmin", theme::bright().add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled("▜███▛ ", theme::proxied()),
-            Span::styled("remote hosts · shells · agent", theme::muted()),
-        ]),
-    ]);
-    f.render_widget(brand, top);
-
-    render_tags(f, top, app);
-
-    let rule = "─".repeat(area.width as usize);
-    f.render_widget(
-        Paragraph::new(Line::styled(rule, theme::border_idle())),
-        divider,
-    );
+        ]
+    } else if room >= 3 {
+        vec![Span::styled("███", theme::proxied())]
+    } else {
+        Vec::new()
+    };
+    if !brand.is_empty() {
+        // Clip to the room the tabs left: a Paragraph pads its whole area, so
+        // drawing into `area` here would blank the strip we just rendered.
+        let brand_area = Rect::new(area.x, area.y, room, area.height);
+        f.render_widget(Paragraph::new(Line::from(brand)), brand_area);
+    }
 }
 
-/// The `1 Hosts  2 Shells  3 Chat` strip, right-aligned on the header's second
-/// row, with each tab registering its own hitbox.
-fn render_tags(f: &mut Frame, top: Rect, app: &mut App) {
+/// The `1 Hosts  2 Shells  3 Chat` strip, right-aligned, each tab registering
+/// its own hitbox. On the Shells screen these are the way back out of a
+/// focused terminal, so they must always be reachable.
+fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
     let counts = [
         Some(app.hosts.len()),
         Some(app.term.tab_count()),
@@ -44,31 +51,52 @@ fn render_tags(f: &mut Frame, top: Rect, app: &mut App) {
     ];
 
     // Measure first so the strip can be right-aligned and hit-tested exactly.
-    let mut widths = Vec::new();
-    for (i, s) in Screen::ALL.iter().enumerate() {
-        let mut w = 1 + 1 + s.label().chars().count(); // "1 Hosts"
-        if let Some(n) = counts[i] {
-            w += 1 + n.to_string().chars().count();
-        }
-        widths.push(w as u16 + 2); // one space of padding each side
-    }
-    let total: u16 = widths.iter().sum::<u16>() + 2 * (widths.len() as u16 - 1);
-    if total >= top.width {
-        return;
-    }
+    let measure = |labels: bool| -> Vec<u16> {
+        Screen::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                // A leading space and the digit, then optionally the label and
+                // its count, then a trailing space.
+                let mut w = 2usize;
+                if labels {
+                    w += 1 + s.label().chars().count();
+                    if let Some(n) = counts[i] {
+                        w += 1 + n.to_string().chars().count();
+                    }
+                }
+                w as u16 + 1
+            })
+            .collect()
+    };
+    let span =
+        |widths: &[u16]| -> u16 { widths.iter().sum::<u16>() + 2 * (widths.len() as u16 - 1) };
 
-    let mut x = top.x + top.width - total;
-    let y = top.y + 1;
+    // These tabs are the only mouse route off a focused pane, now that the
+    // Shells screen draws no function bar — so when the full strip will not
+    // fit, shed the labels rather than the tabs themselves.
+    let mut widths = measure(true);
+    let mut labels = true;
+    if span(&widths) > area.width {
+        widths = measure(false);
+        labels = false;
+        if span(&widths) > area.width {
+            return 0;
+        }
+    }
+    let total = span(&widths);
+
+    let mut x = area.x + area.width - total;
+    let y = area.y;
     let mut spans: Vec<Span> = Vec::new();
     for (i, s) in Screen::ALL.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
+        let rect = Rect::new(x, y, widths[i], 1);
         let active = app.screen == *s;
-        app.regions
-            .screen_tabs
-            .push((Rect::new(x, y, widths[i], 1), *s));
-        let hovered = app.is_hovered(Rect::new(x, y, widths[i], 1));
+        app.regions.screen_tabs.push((rect, *s));
+        let hovered = app.is_hovered(rect);
 
         let (num_style, lab_style) = if active {
             (theme::primary_btn(), theme::primary_btn())
@@ -78,17 +106,19 @@ fn render_tags(f: &mut Frame, top: Rect, app: &mut App) {
             (theme::proxied(), theme::muted())
         };
         spans.push(Span::styled(format!(" {}", i + 1), num_style));
-        spans.push(Span::styled(format!(" {}", s.label()), lab_style));
-        if let Some(n) = counts[i] {
-            spans.push(Span::styled(
-                format!(" {n}"),
-                lab_style.patch(theme::faint()),
-            ));
+        if labels {
+            spans.push(Span::styled(format!(" {}", s.label()), lab_style));
+            if let Some(n) = counts[i] {
+                spans.push(Span::styled(
+                    format!(" {n}"),
+                    lab_style.patch(theme::faint()),
+                ));
+            }
         }
         spans.push(Span::styled(" ", lab_style));
         x += widths[i] + 2;
     }
 
-    let strip = Rect::new(top.x, y, top.width, 1);
-    f.render_widget(Paragraph::new(Line::from(spans).right_aligned()), strip);
+    f.render_widget(Paragraph::new(Line::from(spans).right_aligned()), area);
+    total
 }

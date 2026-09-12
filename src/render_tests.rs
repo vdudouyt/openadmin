@@ -146,21 +146,26 @@ fn every_dialog_renders() {
 }
 
 #[test]
-fn shells_screen_starts_with_an_empty_state_and_working_f_keys() {
+fn shells_screen_starts_with_an_empty_state_and_no_footer() {
     let (mut app, _rx) = test_app("shells");
     app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
     assert!(out.contains("No open shells."), "{out}");
-    // Nothing is focused yet, so the bar offers real F-keys.
-    assert!(out.contains("F1") && out.contains("Help"), "{out}");
-    assert!(out.contains("F10") && out.contains("Quit"), "{out}");
-    assert!(!out.contains("Esc-"), "the Esc chords are gone: {out}");
+    // The Shells screen draws no function bar at all.
+    assert!(!out.contains("Help"), "no function bar here: {out}");
+    assert!(!out.contains("Esc-"), "and no stale chord captions: {out}");
+    assert!(
+        app.regions.fkeys.is_empty(),
+        "no F-key hitboxes are registered"
+    );
+    // The header tabs are still there — they are the way back out.
+    assert!(app.regions.screen_tabs.len() == 3);
 }
 
-/// Once a pane has focus the caps become click-only, and the status bar says
-/// where the keyboard went.
+/// With no footer, the status line is the only thing that can point at the way
+/// out of a focused pane, so it must.
 #[test]
-fn a_focused_pane_turns_the_function_bar_click_only() {
+fn a_focused_pane_says_where_the_keyboard_went() {
     use crate::term::session::Spawn;
     let (mut app, _rx) = test_app("clickonly");
     let mut spawn = Spawn::new("/bin/sh");
@@ -176,14 +181,10 @@ fn a_focused_pane_turns_the_function_bar_click_only() {
         .unwrap();
     app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
-    assert!(out.contains("all keys go to the terminal"), "{out}");
+    assert!(out.contains("keys go to the terminal"), "{out}");
     assert!(
-        out.contains("▸") && out.contains("Quit"),
-        "click-only caps: {out}"
-    );
-    assert!(
-        !out.contains("F10"),
-        "no key is advertised that does not work: {out}"
+        out.contains("click 1/2/3 above"),
+        "the way out is named: {out}"
     );
     app.term.shutdown();
 }
@@ -214,6 +215,28 @@ fn the_help_dialog_explains_the_shells_keyboard() {
         "the mouse way out is documented: {out}"
     );
     assert!(!out.contains("Esc then"), "stale chord docs: {out}");
+}
+
+/// The screen tabs are the only mouse route off a focused pane, so they must
+/// survive a narrow terminal even when their labels cannot.
+#[test]
+fn the_screen_tabs_shed_labels_rather_than_disappear() {
+    let (mut app, _rx) = test_app("narrowtabs");
+    app.screen = Screen::Shells;
+    for w in [120u16, 80, 60, 44, 36, 30] {
+        let _ = render(&mut app, w, 20);
+        assert_eq!(
+            app.regions.screen_tabs.len(),
+            3,
+            "width {w}: every screen must stay clickable"
+        );
+        for (rect, _) in &app.regions.screen_tabs {
+            assert!(
+                rect.x + rect.width <= w,
+                "width {w}: tab hitbox {rect:?} runs off the screen"
+            );
+        }
+    }
 }
 
 /// Absurd sizes must not panic — the classic ratatui crash.
@@ -577,9 +600,10 @@ fn a_focused_pane_takes_every_key() {
     app.term.shutdown();
 }
 
-/// The mouse is the way out of a focused pane, so those paths must work.
+/// The header tabs are the mouse route off a focused pane; with the footer
+/// gone they are the only one, so this must keep working.
 #[test]
-fn the_shells_screen_is_navigable_by_mouse_while_a_pane_is_focused() {
+fn the_header_tabs_escape_a_focused_pane() {
     use crate::term::session::Spawn;
     let (mut app, _rx) = test_app("mouseout");
     let mut spawn = Spawn::new("/bin/sh");
@@ -596,28 +620,22 @@ fn the_shells_screen_is_navigable_by_mouse_while_a_pane_is_focused() {
     app.screen = Screen::Shells;
     let _ = render(&mut app, 120, 30);
 
-    // The function bar still dispatches, even though no key reaches it.
-    let (x0, _, _) = *app.regions.fkeys.iter().find(|(_, _, n)| *n == 1).unwrap();
-    let y = app.regions.fn_bar_y;
-    click(&mut app, x0 + 1, y);
-    assert_eq!(app.mode, Mode::Help, "clicking Help must still work");
-    key(&mut app, KeyCode::Esc);
-    assert_eq!(app.mode, Mode::Normal);
-
-    // So do the header screen tabs.
-    let _ = render(&mut app, 120, 30);
     let (rect, _) = *app
         .regions
         .screen_tabs
         .iter()
         .find(|(_, s)| *s == Screen::Hosts)
-        .unwrap();
+        .expect("a Hosts tab");
     click(&mut app, rect.x + 1, rect.y);
     assert_eq!(
         app.screen,
         Screen::Hosts,
         "clicking a screen tab must still work"
     );
+
+    // ...and the Hosts screen still has its footer.
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("F10") && out.contains("Quit"), "{out}");
     app.term.shutdown();
 }
 

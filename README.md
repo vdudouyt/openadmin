@@ -64,12 +64,17 @@ mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
 shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
 `Ctrl+A`, vim keeps a zero-latency `Esc`.
 
+This screen also draws **no function bar** — every key there belongs to the
+terminal, so the row would cost a line of your shell to advertise nothing.
+Chrome is one header row, the tab strip, a per-pane title and one status line.
+
 That means **the mouse is how you drive the app while a pane is focused**:
 
-* the `1 Hosts` / `2 Shells` / `3 Chat` tabs in the header switch screens
-* the bar along the bottom — Help, Pane, Tab, Close, New shell, Screen, Quit —
-  is clickable; its caps show `▸` rather than a key name to say so
+* the `1 Hosts` / `2 Shells` / `3 Chat` tabs in the header switch screens —
+  they shed their labels before they ever disappear, so a narrow terminal
+  never strands you
 * a shell tab selects itself on click, and its `×` closes it
+* to quit, switch to Hosts and use `F10` (or click Quit there)
 
 With **no shell open** there is nothing to be transparent to, so the keyboard
 comes back: the F-keys work, and `Esc` returns to Hosts. Closing your last
