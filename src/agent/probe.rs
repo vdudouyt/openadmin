@@ -477,7 +477,8 @@ static PROBES: &[Probe] = &[
     },
     Probe {
         name: "readonly_storage",
-        about: "Block devices, their filesystem identifiers, or what is mounted where.",
+        about: "Block devices with their sizes and filesystem types, or what is mounted \
+                where. For filesystem UUIDs and labels, use readonly_blkid.",
         cmd: Cmd::ByWhat {
             field: "what",
             about: "Which view of storage.",
@@ -488,10 +489,23 @@ static PROBES: &[Probe] = &[
                     "lsblk",
                     &["-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS"],
                 ),
-                ("filesystem_ids", "blkid", &[]),
                 ("mounts", "findmnt", &[]),
             ],
         },
+        params: &[],
+        separator: false,
+    },
+    Probe {
+        name: "readonly_blkid",
+        // No fields at all, deliberately. blkid's options narrow its output to
+        // one device or one tag, and every one of those answers is already in the
+        // full list — so a field here would only be a way to ask a second time
+        // for something the first call returned.
+        about: "Every block device blkid knows, with its filesystem UUID, label and type. \
+                Reads the kernel's device cache, so as an unprivileged login it may come \
+                back empty rather than wrong — that is a permission answer, not an \
+                absence of disks.",
+        cmd: fixed("blkid", &[]),
         params: &[],
         separator: false,
     },
@@ -1112,6 +1126,60 @@ mod tests {
                 args.join(" ")
             )
         });
+    }
+
+    /// Two tools that run exactly the same command are a selection problem, not a
+    /// convenience: the whole reason for a tool per question is that a weak model
+    /// picks by name, and two names for one answer put it back to guessing.
+    /// `blkid` was reachable both as its own tool and as a `readonly_storage`
+    /// variant until this failed.
+    #[test]
+    fn no_two_tools_run_the_same_command() {
+        let mut seen: Vec<(&str, &[&str], &str)> = Vec::new();
+        for p in PROBES {
+            let calls: Vec<(&str, &[&str])> = match &p.cmd {
+                Cmd::Fixed { program, always } => vec![(*program, *always)],
+                Cmd::ByWhat { variants, .. } => variants
+                    .iter()
+                    .map(|(_, prog, always)| (*prog, *always))
+                    .collect(),
+            };
+            for (prog, always) in calls {
+                if let Some((_, _, other)) =
+                    seen.iter().find(|(pr, al, _)| *pr == prog && *al == always)
+                {
+                    panic!(
+                        "{} and {other} both run `{prog} {}`",
+                        p.name,
+                        always.join(" ")
+                    );
+                }
+                seen.push((prog, always, p.name));
+            }
+        }
+    }
+
+    /// The one-fact tools take nothing but a host, so there is no field to fill
+    /// in wrongly and nothing to ask twice.
+    #[test]
+    fn the_one_fact_tools_take_nothing_but_a_host() {
+        let all = allowed();
+        for name in ["readonly_blkid", "readonly_processes"] {
+            let p = find(name).unwrap_or_else(|| panic!("{name} is missing"));
+            let s = schema(p, &all);
+            let props = s["properties"].as_object().unwrap();
+            assert_eq!(props.len(), 1, "{name} has fields: {props:?}");
+            assert!(props.contains_key("host"));
+            assert_eq!(s["required"], serde_json::json!(["host"]), "{name}");
+        }
+        let (prog, args) = render(
+            find("readonly_blkid").unwrap(),
+            &serde_json::json!({"host": "h"}),
+            &all,
+        )
+        .unwrap();
+        assert_eq!(prog, "blkid");
+        assert!(args.is_empty(), "no options at all: {args:?}");
     }
 
     /// A command the operator configured but no tool can reach is a capability

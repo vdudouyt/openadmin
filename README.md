@@ -121,7 +121,7 @@ through one tool per question rather than one tool that takes a command line:
 
 | | |
 |---|---|
-| `readonly_*` | eighteen read-only questions — logs, services, network, disks, files, processes |
+| `readonly_*` | nineteen read-only questions — logs, services, network, disks, files, processes |
 | `list_hosts` | the known SSH machines, by name — never an address, login or password |
 | `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included |
 | `propose_plan` | proposes changes; **executes nothing** |
