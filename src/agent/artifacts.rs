@@ -1,24 +1,12 @@
 //! Files the operator has staged for upload, in `<datadir>/artifacts/`.
 //!
-//! The model both reads this list and later names an entry in a plan, so a name
-//! it supplies is untrusted input that ends up as a local path. Two ways out of
-//! the directory have to be closed, and only the second is obvious:
-//!
-//! * `../../keys/web-01` — a relative escape in the name itself.
-//! * an artifact that *is* a symlink to somewhere else — the name is innocent,
-//!   the target is not.
-//!
-//! Canonicalizing and then checking containment closes both, because
-//! `canonicalize` resolves `..` and follows symlinks before the check.
-//!
-//! A name may be a path into a subdirectory — `nginx/site.conf` — because
-//! operators stage files the way the files are organised, and a flat directory
-//! makes them rename everything to use it. That is why the containment check has
-//! to be the real boundary rather than a second belt behind a ban on `/`: the
-//! ban is gone and `canonicalize` is all that stands between a name and the rest
-//! of the data directory, which is what it was already doing for symlinks.
+//! The path handling — every way a name could point outside the directory, and
+//! the bounded recursive walk — is `store::ARTIFACTS`, shared with `manuals`.
+//! What is here is only what makes an artifact an artifact: its size, which is
+//! what an operator wants to see before approving an upload of it.
 
-use anyhow::{Context, Result, bail};
+use crate::agent::store::ARTIFACTS;
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,196 +28,40 @@ pub struct Listing {
     pub truncated: bool,
 }
 
-/// How deep a scan goes, and how many files it will name.
-///
-/// An operator who stages a checkout rather than a file should get a bounded
-/// list rather than a flooded context. Anything past these is still uploadable —
-/// `resolve` does not consult this — it just is not advertised.
-const MAX_DEPTH: usize = 8;
-const MAX_ENTRIES: usize = 200;
-
-pub fn dir(datadir: &Path) -> PathBuf {
-    datadir.join("artifacts")
-}
-
 /// Create the directory if it is missing, owner-only like `keys/`.
-#[allow(dead_code)] // used by the plan executor, next commit
 pub fn ensure_dir(datadir: &Path) -> Result<PathBuf> {
-    let d = dir(datadir);
-    std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
-    }
-    Ok(d)
+    ARTIFACTS.ensure(datadir)
 }
 
 /// Resolve an artifact name to `(real file, canonical relative name)`.
 ///
-/// Returns an error rather than a path for anything that escapes, so a caller
-/// cannot forget to check. The one entry point, so there is no second, laxer one
-/// for a caller to reach for by mistake.
-///
-/// The relative name is what the upload step needs: the path inside the
-/// artifacts directory, rebuilt from the *canonicalized* path rather than from
-/// what the model typed. So `./nginx//site.conf` and `nginx/site.conf` give the
-/// same relative name, and by the time there is one, a name that pointed
-/// somewhere else has already been refused.
+/// The second half is what the upload step needs, so the destination on the far
+/// side is built from a path this module vouches for rather than from what the
+/// model typed.
 pub fn staged(datadir: &Path, name: &str) -> Result<(PathBuf, String)> {
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("no artifact named");
-    }
-    if name.contains('\\') || name.contains('\0') {
-        bail!("artifact name must be a relative path with no backslash: {name:?}");
-    }
-    // Component-wise rather than by substring, so `..` is refused wherever it
-    // appears and `a..b.conf` — an ordinary file name — is not. A leading `./`
-    // is allowed because it means nothing and refusing it would cost a round
-    // trip; `canonicalize` below resolves it either way.
-    for c in Path::new(name).components() {
-        match c {
-            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
-            _ => bail!(
-                "artifact name must be a path relative to the artifacts directory, with no \
-                 `..` and no leading `/`: {name:?}"
-            ),
-        }
-    }
-
-    let base = dir(datadir);
-    let base = base
-        .canonicalize()
-        .with_context(|| format!("no artifacts directory at {}", base.display()))?;
-    let candidate = base.join(name);
-    // Resolves `..` and follows symlinks, so the containment check below sees
-    // where the file really is rather than where it claims to be. With
-    // subdirectories permitted this is the whole boundary, including for a
-    // *directory* symlink that leads out — `link/web-01` resolves through it and
-    // is caught here.
-    let real = candidate
-        .canonicalize()
-        .with_context(|| format!("no artifact named {name:?}"))?;
-
-    if !real.starts_with(&base) {
-        bail!("artifact {name:?} resolves outside the artifacts directory");
-    }
-    if !real.is_file() {
-        bail!("artifact {name:?} is not a regular file");
-    }
-
-    let rel = real
-        .strip_prefix(&base)
-        .expect("checked by starts_with")
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/");
-    Ok((real, rel))
+    ARTIFACTS.resolve(datadir, name)
 }
 
-/// Every usable artifact, recursively, sorted by name.
-///
-/// Entries that are not regular files, or that lead outside the directory, are
-/// simply not listed — the model never learns they exist.
-///
-/// Recursive because operators stage files in the shape the files have:
-/// `nginx/site.conf` next to `postgres/pg_hba.conf`. A flat scan named neither
-/// and gave the model an empty list beside a directory full of work.
+/// Every usable artifact, recursively, sorted by name, with its size.
 pub fn list(datadir: &Path) -> Result<Listing> {
-    let d = dir(datadir);
-    if !d.exists() {
-        return Ok(Listing {
-            items: Vec::new(),
-            truncated: false,
-        });
-    }
-    let mut items = Vec::new();
-    // One over the cap, so a full list and a truncated one are distinguishable
-    // without walking the rest of the tree.
-    let stopped = walk(datadir, &d, &mut Vec::new(), 0, &mut items)?;
-    items.sort_by(|a, b| a.name.cmp(&b.name));
-    let truncated = stopped || items.len() > MAX_ENTRIES;
-    items.truncate(MAX_ENTRIES);
+    let (names, truncated) = ARTIFACTS.walk(datadir)?;
+    let items = names
+        .into_iter()
+        .map(|name| {
+            // Already resolved by the walk; this is only the size.
+            let size = staged(datadir, &name)
+                .and_then(|(real, _)| Ok(real.metadata()?.len()))
+                .unwrap_or(0);
+            Artifact { name, size }
+        })
+        .collect();
     Ok(Listing { items, truncated })
-}
-
-/// One directory, then the ones inside it. `Ok(true)` means the walk stopped on
-/// a limit rather than running out of files.
-///
-/// Entries are sorted before descending so that a truncated list is the same
-/// list every time; `read_dir` order is whatever the filesystem says.
-fn walk(
-    datadir: &Path,
-    here: &Path,
-    prefix: &mut Vec<String>,
-    depth: usize,
-    out: &mut Vec<Artifact>,
-) -> Result<bool> {
-    if depth > MAX_DEPTH {
-        return Ok(true);
-    }
-    let mut entries: Vec<(String, std::fs::DirEntry)> = Vec::new();
-    for entry in std::fs::read_dir(here).with_context(|| format!("read {}", here.display()))? {
-        let Ok(entry) = entry else { continue };
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        entries.push((name, entry));
-    }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (name, entry) in entries {
-        if out.len() > MAX_ENTRIES {
-            return Ok(true);
-        }
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_dir() {
-            // `file_type` does not follow symlinks, so this is a real directory.
-            // A symlinked one is skipped deliberately: following it invites a
-            // cycle, and one pointing back inside would list every file twice.
-            // A file *through* such a link is still uploadable by name — only
-            // the advertising stops here.
-            //
-            // And not into dot-directories: an operator who stages a checkout
-            // has a `.git` in it, which sorts first and would fill the whole
-            // list with objects nobody is going to upload.
-            if name.starts_with('.') {
-                continue;
-            }
-            prefix.push(name);
-            let stopped = walk(datadir, &entry.path(), prefix, depth + 1, out)?;
-            prefix.pop();
-            if stopped {
-                return Ok(true);
-            }
-            continue;
-        }
-
-        let mut parts = prefix.clone();
-        parts.push(name);
-        let rel = parts.join("/");
-        // Reuse the same gate the upload path uses, so the list can never
-        // advertise something that would later be refused.
-        let Ok((real, _)) = staged(datadir, &rel) else {
-            continue;
-        };
-        let size = real.metadata().map(|m| m.len()).unwrap_or(0);
-        // Named as it was found, not as it canonicalizes. A symlink inside the
-        // directory is a name the operator chose and it resolves, so it is
-        // listed as itself rather than silently renamed to its target — which
-        // would also list the target twice.
-        out.push(Artifact { name: rel, size });
-    }
-    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::store;
 
     fn scratch(tag: &str) -> PathBuf {
         let d =
@@ -314,21 +146,21 @@ mod tests {
     fn a_large_tree_is_bounded_and_says_so() {
         let data = scratch("many");
         let a = ensure_dir(&data).unwrap();
-        for i in 0..MAX_ENTRIES + 20 {
+        for i in 0..store::MAX_ENTRIES + 20 {
             write(&a, &format!("file-{i:04}.conf"), "x");
         }
         let found = list(&data).unwrap();
-        assert_eq!(found.items.len(), MAX_ENTRIES);
+        assert_eq!(found.items.len(), store::MAX_ENTRIES);
         assert!(found.truncated, "truncation is never silent");
         // Past the cap is still uploadable: the list advertises, it does not
         // decide.
-        staged(&data, &format!("file-{:04}.conf", MAX_ENTRIES + 19)).unwrap();
+        staged(&data, &format!("file-{:04}.conf", store::MAX_ENTRIES + 19)).unwrap();
 
         // Depth is bounded too, and nothing below the limit is claimed.
         let deep = scratch("deep-limit");
         let a = ensure_dir(&deep).unwrap();
         let mut p = a.clone();
-        for i in 0..MAX_DEPTH + 3 {
+        for i in 0..store::MAX_DEPTH + 3 {
             p = p.join(format!("d{i}"));
         }
         std::fs::create_dir_all(&p).unwrap();

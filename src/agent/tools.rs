@@ -16,7 +16,7 @@ use super::exec::run_capture;
 use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
 use super::plan::{Plan, PlanRequest, resolve};
 use super::proto::ToolDef;
-use super::{artifacts, probe, readonly};
+use super::{artifacts, manuals, probe, readonly};
 use crate::config::Config;
 // Note `HostRecord` is never serialised: it carries `pass` and `key_value`,
 // and a `derive(Serialize)` on it would put both on the wire the first time
@@ -63,20 +63,41 @@ pub enum ToolOutcome {
         receipt: String,
         write: Box<HostWrite>,
     },
+    /// Text for the model, and a line for the operator.
+    ///
+    /// The inverse of `Proposal` and `HostWrite`, where the receipt is what the
+    /// *model* gets. A fetched manual is the one result the operator does not
+    /// need to see: they wrote it, and the transcript renders every line of a
+    /// tool result and keeps it, so sixteen kilobytes of their own prose would
+    /// bury the conversation it is part of.
+    Loaded { text: String, receipt: String },
 }
 
 impl ToolOutcome {
+    /// What the model is told.
     pub fn text(&self) -> &str {
         match self {
             ToolOutcome::Text(t) => t,
             ToolOutcome::Proposal { receipt, .. } => receipt,
             ToolOutcome::HostWrite { receipt, .. } => receipt,
+            ToolOutcome::Loaded { text, .. } => text,
+        }
+    }
+
+    /// What the operator sees in the transcript. The same thing, unless the two
+    /// audiences want different lengths of it.
+    pub fn transcript(&self) -> &str {
+        match self {
+            ToolOutcome::Loaded { receipt, .. } => receipt,
+            other => other.text(),
         }
     }
 }
 
 pub const LIST_HOSTS: &str = "list_hosts";
 pub const LIST_ARTIFACTS: &str = "list_artifacts";
+pub const LIST_MANUALS: &str = "list_manuals";
+pub const FETCH_MANUAL: &str = "fetch_manual";
 pub const PROPOSE_PLAN: &str = "propose_plan";
 pub const CREATE_HOST: &str = "create_host";
 pub const EDIT_HOST: &str = "edit_host";
@@ -115,6 +136,36 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
              exactly as given in an upload step. Every file under the artifacts directory \
              can be uploaded, including any this list was too long to name.",
             serde_json::json!({"type": "object", "properties": {}}),
+        ),
+        ToolDef::function(
+            LIST_MANUALS,
+            "List the manuals the operator has written about this fleet: a filename and \
+             the first line of each. Their filenames and descriptions are already in your \
+             instructions, so call this only to see one added since this conversation \
+             began. Reading a manual is a local file read — it opens no SSH connection and \
+             costs the operator nothing.",
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        ),
+        ToolDef::function(
+            FETCH_MANUAL,
+            "Read one manual in full. A manual is the operator's own instructions about \
+             their fleet — how they do a thing here, which is not always how it is done in \
+             general. Where a manual covers the task in front of you, its way is the way, \
+             ahead of what you would otherwise have done; read it BEFORE proposing a plan \
+             rather than after the operator rejects one. Local, so it costs no SSH \
+             connection.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "A filename exactly as list_manuals or your \
+                            instructions give it, which may be a path like `linux/tuning.md`."
+                    }
+                },
+                "required": ["filename"],
+                "additionalProperties": false,
+            }),
         ),
         ToolDef::function(
             PROPOSE_PLAN,
@@ -303,6 +354,16 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
             }
             Err(e) => ToolOutcome::Text(format!("could not list artifacts: {e}")),
         },
+        LIST_MANUALS => match manuals::list(ctx.datadir) {
+            Ok((m, _)) if m.is_empty() => ToolOutcome::Text(format!(
+                "No manuals written. The operator puts them in {}, one file each, and a \
+                 manual's first line is its description.",
+                manuals::dir(ctx.datadir).display()
+            )),
+            Ok((m, truncated)) => ToolOutcome::Text(manual_index(&m, truncated)),
+            Err(e) => ToolOutcome::Text(format!("could not list manuals: {e}")),
+        },
+        FETCH_MANUAL => fetch_manual(ctx, arguments),
         PROPOSE_PLAN => propose(ctx, arguments),
         CREATE_HOST => create_host(ctx, arguments),
         EDIT_HOST => edit_host(ctx, arguments),
@@ -382,6 +443,58 @@ fn run_probe(ctx: &ToolCtx, name: &str, arguments: &str) -> String {
 /// Sanitize a multi-line block, keeping the line structure.
 fn sanitize_block(text: &str) -> String {
     text.lines().map(sanitize).collect::<Vec<_>>().join("\n")
+}
+
+/// The index, one manual per line.
+///
+/// Shared with the system prompt, which carries the same text: a model that has
+/// to call a tool to discover that guidance exists is a model that will not, and
+/// then it plans from general knowledge while the operator's answer sits on disk.
+pub fn manual_index(list: &[manuals::Manual], truncated: bool) -> String {
+    let width = list
+        .iter()
+        .map(|m| m.filename.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(40);
+    let mut out = String::new();
+    for m in list {
+        if m.description.is_empty() {
+            out.push_str(&format!("  {}\n", m.filename));
+        } else {
+            out.push_str(&format!(
+                "  {:width$}  — {}\n",
+                m.filename,
+                m.description,
+                width = width
+            ));
+        }
+    }
+    if truncated {
+        out.push_str("  … and more not named here; list_manuals shows what it can.\n");
+    }
+    out
+}
+
+fn fetch_manual(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
+    let value: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return ToolOutcome::Text(format!("could not read the arguments: {e}")),
+    };
+    let Some(name) = value.get("filename").and_then(|f| f.as_str()) else {
+        return ToolOutcome::Text(
+            "refused: fetch_manual needs filename, a name from list_manuals.".to_string(),
+        );
+    };
+    match manuals::read(ctx.datadir, name, ctx.cfg.agent.output_cap_bytes) {
+        // The model gets the manual; the operator gets a line saying which one
+        // was read. They wrote it, so the transcript does not repeat it back.
+        Ok(text) => ToolOutcome::Loaded {
+            receipt: format!("read {name} ({} bytes)", text.len()),
+            text,
+        },
+        Err(e) => ToolOutcome::Text(format!("refused: {e}")),
+    }
 }
 
 fn propose(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
@@ -643,6 +756,99 @@ mod tests {
         assert!(out.text().contains("readonly_read_file"), "{}", out.text());
     }
 
+    /// The model gets the manual; the operator gets a line. The transcript keeps
+    /// and re-renders every line of a tool result, so a fetch that reported
+    /// itself in full would bury the conversation in the operator's own prose.
+    #[test]
+    fn a_fetched_manual_goes_to_the_model_and_a_line_to_the_operator() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let dir = std::env::temp_dir().join(format!("openadmin-tools-man-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let m = manuals::ensure_dir(&dir).unwrap();
+        std::fs::write(
+            m.join("db-failover.md"),
+            "# Promoting the standby\n\nStop the primary first.\n",
+        )
+        .unwrap();
+        let c = ctx(&h, &cfg, &dir, &cancel);
+
+        let out = dispatch(&c, FETCH_MANUAL, r#"{"filename":"db-failover.md"}"#);
+        assert!(matches!(out, ToolOutcome::Loaded { .. }), "{}", out.text());
+        assert!(
+            out.text().contains("Stop the primary first."),
+            "{}",
+            out.text()
+        );
+        // The operator's copy names the manual and its size, not its contents.
+        assert!(
+            out.transcript().starts_with("read db-failover.md"),
+            "{}",
+            out.transcript()
+        );
+        assert!(
+            !out.transcript().contains("Stop the primary"),
+            "{}",
+            out.transcript()
+        );
+
+        // The same index the prompt carries, for a manual added mid-session.
+        let out = dispatch(&c, LIST_MANUALS, "{}");
+        assert!(out.text().contains("db-failover.md"), "{}", out.text());
+        assert!(
+            out.text().contains("Promoting the standby"),
+            "{}",
+            out.text()
+        );
+
+        // A name that is not there is a refusal, spelled so the UI colours it one.
+        let out = dispatch(&c, FETCH_MANUAL, r#"{"filename":"nope.md"}"#);
+        assert!(out.text().starts_with("refused:"), "{}", out.text());
+        let out = dispatch(&c, FETCH_MANUAL, r#"{"path":"nope.md"}"#);
+        assert!(out.text().contains("needs filename"), "{}", out.text());
+
+        // With none written, the tool says where they go rather than nothing.
+        let empty =
+            std::env::temp_dir().join(format!("openadmin-tools-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).unwrap();
+        let c2 = ctx(&h, &cfg, &empty, &cancel);
+        let out = dispatch(&c2, LIST_MANUALS, "{}");
+        assert!(out.text().contains("No manuals written"), "{}", out.text());
+        assert!(out.text().contains("manuals"), "{}", out.text());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// The index is one line per manual and is what the prompt carries, so its
+    /// shape is worth pinning: a name with no description still appears, or it
+    /// cannot be fetched.
+    #[test]
+    fn the_index_names_every_manual_it_has() {
+        let index = manual_index(
+            &[
+                manuals::Manual {
+                    filename: "a.md".into(),
+                    description: "First".into(),
+                },
+                manuals::Manual {
+                    filename: "b/c.md".into(),
+                    description: String::new(),
+                },
+            ],
+            true,
+        );
+        assert!(index.contains("a.md") && index.contains("First"), "{index}");
+        assert!(index.contains("b/c.md"), "{index}");
+        assert!(
+            index.contains("list_manuals"),
+            "truncation is said: {index}"
+        );
+        assert_eq!(index.lines().count(), 3, "{index}");
+    }
+
     #[test]
     fn a_proposal_is_recorded_and_nothing_runs() {
         let h = hosts();
@@ -684,15 +890,15 @@ mod tests {
     fn the_tool_schemas_name_the_boundary() {
         let cfg = Config::default();
         let defs = definitions(&cfg);
-        // Five tools that are not read-only probes, plus one probe per
-        // read-only question. The count is asserted loosely on purpose: adding
-        // a probe is a normal change, and a test that fails on it teaches
+        // Seven tools that are not read-only probes, plus one probe per
+        // read-only question. The probe count is asserted loosely on purpose:
+        // adding a probe is a normal change, and a test that fails on it teaches
         // nothing.
         assert_eq!(
             defs.iter()
                 .filter(|d| !d.function.name.starts_with("readonly_"))
                 .count(),
-            5
+            7
         );
         assert!(defs.len() > 15, "the probes are there too: {}", defs.len());
         let plan = defs
@@ -721,6 +927,33 @@ mod tests {
         assert!(
             !names.contains(&"run_readonly"),
             "the argv tool is gone: {names:?}"
+        );
+        assert!(names.contains(&LIST_MANUALS), "{names:?}");
+        assert!(names.contains(&FETCH_MANUAL), "{names:?}");
+        let fetch = defs
+            .iter()
+            .find(|d| d.function.name == FETCH_MANUAL)
+            .unwrap();
+        assert_eq!(
+            fetch.function.parameters["additionalProperties"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            fetch.function.parameters["required"],
+            serde_json::json!(["filename"])
+        );
+        // What a manual *is*, said where the call is constructed.
+        assert!(
+            fetch
+                .function
+                .description
+                .contains("operator's own instructions")
+        );
+        assert!(
+            fetch
+                .function
+                .description
+                .contains("BEFORE proposing a plan")
         );
 
         for d in defs

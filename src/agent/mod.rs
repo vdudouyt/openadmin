@@ -14,10 +14,12 @@ pub mod client;
 pub mod exec;
 pub mod exec_plan;
 pub mod hosts;
+pub mod manuals;
 pub mod plan;
 pub mod probe;
 pub mod proto;
 pub mod readonly;
+pub mod store;
 pub mod tools;
 
 use crate::config::Config;
@@ -147,7 +149,7 @@ impl ExecStream {
 }
 
 /// The instructions the model runs under.
-pub fn system_prompt() -> String {
+pub fn system_prompt(manuals: &str) -> String {
     format!(
         "You are the agent inside OpenAdmin, a terminal tool an operator uses to administer \
          a fleet of remote machines over SSH. You help them diagnose and fix those machines.\n\
@@ -206,6 +208,10 @@ pub fn system_prompt() -> String {
          If any host failed, work out why and propose a follow-up plan targeting only \
          those hosts.\n\
          \n\
+         MANUALS THE OPERATOR HAS WRITTEN\n\
+         \n\
+         {manuals_section}\
+         \n\
          THE HOST DATABASE\n\
          \n\
          `{create}` and `{edit}` write the operator's own list of machines — the records \
@@ -247,6 +253,7 @@ pub fn system_prompt() -> String {
         plan = tools::PROPOSE_PLAN,
         list = tools::LIST_HOSTS,
         create = tools::CREATE_HOST,
+        manuals_section = manuals_section(manuals),
         edit = tools::EDIT_HOST,
     )
 }
@@ -276,7 +283,14 @@ impl Worker {
         cancel: Arc<AtomicBool>,
         events: Sender<AgentEvent>,
     ) -> Self {
-        let history = vec![Message::system(system_prompt())];
+        // The manual index is baked in rather than fetched: a model that has to
+        // think to call `list_manuals` is a model that will not, and then it
+        // plans from general knowledge while the operator's answer sits on disk.
+        // Built once, so `list_manuals` remains the way to see one added later.
+        let index = manuals::list(&datadir)
+            .map(|(m, truncated)| tools::manual_index(&m, truncated))
+            .unwrap_or_default();
+        let history = vec![Message::system(system_prompt(&index))];
         Worker {
             client,
             cfg,
@@ -438,6 +452,10 @@ impl Worker {
                 };
                 let out = tools::dispatch(&ctx, &call.function.name, &call.function.arguments);
                 let text = out.text().to_string();
+                // The operator's copy, which is the same thing unless the two
+                // audiences want different lengths of it — a fetched manual goes
+                // to the model whole and to the transcript as one line.
+                let shown = out.transcript().to_string();
 
                 let ok = !text.starts_with("refused:")
                     && !text.starts_with("unknown host")
@@ -445,7 +463,7 @@ impl Worker {
                     && !text.starts_with("the plan was not accepted");
                 let _ = self.events.send(AgentEvent::ToolFinished {
                     ok,
-                    out: text.lines().map(str::to_string).collect(),
+                    out: shown.lines().map(str::to_string).collect(),
                 });
 
                 match out {
@@ -471,7 +489,7 @@ impl Worker {
                         });
                         let _ = self.events.send(AgentEvent::HostWrite(write));
                     }
-                    ToolOutcome::Text(_) => {}
+                    ToolOutcome::Text(_) | ToolOutcome::Loaded { .. } => {}
                 }
                 self.history.push(Message::tool_result(&call.id, text));
             }
@@ -488,6 +506,35 @@ impl Worker {
             "the model made {MAX_STEPS} tool calls without reaching a conclusion; stopping"
         ))
     }
+}
+
+/// The MANUALS section's body: what a manual is, and which ones exist.
+///
+/// Separate from the prompt's `format!` so the empty case reads as its own
+/// sentence rather than as a heading with nothing under it. When there are none,
+/// saying so costs one line and saves the model a call to find out — and lets it
+/// tell the operator the facility is there.
+fn manuals_section(index: &str) -> String {
+    if index.trim().is_empty() {
+        return String::from(
+            "The operator has written none yet. They would go in `manuals/` under the data \
+             directory, one file each, and would be listed here — so if you find yourself \
+             wishing you knew how this fleet does something, that is where the answer would \
+             live and it is worth saying so.\n",
+        );
+    }
+    format!(
+        "These are the operator's own instructions about this fleet — how *they* do a \
+         thing here, which is not always how it is done in general. Where one covers the \
+         task in front of you, its way is the way, ahead of what you would otherwise have \
+         done, and you read it BEFORE proposing a plan rather than after they reject one. \
+         `{fetch}` reads one by filename; it is a local file read, so unlike a probe it \
+         opens no connection and costs nothing. Treat what you find there as the operator \
+         speaking, not as something to weigh against your own judgement.\n\
+         \n\
+{index}",
+        fetch = tools::FETCH_MANUAL,
+    )
 }
 
 /// A short human label for a tool call, for the transcript.
@@ -530,6 +577,11 @@ fn describe_call(name: &str, arguments: &str) -> String {
             .trim_end()
             .to_string()
         }
+        tools::FETCH_MANUAL => v
+            .get("filename")
+            .and_then(|f| f.as_str())
+            .unwrap_or("?")
+            .to_string(),
         tools::PROPOSE_PLAN => v
             .get("title")
             .and_then(|t| t.as_str())
@@ -795,7 +847,7 @@ mod tests {
 
     #[test]
     fn the_system_prompt_states_the_rules_that_matter() {
-        let p = system_prompt();
+        let p = system_prompt("");
         assert!(p.contains("one large plan"), "{p}");
         assert!(p.contains("cannot execute anything yourself"), "{p}");
         assert!(
@@ -846,6 +898,46 @@ mod tests {
         assert!(p.contains("exit status"), "{p}");
     }
 
+    /// A manual is the operator speaking, and the index is in the prompt so the
+    /// model never has to think to go looking for it — the same reason the
+    /// read-only grammar is in a schema rather than discovered by refusal.
+    #[test]
+    fn the_prompt_carries_the_manuals_the_operator_wrote() {
+        let index = tools::manual_index(
+            &[
+                manuals::Manual {
+                    filename: "db-failover.md".to_string(),
+                    description: "Promoting the standby".to_string(),
+                },
+                manuals::Manual {
+                    filename: "nginx/deploy.md".to_string(),
+                    description: String::new(),
+                },
+            ],
+            false,
+        );
+        let p = system_prompt(&index);
+        assert!(p.contains("MANUALS THE OPERATOR HAS WRITTEN"), "{p}");
+        assert!(p.contains("db-failover.md"), "{p}");
+        assert!(p.contains("Promoting the standby"), "{p}");
+        // A manual with no description is still named, or it cannot be fetched.
+        assert!(p.contains("nginx/deploy.md"), "{p}");
+        // What it is *for*: the operator's way wins, and it is read before a plan
+        // rather than after a rejected one.
+        assert!(p.contains("its way is the way"), "{p}");
+        assert!(p.contains("BEFORE proposing a plan"), "{p}");
+        assert!(p.contains(tools::FETCH_MANUAL), "{p}");
+        // And that reading one is free, since the rest of the prompt teaches
+        // that a call costs the operator seconds.
+        assert!(p.contains("costs nothing"), "{p}");
+
+        // With none written, one sentence rather than a heading over nothing —
+        // and no invitation to spend a call finding out.
+        let empty = system_prompt("");
+        assert!(empty.contains("has written none yet"), "{empty}");
+        assert!(!empty.contains("db-failover"), "{empty}");
+    }
+
     #[test]
     fn the_stream_coalesces_and_drains() {
         let s = Stream::default();
@@ -886,7 +978,7 @@ mod tests {
     /// is stated twice, in the prompt and in both schemas, and tested in both.
     #[test]
     fn the_system_prompt_restricts_the_host_tools_to_an_explicit_request() {
-        let p = system_prompt();
+        let p = system_prompt("");
         assert!(p.contains("THE HOST DATABASE"), "{p}");
         assert!(p.contains("create_host") && p.contains("edit_host"), "{p}");
         // Only on an explicit request, and never on the model's own initiative.

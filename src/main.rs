@@ -90,6 +90,13 @@ fn main() -> Result<()> {
     };
     std::fs::create_dir_all(&datadir).context("create data directory")?;
 
+    // The two directories the operator fills by hand. Created empty on every
+    // run, because a directory nobody creates is a feature nobody finds: an
+    // operator who cannot see `manuals/` does not know they may write one, and
+    // `artifacts/` had the same problem — it was never created at all.
+    agent::artifacts::ensure_dir(&datadir)?;
+    agent::manuals::ensure_dir(&datadir)?;
+
     // Materialize every setting on disk, so the knobs are discoverable without
     // reading the source — including ones added since the file was written. A
     // file that predates a feature would otherwise never mention it, and the

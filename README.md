@@ -124,6 +124,7 @@ through one tool per question rather than one tool that takes a command line:
 | `readonly_*` | nineteen read-only questions — logs, services, network, disks, files, processes |
 | `list_hosts` | the known SSH machines, by name — never an address, login or password |
 | `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included |
+| `list_manuals` · `fetch_manual` | what the operator has written about *this* fleet |
 | `propose_plan` | proposes changes; **executes nothing** |
 | `create_host` · `edit_host` | write the host database, and only on request |
 
@@ -156,6 +157,38 @@ the built-in rules is not possible.
 What comes back is the output capped at `output_cap_bytes` with the middle
 elided, stderr labelled, and the exit status — so nothing needs to arrange for
 any of that. A command still running after `command_timeout_secs` is killed.
+
+### Manuals
+
+The agent knows how to administer machines in general and nothing about *your*
+fleet — that the standby is promoted with a particular script, that a config is
+rolled in a particular order, who gets woken at 3am. Write that down once instead
+of typing it into the chat every session:
+
+```
+~/.openadmin/manuals/
+  db-failover.md        # Promoting the standby
+  nginx-deploy.md       # Rolling a config change
+  linux/tuning.md       # Sysctls we set, and why
+```
+
+One file per subject, scanned recursively, and **a manual's first line is its
+description** — a markdown `# Heading` or a front-matter `title:` both work. The
+filenames and descriptions are in the agent's instructions from the start, so it
+never has to go looking to find out that your guidance exists; `fetch_manual`
+reads one in full when it is relevant, and that costs no SSH connection because
+the file is local. `list_manuals` is for one you add mid-conversation.
+
+A manual is **you speaking**, and the agent is told so: where one covers the task,
+its way wins over whatever the agent would otherwise have done, and it reads the
+relevant one before proposing a plan rather than after you reject one. That is
+the opposite of how a command's output is treated, which is data from a machine
+being diagnosed.
+
+Long manuals are truncated at `output_cap_bytes` — keeping the **beginning** and
+saying how much was dropped, never eliding the middle the way command output is,
+because a procedure that lost steps 4 to 7 still reads as complete. Binaries are
+neither listed nor fetched.
 
 **Staged files keep their shape.** `list_artifacts` scans
 `~/.openadmin/artifacts/` recursively, so stage files the way they are organised
@@ -196,7 +229,12 @@ Everything lives under `~/.openadmin`:
 openadmin.sqlite   SQLCipher-encrypted host database
 config.toml        settings (see below)
 keys/<host>        ed25519 private keys, 0600
+artifacts/         files a plan may upload
+manuals/           what you have written for the agent
 ```
+
+`artifacts/` and `manuals/` are created empty on every start, so they are there
+to put something in.
 
 `config.toml`:
 
