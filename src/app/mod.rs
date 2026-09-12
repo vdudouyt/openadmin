@@ -152,9 +152,6 @@ pub struct App {
 
     pub chat: ChatState,
     pub term: TerminalManager,
-    /// Armed by Esc on the Shells screen; a digit within the window is a chord,
-    /// anything else flushes the Esc to the terminal.
-    pub pending_esc: Option<Instant>,
 
     pub status: Status,
     pub spinner_frame: usize,
@@ -191,7 +188,6 @@ impl App {
             alert: None,
             chat: ChatState::seeded(),
             term: TerminalManager::new(),
-            pending_esc: None,
             status: Status::default(),
             spinner_frame: 0,
             last_spin: Instant::now(),
@@ -706,41 +702,22 @@ impl App {
     /// The Shells screen: nothing is reserved except the Esc prefix, so mc,
     /// GNU Screen and vim all keep their full keyboard.
     fn key_shells(&mut self, key: KeyEvent) {
-        // A terminal delivers Esc+digit as one burst when typed quickly, and
-        // crossterm reports that as Alt+digit. Accepting both spellings is what
-        // makes the chord independent of typing speed; only digits are taken,
-        // so mc keeps Alt+letter bindings like Alt+o and Alt+t.
-        if key.modifiers == KeyModifiers::ALT
-            && let KeyCode::Char(c) = key.code
-            && let Some(d) = c.to_digit(10)
-        {
-            self.pending_esc = None;
-            self.function_key(d as u8);
+        // With no pane to type into there is nothing to be transparent to, and
+        // capturing here is the difference between "no shells open" and "no way
+        // out without a mouse" — so the normal app keys work in the empty state.
+        let Some(id) = self.term.focused_session() else {
+            self.key_hosts_or_global(key);
             return;
-        }
+        };
 
-        // Resolve an armed prefix first.
-        if self.pending_esc.take().is_some() {
-            if key.modifiers.is_empty()
-                && let KeyCode::Char(c) = key.code
-                && let Some(d) = c.to_digit(10)
-            {
-                self.function_key(d as u8);
-                return;
-            }
-            // Not a chord: the Esc was real, so deliver it before this key.
-            self.write_terminal(&[0x1b]);
-        }
-
-        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-            self.pending_esc = Some(Instant::now());
-            return;
-        }
-
+        // A focused pane takes *every* key: F1-F10, Tab, Ctrl+A, Alt+anything,
+        // and Esc. mc reads Esc+digit as its own F-key emulation and Alt as its
+        // menu shortcuts, so reserving any of them here would quietly break it.
+        // The app is reachable with the mouse instead — the screen tabs and the
+        // function bar are clickable.
         let app_cursor = self
             .term
-            .focused_session()
-            .and_then(|id| self.term.session(id))
+            .session(id)
             .map(|s| {
                 s.parser()
                     .lock()
@@ -750,6 +727,16 @@ impl App {
             .unwrap_or(false);
         let bytes = crate::term::keys::encode(key, app_cursor);
         self.write_terminal(&bytes);
+    }
+
+    /// The keyboard the Shells screen falls back to when no pane is focused.
+    fn key_hosts_or_global(&mut self, key: KeyEvent) {
+        if self.key_global(key) {
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            self.screen = Screen::Hosts;
+        }
     }
 
     /// A paste from the outer terminal, forwarded to the focused pane.
@@ -790,25 +777,9 @@ impl App {
         }
     }
 
-    /// Flush an Esc the user did not follow with a digit. Driven by the event
-    /// loop's tick so a lone Esc still reaches vim.
-    pub fn flush_pending_esc(&mut self) {
-        if let Some(at) = self.pending_esc
-            && at.elapsed() >= self.cfg.escape_timeout()
-        {
-            self.pending_esc = None;
-            self.write_terminal(&[0x1b]);
-        }
-    }
-
-    /// When the loop must wake next to flush a held Esc.
-    pub fn esc_deadline(&self) -> Option<Duration> {
-        self.pending_esc
-            .map(|at| self.cfg.escape_timeout().saturating_sub(at.elapsed()))
-    }
-
-    /// One entry point for real F-keys, Alt+digit, Esc+digit and function-bar
-    /// clicks, so all four share the same behavior.
+    /// One entry point for real F-keys, Alt+digit and function-bar clicks, so
+    /// all three share the same behavior. On the Shells screen only the clicks
+    /// reach it: a focused terminal keeps the whole keyboard.
     pub fn function_key(&mut self, n: u8) {
         // `Esc 0` and F10 are both Quit.
         if n == 0 || n == 10 {

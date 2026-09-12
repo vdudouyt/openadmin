@@ -8,10 +8,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// How long to hold an `Esc` waiting for a digit before flushing it to the
-    /// focused terminal. Lower it if vim feels sluggish; raise it if the
-    /// chords are hard to hit.
-    pub escape_time_ms: u64,
     /// `TERM` handed to spawned sessions.
     pub term: String,
     /// Scrollback lines retained per terminal session.
@@ -29,7 +25,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            escape_time_ms: 250,
             term: "xterm-256color".to_string(),
             scrollback: 5000,
             sshfs_options: Vec::new(),
@@ -66,10 +61,6 @@ impl Config {
         restrict(datadir, 0o700);
         Ok(())
     }
-
-    pub fn escape_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(self.escape_time_ms)
-    }
 }
 
 fn restrict(path: &Path, mode: u32) {
@@ -91,7 +82,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openadmin-cfg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = Config::load(&dir).unwrap();
-        assert_eq!(cfg.escape_time_ms, 250);
+        assert_eq!(cfg.scrollback, 5000);
         assert_eq!(cfg.mount_prefix, "/net");
     }
 
@@ -100,13 +91,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openadmin-cfg-rt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = Config {
-            escape_time_ms: 25,
+            scrollback: 42,
             sshfs_options: vec!["-o".into(), "reconnect".into()],
             ..Config::default()
         };
         cfg.save(&dir).unwrap();
         let back = Config::load(&dir).unwrap();
-        assert_eq!(back.escape_time_ms, 25);
+        assert_eq!(back.scrollback, 42);
         assert_eq!(back.sshfs_options, vec!["-o", "reconnect"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -115,9 +106,9 @@ mod tests {
     /// never breaks an existing file.
     #[test]
     fn partial_file_fills_defaults() {
-        let cfg: Config = toml::from_str("escape_time_ms = 10\n").unwrap();
-        assert_eq!(cfg.escape_time_ms, 10);
+        let cfg: Config = toml::from_str("scrollback = 10\n").unwrap();
+        assert_eq!(cfg.scrollback, 10);
         assert_eq!(cfg.term, "xterm-256color");
-        assert_eq!(cfg.scrollback, 5000);
+        assert_eq!(cfg.mount_prefix, "/net");
     }
 }

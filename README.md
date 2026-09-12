@@ -58,24 +58,22 @@ mount field yourself; empty it to hand control back.
 Open sessions as tabs. One host gives one full-width pane; several marked hosts
 give a single tab named `Group: <first host>` that stacks one pane per host.
 
-**No F-key is reserved here.** Every key — `F1`–`F10`, `Tab`, `Ctrl+A`, and the
-mouse — goes straight to the terminal, so `mc`, GNU Screen and vim keep their
-full keyboard. OpenAdmin is reached with an mc-style `Esc` prefix instead:
+**A focused pane takes every key.** `F1`–`F10`, `Tab`, `Esc`, `Esc`+digit, and
+every `Ctrl` and `Alt` chord go straight to the terminal — nothing is reserved.
+mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
+shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
+`Ctrl+A`, vim keeps a zero-latency `Esc`.
 
-| Chord | |
-|---|---|
-| `Esc` `1` | help |
-| `Esc` `2` | focus the next pane in a group |
-| `Esc` `3` | next tab |
-| `Esc` `4` | close the tab |
-| `Esc` `5` | new shell (jumps to Hosts) |
-| `Esc` `9` | cycle screen |
-| `Esc` `0` | quit OpenAdmin |
+That means **the mouse is how you drive the app while a pane is focused**:
 
-Typed quickly, `Esc`+digit reaches the app as `Alt`+digit; both spellings work,
-so the chord never depends on how fast you type. A lone `Esc` is held for
-`escape_time_ms` and then delivered to the terminal, so vim behaves normally —
-lower that value if it feels sluggish.
+* the `1 Hosts` / `2 Shells` / `3 Chat` tabs in the header switch screens
+* the bar along the bottom — Help, Pane, Tab, Close, New shell, Screen, Quit —
+  is clickable; its caps show `▸` rather than a key name to say so
+* a shell tab selects itself on click, and its `×` closes it
+
+With **no shell open** there is nothing to be transparent to, so the keyboard
+comes back: the F-keys work, and `Esc` returns to Hosts. Closing your last
+shell therefore never strands you.
 
 ### 3 · Chat
 
@@ -95,7 +93,6 @@ keys/<host>        ed25519 private keys, 0600
 
 | | default | |
 |---|---|---|
-| `escape_time_ms` | `250` | how long a lone `Esc` is held before reaching the terminal |
 | `term` | `xterm-256color` | `TERM` for spawned sessions |
 | `scrollback` | `5000` | lines retained per session |
 | `sshfs_options` | `[]` | extra options for every mount |

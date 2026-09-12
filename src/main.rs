@@ -86,8 +86,8 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&datadir).context("create data directory")?;
 
     let cfg = Config::load(&datadir)?;
-    // Materialize the defaults on first run so escape_time_ms and friends are
-    // discoverable without reading the source.
+    // Materialize the defaults on first run so the knobs are discoverable
+    // without reading the source.
     if !Config::path(&datadir).exists() {
         cfg.save(&datadir)?;
     }
@@ -179,14 +179,9 @@ fn event_loop(
             dirty = false;
         }
 
-        // Wake no later than the nearest pending deadline.
-        let timeout = app
-            .esc_deadline()
-            .unwrap_or(Duration::from_millis(200))
-            .min(Duration::from_millis(200))
-            .max(Duration::from_millis(10));
-
-        match rx.recv_timeout(timeout) {
+        // Input and PTY output both arrive on the channel; the timeout only
+        // services the spinner and the status auto-revert.
+        match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(AppEvent::Input(ev)) => {
                 match ev {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
@@ -215,7 +210,6 @@ fn event_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        app.flush_pending_esc();
         app.term.reap_finished();
         if app.term.take_dirty() {
             dirty = true;

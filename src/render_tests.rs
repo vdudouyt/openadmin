@@ -146,14 +146,46 @@ fn every_dialog_renders() {
 }
 
 #[test]
-fn shells_screen_starts_with_an_empty_state_and_esc_chord_captions() {
+fn shells_screen_starts_with_an_empty_state_and_working_f_keys() {
     let (mut app, _rx) = test_app("shells");
     app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
     assert!(out.contains("No open shells."), "{out}");
-    // No F-key is reserved here, so the bar advertises the chords instead.
-    assert!(out.contains("Esc-0") && out.contains("Quit"), "{out}");
-    assert!(out.contains("Esc-4"));
+    // Nothing is focused yet, so the bar offers real F-keys.
+    assert!(out.contains("F1") && out.contains("Help"), "{out}");
+    assert!(out.contains("F10") && out.contains("Quit"), "{out}");
+    assert!(!out.contains("Esc-"), "the Esc chords are gone: {out}");
+}
+
+/// Once a pane has focus the caps become click-only, and the status bar says
+/// where the keyboard went.
+#[test]
+fn a_focused_pane_turns_the_function_bar_click_only() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("clickonly");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "sleep 30".into()];
+    app.term
+        .open_tab(
+            vec![("local".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
+    app.screen = Screen::Shells;
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("all keys go to the terminal"), "{out}");
+    assert!(
+        out.contains("▸") && out.contains("Quit"),
+        "click-only caps: {out}"
+    );
+    assert!(
+        !out.contains("F10"),
+        "no key is advertised that does not work: {out}"
+    );
+    app.term.shutdown();
 }
 
 #[test]
@@ -168,15 +200,20 @@ fn chat_screen_renders_the_transcript_and_composer() {
 }
 
 #[test]
-fn the_help_dialog_documents_the_shell_chords() {
+fn the_help_dialog_explains_the_shells_keyboard() {
     let (mut app, _rx) = test_app("helpchords");
     app.mode = Mode::Help;
-    let out = render(&mut app, 120, 40);
-    assert!(out.contains("Esc then 0"), "{out}");
+    let out = render(&mut app, 120, 44);
+    assert!(out.contains("takes every key"), "{out}");
     assert!(
-        out.contains("mc and GNU Screen"),
+        out.contains("mc, GNU Screen and vim"),
         "the why is stated: {out}"
     );
+    assert!(
+        out.contains("switch screens"),
+        "the mouse way out is documented: {out}"
+    );
+    assert!(!out.contains("Esc then"), "stale chord docs: {out}");
 }
 
 /// Absurd sizes must not panic — the classic ratatui crash.
@@ -473,36 +510,6 @@ fn alt_digits_switch_screens_away_from_the_terminal() {
     assert_eq!(app.screen, Screen::Shells);
 }
 
-/// Typing Esc+digit quickly arrives as Alt+digit, so both spellings must drive
-/// the same chord — otherwise the binding would depend on typing speed.
-#[test]
-fn a_fast_esc_digit_arrives_as_alt_digit_and_still_works() {
-    let (mut app, _rx) = test_app("altchord");
-    app.screen = Screen::Shells;
-    app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT));
-    assert_eq!(app.mode, Mode::Help, "Alt+1 is the fast spelling of Esc 1");
-
-    app.mode = Mode::Normal;
-    app.on_key(KeyEvent::new(KeyCode::Char('9'), KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Chat);
-}
-
-/// Only digits are claimed; mc's Alt+letter bindings still reach it.
-#[test]
-fn alt_letters_are_passed_through_on_the_shells_screen() {
-    let (mut app, _rx) = test_app("altletter");
-    app.screen = Screen::Shells;
-    for c in ['o', 't', 'h', '?'] {
-        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
-        assert_eq!(
-            app.screen,
-            Screen::Shells,
-            "Alt+{c} belongs to the terminal"
-        );
-        assert_eq!(app.mode, Mode::Normal);
-    }
-}
-
 #[test]
 fn key_releases_are_ignored() {
     let (mut app, _rx) = test_app("release");
@@ -512,74 +519,130 @@ fn key_releases_are_ignored() {
     assert_eq!(app.cursor, 0, "a release must not move the cursor");
 }
 
-/// The agreed rule: on the Shells screen the app reserves no F-key at all.
+/// The rule for the Shells screen: a focused pane takes every key. Nothing —
+/// no F-key, no Esc+digit, no Alt chord — is reserved by the app, because mc
+/// reads Esc+digit as its own F-key emulation and Alt as its menu shortcuts.
 #[test]
-fn function_keys_are_not_captured_on_the_shells_screen() {
-    let (mut app, _rx) = test_app("passthrough");
+fn a_focused_pane_takes_every_key() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("passthrough_all");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "sleep 30".into()];
+    app.term
+        .open_tab(
+            vec![("local".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
     app.screen = Screen::Shells;
+    assert!(app.term.focused_session().is_some());
+
+    // Every F-key.
     for n in 1..=10u8 {
         app.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::empty()));
-        assert!(!app.should_quit, "F{n} must not quit from a terminal");
+        assert!(!app.should_quit, "F{n} must not quit");
         assert_eq!(app.mode, Mode::Normal, "F{n} must not open a dialog");
+        assert_eq!(app.screen, Screen::Shells, "F{n} must not change screen");
     }
-    // Tab and Ctrl+A belong to the terminal too.
+
+    // Esc, alone and followed by every digit — mc's own F-key emulation.
+    for d in '0'..='9' {
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char(d));
+        assert!(!app.should_quit, "Esc {d} must not quit");
+        assert_eq!(app.mode, Mode::Normal, "Esc {d} must not open a dialog");
+        assert_eq!(app.screen, Screen::Shells, "Esc {d} must not change screen");
+    }
+
+    // Alt+digit, which is how a quickly typed Esc+digit arrives.
+    for d in '0'..='9' {
+        app.on_key(KeyEvent::new(KeyCode::Char(d), KeyModifiers::ALT));
+        assert!(!app.should_quit, "Alt+{d} must not quit");
+        assert_eq!(app.mode, Mode::Normal, "Alt+{d} must not open a dialog");
+        assert_eq!(app.screen, Screen::Shells, "Alt+{d} must not change screen");
+    }
+
+    // Alt+letter, Tab and Ctrl chords belong to the terminal too.
+    for c in ['o', 't', 'h', '?'] {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
+        assert_eq!(app.screen, Screen::Shells);
+    }
     key(&mut app, KeyCode::Tab);
     app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     assert_eq!(app.screen, Screen::Shells);
+    assert_eq!(app.mode, Mode::Normal);
+    app.term.shutdown();
 }
 
+/// The mouse is the way out of a focused pane, so those paths must work.
 #[test]
-fn esc_digit_chords_drive_the_app_from_the_shells_screen() {
-    let (mut app, _rx) = test_app("chords");
+fn the_shells_screen_is_navigable_by_mouse_while_a_pane_is_focused() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("mouseout");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "sleep 30".into()];
+    app.term
+        .open_tab(
+            vec![("local".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
     app.screen = Screen::Shells;
+    let _ = render(&mut app, 120, 30);
 
+    // The function bar still dispatches, even though no key reaches it.
+    let (x0, _, _) = *app.regions.fkeys.iter().find(|(_, _, n)| *n == 1).unwrap();
+    let y = app.regions.fn_bar_y;
+    click(&mut app, x0 + 1, y);
+    assert_eq!(app.mode, Mode::Help, "clicking Help must still work");
     key(&mut app, KeyCode::Esc);
-    assert!(app.pending_esc.is_some(), "Esc arms the prefix");
-    key(&mut app, KeyCode::Char('1'));
-    assert_eq!(app.mode, Mode::Help, "Esc 1 opens help");
-    assert!(app.pending_esc.is_none());
+    assert_eq!(app.mode, Mode::Normal);
 
-    app.mode = Mode::Normal;
-    key(&mut app, KeyCode::Esc);
-    key(&mut app, KeyCode::Char('9'));
-    assert_eq!(app.screen, Screen::Chat, "Esc 9 cycles the screen");
-
-    app.screen = Screen::Shells;
-    key(&mut app, KeyCode::Esc);
-    key(&mut app, KeyCode::Char('0'));
-    assert!(app.should_quit, "Esc 0 quits");
+    // So do the header screen tabs.
+    let _ = render(&mut app, 120, 30);
+    let (rect, _) = *app
+        .regions
+        .screen_tabs
+        .iter()
+        .find(|(_, s)| *s == Screen::Hosts)
+        .unwrap();
+    click(&mut app, rect.x + 1, rect.y);
+    assert_eq!(
+        app.screen,
+        Screen::Hosts,
+        "clicking a screen tab must still work"
+    );
+    app.term.shutdown();
 }
 
+/// Closing the last shell must not strand the user: with nothing focused there
+/// is nothing to be transparent to, so the keyboard comes back.
 #[test]
-fn a_lone_esc_is_released_to_the_terminal_after_the_timeout() {
-    let (mut app, _rx) = test_app("escflush");
+fn the_keyboard_returns_when_no_pane_is_focused() {
+    let (mut app, _rx) = test_app("emptyshells");
     app.screen = Screen::Shells;
-    app.cfg.escape_time_ms = 1;
+    assert!(app.term.focused_session().is_none());
+
+    key(&mut app, KeyCode::F(1));
+    assert_eq!(app.mode, Mode::Help, "F1 works with no shell open");
+    key(&mut app, KeyCode::Esc);
 
     key(&mut app, KeyCode::Esc);
-    assert!(app.pending_esc.is_some());
-    assert!(
-        app.esc_deadline().is_some(),
-        "the loop is told when to wake"
+    assert_eq!(
+        app.screen,
+        Screen::Hosts,
+        "Esc leaves an empty Shells screen"
     );
 
-    // Before the window closes nothing is flushed.
-    app.flush_pending_esc();
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    app.flush_pending_esc();
-    assert!(app.pending_esc.is_none(), "a lone Esc must reach vim");
-    assert!(app.esc_deadline().is_none());
-}
-
-#[test]
-fn esc_followed_by_a_non_digit_is_not_a_chord() {
-    let (mut app, _rx) = test_app("escletter");
     app.screen = Screen::Shells;
-    key(&mut app, KeyCode::Esc);
-    key(&mut app, KeyCode::Char('k')); // vim: Esc then k
-    assert!(app.pending_esc.is_none());
-    assert_eq!(app.mode, Mode::Normal, "no dialog opened");
-    assert_eq!(app.screen, Screen::Shells);
+    key(&mut app, KeyCode::F(10));
+    assert!(app.should_quit, "F10 quits with no shell open");
 }
 
 #[test]

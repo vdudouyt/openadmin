@@ -502,21 +502,22 @@ pub fn help(f: &mut Frame, app: &App) {
         Line::default(),
         head("SHELLS"),
     ];
-    // The chord table is the part that differs from the mockup, so it says why.
+    // The one place the app deliberately gives up the keyboard, so it says why.
     lines.push(Line::styled(
-        "every key — F1-F10, Tab, Ctrl+A — goes to the terminal,",
+        "a focused pane takes every key — F1-F10, Tab, Esc,",
         theme::faint(),
     ));
     lines.push(Line::styled(
-        "so mc and GNU Screen keep their full keyboard.",
+        "Ctrl and Alt chords — so mc, GNU Screen and vim are",
         theme::faint(),
     ));
-    lines.push(k("Esc then 1", "help          Esc 2  next pane"));
-    lines.push(k("Esc then 3", "next tab      Esc 4  close tab"));
-    lines.push(k("Esc then 5", "new shell     Esc 9  cycle screen"));
-    lines.push(k("Esc then 0", "quit OpenAdmin"));
+    lines.push(Line::styled("completely unimpaired.", theme::faint()));
+    lines.push(Line::default());
+    lines.push(k("click", "the 1/2/3 tabs above switch screens"));
+    lines.push(k("click", "the bar below: Pane · Tab · Close · Quit"));
+    lines.push(k("click", "a shell tab selects it, its × closes it"));
     lines.push(Line::styled(
-        "typed quickly, Esc+N arrives as Alt+N — both work.",
+        "With no shell open the F-keys work here again.",
         theme::faint(),
     ));
     lines.push(Line::default());

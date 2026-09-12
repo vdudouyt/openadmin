@@ -29,7 +29,12 @@ pub fn render_status(f: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Shells => {
             let n = app.term.tab_count();
-            format!("{n} shell{} open", if n == 1 { "" } else { "s" })
+            let s = format!("{n} shell{} open", if n == 1 { "" } else { "s" });
+            if app.term.focused_session().is_some() {
+                format!("{s} · all keys go to the terminal · click to act")
+            } else {
+                s
+            }
         }
         Screen::Chat => format!("agent · {}", app.cfg.model),
     };
@@ -157,16 +162,28 @@ fn entries(app: &App) -> Vec<Entry> {
                 e("F10", "Quit", 10, false),
             ]
         }
-        // No F-key is reserved here, so the caps advertise the Esc chords.
-        Screen::Shells => vec![
-            e("Esc-1", "Help", 1, false),
-            e("Esc-2", "Pane", 2, false),
-            e("Esc-3", "Tab", 3, false),
-            e("Esc-4", "Close", 4, false),
-            e("Esc-5", "New shell", 5, false),
-            e("Esc-9", "Screen", 9, false),
-            e("Esc-0", "Quit", 0, false),
-        ],
+        // A focused pane owns the whole keyboard, so these are click-only and
+        // the caps say so with a pointer glyph instead of a key name. With no
+        // pane focused the normal F-keys work again, and the caps show that.
+        Screen::Shells => {
+            let live = app.term.focused_session().is_some();
+            let cap = |n: u8| {
+                if live {
+                    "▸".to_string()
+                } else {
+                    format!("F{n}")
+                }
+            };
+            vec![
+                e(&cap(1), "Help", 1, false),
+                e(&cap(2), "Pane", 2, false),
+                e(&cap(3), "Tab", 3, false),
+                e(&cap(4), "Close", 4, false),
+                e(&cap(5), "New shell", 5, false),
+                e(&cap(9), "Screen", 9, false),
+                e(&cap(10), "Quit", 10, false),
+            ]
+        }
         Screen::Chat => vec![
             e("F1", "Help", 1, false),
             e("↵", "Send", 0xff, false),
