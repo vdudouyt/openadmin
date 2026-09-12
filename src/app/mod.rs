@@ -636,6 +636,20 @@ impl App {
     /// Keys shared by the Hosts and Chat screens: real F-keys, Alt+digit, and
     /// the mc-style Esc+digit prefix.
     fn key_global(&mut self, key: KeyEvent) -> bool {
+        // Alt+←/→ walk the screens, wrapping in both directions.
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Left => {
+                    self.prev_screen();
+                    return true;
+                }
+                KeyCode::Right => {
+                    self.cycle_screen();
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if key.modifiers.contains(KeyModifiers::ALT)
             && let KeyCode::Char(c) = key.code
             && let Some(d) = c.to_digit(10)
@@ -708,16 +722,33 @@ impl App {
         // With no pane to type into there is nothing to be transparent to, and
         // capturing here is the difference between "no shells open" and "no way
         // out without a mouse" — so the normal app keys work in the empty state.
+        // The one exception to the rule below: Alt+←/→ walk the screens, so
+        // there is a keyboard way out of a terminal and not only a click.
+        // mc, vim and GNU Screen bind neither chord by default.
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Left => {
+                    self.prev_screen();
+                    return;
+                }
+                KeyCode::Right => {
+                    self.cycle_screen();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let Some(id) = self.term.focused_session() else {
             self.key_hosts_or_global(key);
             return;
         };
 
-        // A focused pane takes *every* key: F1-F10, Tab, Ctrl+A, Alt+anything,
-        // and Esc. mc reads Esc+digit as its own F-key emulation and Alt as its
-        // menu shortcuts, so reserving any of them here would quietly break it.
-        // The app is reachable with the mouse instead — the screen tabs and the
-        // function bar are clickable.
+        // Otherwise a focused pane takes every key: F1-F10, Tab, Ctrl+A,
+        // Alt+letter, Alt+digit and Esc. mc reads Esc+digit as its own F-key
+        // emulation and Alt as its menu shortcuts, so reserving any of them
+        // here would quietly break it. The app is otherwise reachable with the
+        // mouse — the header tabs are clickable.
         let app_cursor = self
             .term
             .session(id)
@@ -834,6 +865,11 @@ impl App {
 
     fn cycle_screen(&mut self) {
         self.screen = Screen::ALL[(self.screen.index() + 1) % Screen::ALL.len()];
+    }
+
+    fn prev_screen(&mut self) {
+        let n = Screen::ALL.len();
+        self.screen = Screen::ALL[(self.screen.index() + n - 1) % n];
     }
 
     fn key_host_form(&mut self, key: KeyEvent) {

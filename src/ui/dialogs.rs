@@ -487,6 +487,7 @@ pub fn help(f: &mut Frame, app: &App) {
     let mut lines = vec![
         head("SCREENS"),
         k("Alt+1/2/3", "Hosts · Shells · Chat"),
+        k("Alt+← →", "previous · next screen"),
         k("F9", "cycle screen"),
         Line::default(),
         head("HOSTS"),
@@ -511,7 +512,11 @@ pub fn help(f: &mut Frame, app: &App) {
         "Ctrl and Alt chords — so mc, GNU Screen and vim are",
         theme::faint(),
     ));
-    lines.push(Line::styled("completely unimpaired.", theme::faint()));
+    lines.push(Line::styled(
+        "unimpaired — bar one chord that gets you out:",
+        theme::faint(),
+    ));
+    lines.push(k("Alt+← →", "previous · next screen"));
     lines.push(Line::default());
     lines.push(k("click", "the 1/2/3 tabs switch screens — the way out"));
     lines.push(k("click", "a shell tab selects it, its × closes it"));

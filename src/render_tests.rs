@@ -847,6 +847,66 @@ fn alt_digits_switch_screens_away_from_the_terminal() {
     assert_eq!(app.screen, Screen::Shells);
 }
 
+/// Alt+←/→ walk the screens, wrapping in both directions.
+#[test]
+fn alt_arrows_walk_the_screens() {
+    let (mut app, _rx) = test_app("altarrows");
+    assert_eq!(app.screen, Screen::Hosts);
+
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Shells);
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Chat);
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Hosts, "wraps forward");
+
+    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Chat, "wraps backward");
+    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Shells);
+}
+
+/// The single exception to the Shells screen's keyboard transparency: it is
+/// the only key that gets you out of a live terminal without a mouse.
+#[test]
+fn alt_arrows_escape_a_focused_pane() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("altescape");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "sleep 30".into()];
+    app.term
+        .open_tab(
+            vec![("local".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
+    app.screen = Screen::Shells;
+    assert!(app.term.focused_session().is_some());
+
+    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Hosts, "Alt+← leaves a focused pane");
+
+    app.screen = Screen::Shells;
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Chat, "Alt+→ too");
+
+    // Everything else still belongs to the terminal.
+    app.screen = Screen::Shells;
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Tab, KeyCode::Esc] {
+        app.on_key(KeyEvent::new(code, KeyModifiers::ALT));
+        assert_eq!(app.screen, Screen::Shells, "{code:?} must reach the pty");
+    }
+    for n in 1..=10u8 {
+        app.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::empty()));
+        assert_eq!(app.screen, Screen::Shells);
+        assert!(!app.should_quit);
+    }
+    app.term.shutdown();
+}
+
 #[test]
 fn key_releases_are_ignored() {
     let (mut app, _rx) = test_app("release");

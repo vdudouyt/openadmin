@@ -29,7 +29,8 @@ On first run you are asked to create a database; after that, to unlock it.
 
 ## The three screens
 
-`Alt+1` / `Alt+2` / `Alt+3`, or `F9` to cycle.
+`Alt+1` / `Alt+2` / `Alt+3` jump to a screen; `Alt+←` / `Alt+→` walk
+between them, wrapping; `F9` cycles forward.
 
 ### 1 · Hosts
 
@@ -58,11 +59,16 @@ mount field yourself; empty it to hand control back.
 Open sessions as tabs. One host gives one full-width pane; several marked hosts
 give a single tab named `Group: <first host>` that stacks one pane per host.
 
-**A focused pane takes every key.** `F1`–`F10`, `Tab`, `Esc`, `Esc`+digit, and
-every `Ctrl` and `Alt` chord go straight to the terminal — nothing is reserved.
-mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
+**A focused pane takes every key but one.** `F1`–`F10`, `Tab`, `Esc`,
+`Esc`+digit, `Alt`+letter, `Alt`+digit and every `Ctrl` chord go straight to the
+terminal. mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
 shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
 `Ctrl+A`, vim keeps a zero-latency `Esc`.
+
+The exception is **`Alt+←` / `Alt+→`**, which walk between screens — the one
+keyboard way out of a live terminal. mc, vim and GNU Screen bind neither by
+default; if you have bound `\e[1;3D`/`\e[1;3C` to word movement in your shell,
+that is what you give up.
 
 This screen spends **one row** on itself. There is no function bar and no
 status line — every key here belongs to the terminal, so neither would earn the
@@ -79,7 +85,7 @@ That means **the mouse is how you drive the app while a pane is focused**:
   are never allowed to crowd them out, so a narrow terminal cannot strand you
 * a shell tab selects itself on click, and its `×` closes it; `‹` and `›` mark
   tabs scrolled out of view
-* to quit, switch to Hosts and use `F10` (or click Quit there)
+* to quit, switch to Hosts (`Alt+←`) and use `F10`, or click Quit there
 
 With **no shell open** there is nothing to be transparent to, so the keyboard
 comes back: the F-keys work, and `Esc` returns to Hosts. Closing your last
