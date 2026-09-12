@@ -1,0 +1,40 @@
+<!-- @dsCard group="Components" viewport="700x200" name="Component · Modal dialog" subtitle="Double-border confirm with default action" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:14px 20px;}
+  .tui-row{font-size:14px;}
+</style></head>
+<body class="tui">
+  <div class="wrap" id="out"></div>
+<script src="tui-render.js"></script>
+<script>
+  const W = 38, dl='color:var(--orange-dim)';
+  // parts: [{t, html?, cls?}] ; align: 'left'|'center'. html overrides t for render but t sets width.
+  function inner(parts, align){
+    let txt = parts.map(p=>p.t).join('');
+    let len = txt.length, gap = Math.max(0, W-len), lead=0, trail=gap;
+    if(align==='center'){ lead=gap>>1; trail=gap-lead; }
+    let html = ' '.repeat(lead) + parts.map(p=> p.html || (p.cls?`<span class="${p.cls}">${esc(p.t)}</span>`:esc(p.t))).join('') + ' '.repeat(trail);
+    return `<div class="tui-row"><span style="${dl}">║</span>${html}<span style="${dl}">║</span></div>`;
+  }
+  let h='';
+  const title='Confirm Delete', pre='╔═ '+title+' ';
+  h += `<div class="tui-row"><span style="${dl}">${esc(pre+'═'.repeat(W-pre.length+1)+'╗')}</span></div>`;
+  h += inner([{t:''}]);
+  h += inner([{t:'  '},{t:'Delete '},{t:'CNAME ',cls:'tui-info'},{t:'"shop"',cls:'tui-cell'},{t:' ?'}]);
+  h += inner([{t:'  '},{t:'This record cannot be recovered.',cls:'tui-meta'}]);
+  h += inner([{t:''}]);
+  h += inner([
+    {t:'[ Delete ]', html:'<span style="background:var(--red);color:#1a0000;font-weight:500">[ Delete ]</span>'},
+    {t:'   '},
+    {t:'[ Cancel ]', cls:'tui-cell'}
+  ], 'center');
+  h += inner([{t:''}]);
+  h += `<div class="tui-row"><span style="${dl}">${esc('╚'+'═'.repeat(W)+'╝')}</span></div>`;
+  h += `<div class="tui-row" style="margin-top:6px;color:var(--fg-faint);font-size:12px">double border = modal · default action filled · Tab switches · Esc cancels</div>`;
+  document.getElementById('out').innerHTML = h;
+</script>
+</body></html>

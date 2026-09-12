@@ -1,0 +1,107 @@
+<!-- @dsCard group="Components" viewport="1000x620" name="UI Kit · OpenAdmin (hosts · shells · agent)" subtitle="Three-screen TUI — host CRUD with Insert multi-select, grouped shells, agentic chat" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenAdmin — remote hosts, shells, agent</title>
+<link rel="stylesheet" href="colors_and_type.css">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#0c0c0d; }
+  body{ font-family:var(--font-mono); }
+
+  .tui-stage{ position:fixed; inset:0; overflow:hidden; background:#0c0c0d; }
+  .tui-screen{ position:absolute; left:50%; top:50%; transform-origin:center center;
+    width:120ch; background:var(--bg-base); color:var(--fg);
+    font-size:15px; line-height:1.55; border:1px solid #000;
+    box-shadow:0 24px 80px rgba(0,0,0,.6); }
+  .tui-row{ line-height:1.55; }
+  .tui-cursor{ animation:oa-blink 1.06s steps(1) infinite; }
+  @keyframes oa-blink{ 50%{ opacity:0; } }
+  @media (prefers-reduced-motion: reduce){ .tui-cursor{ animation:none; } }
+
+  /* ---------- header ---------- */
+  .oa-hrow{ display:flex; justify-content:space-between; align-items:center; padding:9px 1ch 7px; }
+  .oa-left{ display:flex; align-items:center; gap:1.6ch; }
+  .oa-mark{ width:58px; height:36px; border-radius:5px; background:var(--orange); flex:none; }
+  .oa-name{ font-size:20px; font-weight:700; color:var(--fg-bright); letter-spacing:.5px; line-height:1.15; }
+  .oa-tag{ font-size:12px; color:var(--fg-muted); }
+
+  .oa-tabs{ display:flex; gap:0; }
+  .oa-tab{ display:flex; align-items:center; gap:.7ch; padding:5px 1.6ch; cursor:pointer;
+    border:1px solid var(--line); border-right:0; color:var(--fg-muted); font-size:13px; }
+  .oa-tab:last-child{ border-right:1px solid var(--line); }
+  .oa-tab:hover{ background:var(--bg-hover); color:var(--fg); }
+  .oa-tab-on{ background:var(--orange); border-color:var(--orange); color:var(--orange-ink); font-weight:500; }
+  .oa-tab-on:hover{ background:var(--orange-bright); color:var(--orange-ink); }
+  .oa-tabnum{ opacity:.75; font-size:11px; }
+  .oa-tabct{ font-size:11px; opacity:.7; }
+
+  /* ---------- shell tabs ---------- */
+  .oa-tabbar{ display:flex; gap:0; padding:0 1ch; }
+  .oa-shtab{ display:flex; align-items:center; gap:.7ch; padding:3px 1.4ch; cursor:pointer;
+    border:1px solid var(--line); border-bottom:0; background:var(--bg-panel);
+    color:var(--fg-muted); font-size:13px; margin-right:-1px; }
+  .oa-shtab:hover{ background:var(--bg-hover); color:var(--fg); }
+  .oa-shtab-on{ background:var(--bg-base); color:var(--fg-bright); border-color:var(--orange);
+    border-bottom:1px solid var(--bg-base); position:relative; z-index:2; }
+  .oa-shtab-dot{ font-size:11px; }
+  .oa-shtab-ct{ font-size:11px; color:var(--yellow-mark); }
+  .oa-shtab-x{ opacity:0; padding:0 .2ch; color:var(--fg-faint); }
+  .oa-shtab:hover .oa-shtab-x{ opacity:1; }
+  .oa-shtab-x:hover{ color:var(--red); }
+  .oa-pane{ cursor:default; }
+
+  /* ---------- status bar ---------- */
+  .oa-statusbar{ position:relative; z-index:30; display:flex; align-items:center; gap:2ch;
+    background:var(--statusbar-bg); padding:3px 1ch; font-size:13px;
+    color:var(--fg-muted); overflow:hidden; white-space:nowrap; }
+  .oa-marked{ color:var(--yellow-mark); font-weight:500; }
+  .oa-sb-hint{ color:var(--fg-faint); }
+  .oa-sb-msg{ margin-left:auto; text-align:right; }
+  .oa-ok{ color:var(--green); } .oa-err{ color:var(--red); }
+  .oa-warn{ color:var(--yellow); } .oa-info{ color:var(--blue); }
+
+  /* ---------- function bar ---------- */
+  .oa-fnbar{ position:relative; z-index:30; display:flex; background:var(--statusbar-bg);
+    border-top:1px solid var(--bg-base); font-size:13px; overflow:hidden; white-space:nowrap; }
+  .oa-fk{ display:flex; align-items:center; cursor:pointer; padding:4px 0; user-select:none; }
+  .oa-fk:hover{ background:var(--bg-hover); }
+  .oa-fk-cap{ color:var(--orange-bright); font-weight:500; padding:0 1px 0 1.2ch; }
+  .oa-fk-lab{ color:var(--fg); padding:0 1.2ch 0 .6ch; }
+  .oa-fk:hover .oa-fk-lab{ color:var(--fg-bright); }
+  .oa-fk-on .oa-fk-cap{ background:var(--orange); color:var(--orange-ink); }
+  .oa-fk-danger{ color:var(--red) !important; }
+  .oa-fk-off{ cursor:default; opacity:.4; }
+  .oa-fk-off:hover{ background:none; }
+
+  /* ---------- rows, hover, dialogs ---------- */
+  .oa-row{ cursor:pointer; }
+  .oa-genkey{ text-decoration:underline; }
+  .oa-clickrow{ cursor:pointer; }
+  .oa-clickrow:hover{ background:rgba(255,255,255,.04); }
+  .oa-btn{ text-decoration:underline; }
+  .oa-dim{ opacity:.5; }
+  .oa-overlay{ position:absolute; inset:0; z-index:20; display:flex; align-items:center;
+    justify-content:center; background:rgba(9,9,11,.55); }
+  .oa-dialog{ background:var(--bg-panel); box-shadow:0 18px 60px rgba(0,0,0,.6); }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="data.js"></script>
+  <script type="text/babel" src="tui.jsx"></script>
+  <script type="text/babel" src="AppChrome.jsx"></script>
+  <script type="text/babel" src="HostsScreen.jsx"></script>
+  <script type="text/babel" src="HostDialogs.jsx"></script>
+  <script type="text/babel" src="ShellsScreen.jsx"></script>
+  <script type="text/babel" src="ChatScreen.jsx"></script>
+  <script type="text/babel" src="app.jsx"></script>
+</body>
+</html>

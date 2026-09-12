@@ -1,0 +1,39 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Spacing · Border styles" subtitle="Single / orange-focus / double-modal / rounded" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:16px 22px;display:flex;gap:26px;flex-wrap:wrap;}
+  .tui-row{font-size:14px;}
+  .cap{font-size:11px;color:var(--fg-faint);margin-top:6px;}
+</style></head>
+<body class="tui">
+  <div class="wrap" id="out"></div>
+<script src="tui-render.js"></script>
+<script>
+  function panel(elId){}
+  function box(title, body, lineCls, corners, w){
+    const [tl,tr,bl,br,h,v] = corners;
+    const out=[];
+    const titleStr = title? h+' '+title+' ' : h+h;
+    out.push(line(seg(tl + titleStr + h.repeat(Math.max(0,w-titleStr.length-2)) + tr, lineCls)));
+    body.forEach(b=> out.push(line(seg(v+' ',lineCls), seg(pad(b,w-4),'tui-cell'), seg(' '+v,lineCls))));
+    out.push(line(seg(bl + h.repeat(w-2) + br, lineCls)));
+    return out.join('');
+  }
+  const groups = [
+    {cap:'single · default frame',   cls:'tui-line',       cor:['┌','┐','└','┘','─','│'], title:'Records'},
+    {cap:'orange · focused panel',   cls:'tui-line-focus', cor:['┌','┐','└','┘','─','│'], title:'Records'},
+    {cap:'double · modal dialog',    cls:'',               cor:['╔','╗','╚','╝','═','║'], title:'Confirm', style:'color:var(--orange-dim)'},
+    {cap:'rounded · info popover',   cls:'tui-line',       cor:['╭','╮','╰','╯','─','│'], title:'Tip'},
+  ];
+  const out = document.getElementById('out');
+  groups.forEach(g=>{
+    const d=document.createElement('div');
+    d.innerHTML = box(g.title, ['line one','line two'], g.cls, g.cor, 18) + `<div class="cap">${g.cap}</div>`;
+    if(g.style) d.querySelectorAll('.tui-row').forEach(r=>r.style.cssText=g.style);
+    out.appendChild(d);
+  });
+</script>
+</body></html>

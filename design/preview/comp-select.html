@@ -1,0 +1,40 @@
+<!-- @dsCard group="Components" viewport="700x220" name="Component · Select / dropdown" subtitle="Open record-type menu + closed states" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:16px 20px;font-size:14px;display:flex;gap:40px;}
+  .lab{color:var(--fg-muted);margin-bottom:6px;}
+  .lab b{color:var(--orange);font-weight:400;}
+  .ctl{display:inline-flex;align-items:center;gap:10px;background:var(--bg-inset);border:1px solid var(--orange);padding:2px 10px;color:var(--fg);}
+  .ctl .car{color:var(--orange);}
+  .menu{margin-top:2px;border:1px solid var(--line);background:var(--bg-panel);width:150px;}
+  .opt{padding:1px 10px;color:var(--fg);}
+  .opt.sel{background:var(--orange);color:var(--orange-ink);font-weight:500;}
+  .opt .d{color:var(--fg-faint);float:right;}
+  .opt.sel .d{color:var(--orange-ink);}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div>
+      <div class="lab"><b>Type</b> — open</div>
+      <div class="ctl">A<span class="car">▾</span></div>
+      <div class="menu">
+        <div class="opt sel">A<span class="d">IPv4</span></div>
+        <div class="opt">AAAA<span class="d">IPv6</span></div>
+        <div class="opt">CNAME<span class="d">alias</span></div>
+        <div class="opt">MX<span class="d">mail</span></div>
+        <div class="opt">TXT<span class="d">text</span></div>
+        <div class="opt">NS · SRV · CAA<span class="d">…</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="lab">closed states</div>
+      <div class="ctl" style="border-color:var(--line)">CNAME<span class="car" style="color:var(--fg-muted)">▾</span></div>
+      <div style="height:8px"></div>
+      <div class="ctl" style="border-color:var(--line);color:var(--fg-disabled)">TXT<span class="car" style="color:var(--fg-disabled)">▾</span></div>
+      <div class="lab" style="margin-top:6px;font-size:12px">focused · idle · disabled</div>
+    </div>
+  </div>
+</body></html>

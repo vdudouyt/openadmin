@@ -1,0 +1,28 @@
+[package]
+name = "openadmin"
+version = "0.1.0"
+edition = "2024"
+description = "AI agent for massive vibe system administration of remote SSH machines"
+
+[[bin]]
+name = "openadmin"
+path = "src/main.rs"
+
+[[bin]]
+name = "openadmin-sshpass"
+path = "src/bin/sshpass.rs"
+
+[dependencies]
+ratatui = "0.30"
+rusqlite = { version = "0.31", features = ["sqlcipher"] }
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+portable-pty = "0.9"
+vt100 = "0.16"
+tui-term = "0.3"
+dirs = "5"
+anyhow = "1"
+libc = "0.2"
+
+[profile.release]
+strip = true

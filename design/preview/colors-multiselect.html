@@ -1,0 +1,23 @@
+<!-- @dsCard group="Colors" viewport="700x190" name="Color · Multi-select marks" subtitle="Yellow Insert marks vs the orange cursor bar" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:16px 20px;font-size:14px;}
+  .r{white-space:pre;font-family:var(--font-mono);}
+  .lead{font-size:12px;color:var(--fg-faint);margin-bottom:10px;}
+  .lead b{color:var(--yellow-mark);font-weight:400;}
+  .cap{font-size:11px;color:var(--fg-faint);margin-top:8px;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="lead">Multi-select (<b>Insert</b>) marks separate from the orange cursor by <b>hue</b>, so a marked row stays readable while cursored.</div>
+    <div class="r"><span style="color:var(--fg-faint)">  </span><span style="color:var(--fg)">web-03    SSH   10.0.4.13         </span></div>
+    <div class="r"><span style="color:var(--yellow-mark);font-weight:500">● web-01    SSH   10.0.4.11         </span></div>
+    <div class="r"><span style="color:var(--yellow-mark);font-weight:500;background:var(--bg-sel)">● web-02    SSH   10.0.4.12         </span></div>
+    <div class="r"><span style="background:var(--orange);color:var(--yellow-mark);font-weight:500">● db-main   </span><span style="background:var(--orange);color:var(--orange-ink)">SSH   10.0.8.3          </span></div>
+    <div class="r"><span style="background:var(--orange);color:var(--orange-ink)">▸ bastion   SSH   edge.corp.net     </span></div>
+    <div class="cap">unmarked · marked · marked+wash · <b style="color:var(--yellow-mark)">marked under cursor</b> · cursor only</div>
+  </div>
+</body></html>

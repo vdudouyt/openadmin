@@ -1,0 +1,24 @@
+<!-- @dsCard group="Type" viewport="700x230" name="Type · Hierarchy without size" subtitle="Weight + color + CASE + reverse-video, all at one size" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 22px;font-size:15px;}
+  .lead{font-size:13px;color:var(--fg-faint);margin-bottom:14px;}
+  .lead b{color:var(--orange);font-weight:400;}
+  .lvl{display:flex;gap:16px;align-items:center;margin:7px 0;}
+  .tag{font-size:12px;color:var(--fg-faint);width:130px;flex:none;}
+  .rev{background:var(--orange);color:var(--orange-ink);font-weight:500;padding:0 8px;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="lead">No point sizes. Hierarchy comes from <b>weight</b>, <b>color</b>, <b>CASE</b> and <b>reverse-video</b> — all at one font size.</div>
+    <div class="lvl"><span class="tag">title · 500 bright</span><span style="font-weight:500;color:var(--fg-bright)">Add DNS Record</span></div>
+    <div class="lvl"><span class="tag">column head · caps muted</span><span class="tui-colhead">TYPE   NAME   CONTENT   TTL   PROXY</span></div>
+    <div class="lvl"><span class="tag">body · 400 fg</span><span style="color:var(--fg)">A   www   192.0.2.1   Auto</span></div>
+    <div class="lvl"><span class="tag">meta · muted</span><span style="color:var(--fg-muted)">edited 2m ago · TTL 300s</span></div>
+    <div class="lvl"><span class="tag">hint · faint italic</span><span style="color:var(--fg-faint);font-style:italic">press F2 to add a record</span></div>
+    <div class="lvl"><span class="tag">selection · reverse</span><span class="rev">A   www   192.0.2.1   Auto   ▲</span></div>
+  </div>
+</body></html>

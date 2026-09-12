@@ -1,0 +1,195 @@
+/* ============================================================================
+   cfdns — Cloudflare DNS Console (TUI)
+   colors_and_type.css — visual foundations for a text/terminal UI design system
+   ----------------------------------------------------------------------------
+   This is a TEXT-UI (ncurses / ratatui) design system. Everything renders on a
+   monospace character grid. There is one type family, one type size, and layout
+   is measured in CHARACTER CELLS rather than pixels. Color does almost all of
+   the expressive work, supported by box-drawing glyphs for structure.
+   ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   FONT
+   JetBrains Mono — a terminal-grade monospace with gapless box-drawing glyphs
+   (┌ ─ ┐ │ ├ ┼ ╭ ═ …) that connect at any line-height. Chosen deliberately for
+   this TUI; no brand font was provided. See README for substitution note.
+   ---------------------------------------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap');
+
+:root {
+  /* ==========================================================================
+     COLOR — terminal palette
+     Tuned for a dark-gray canvas with a DIM white foreground (never pure #fff)
+     and a single Cloudflare-orange accent. Semantic hues are desaturated so
+     they read as "terminal", not "web".
+     ========================================================================== */
+
+  /* --- Surfaces (dark gray, low contrast steps) --- */
+  --bg-base:    #1a1a1c;   /* the terminal canvas */
+  --bg-inset:   #151517;   /* recessed wells: textareas, code, scroll troughs */
+  --bg-panel:   #212124;   /* raised panels / dialog bodies */
+  --bg-alt:     #232327;   /* alternating table row (zebra) */
+  --bg-hover:   #2c2c31;   /* row hover */
+  --bg-sel:     #3a2f1c;   /* selected row — warm orange-tinted wash */
+  --bg-sel-2:   #4a3a1f;   /* selected + focused row */
+
+  /* --- Foreground (DIM white, stepped down) --- */
+  --fg-bright:  #e6e6e8;   /* reserved: logo, focused selection text, key cap */
+  --fg:         #c2c2c6;   /* DEFAULT body text — "white, not very bright" */
+  --fg-muted:   #8b8b92;   /* secondary text: TTL, meta, column subtitles */
+  --fg-faint:   #5c5c63;   /* tertiary: hints, separators, inactive */
+  --fg-disabled:#3f3f45;   /* disabled glyphs */
+
+  /* --- Cloudflare orange (the only accent) --- */
+  --orange:        #f6821f;  /* primary: proxied cloud, active key, focus ring */
+  --orange-bright: #fbad41;  /* highlight / hover on orange elements */
+  --orange-dim:    #a85816;  /* pressed / muted orange, borders on orange */
+  --orange-ink:    #1a1200;  /* text ON an orange fill */
+
+  /* --- Semantic hues (desaturated, terminal-ish) --- */
+  --green:   #6cc08b;   /* success, "saved", healthy */
+  --green-dim:#3f6b50;
+  --red:     #e0584f;   /* destructive, errors, delete */
+  --red-dim: #7a332f;
+  --blue:    #5b9bc7;   /* record-type accent, informational, links */
+  --blue-dim:#3a5c72;
+  --yellow:  #d6a23e;   /* warnings, "pending", TTL emphasis */
+  --yellow-dim:#7a5e26;
+  --magenta: #b888c9;   /* rare: priorities / special record fields */
+
+  /* --- Structure --- */
+  --line:        #34343a;  /* default box-drawing border color (dim) */
+  --line-strong: #4a4a52;  /* emphasized separators */
+  --line-focus:  var(--orange);   /* border of the focused panel */
+  --line-double: var(--orange-dim);
+
+  /* --- Status / function bar --- */
+  --statusbar-bg: #2a2a2f;
+  --statusbar-fg: var(--fg-muted);
+  --keycap-bg:    #34343a;   /* the "F2" key chip background */
+  --keycap-fg:    var(--orange-bright);
+  --keylabel-fg:  var(--fg);
+
+  /* --- Proxy states (Cloudflare's signature toggle) --- */
+  --proxied:      var(--orange);   /* orange cloud = traffic proxied */
+  --dns-only:     var(--fg-muted); /* grey cloud = DNS only */
+
+  /* ==========================================================================
+     TYPE
+     One family, one size. "Scale" in a TUI is expressed through WEIGHT, COLOR,
+     CASE and REVERSE-VIDEO — not point size. The variables below document the
+     few rendering sizes we use when drawing the TUI in HTML.
+     ========================================================================== */
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Code',
+               'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* Rendering sizes (HTML approximation of terminal cells). Pick ONE per app;
+     these exist so the design system can show "comfortable" vs "compact". */
+  --fs:        15px;   /* default cell font-size */
+  --fs-compact:13px;   /* dense terminals / small viewports */
+  --fs-cozy:   17px;   /* presentation / demo */
+
+  /* The character CELL — the atomic unit of all TUI layout.
+     cell-h is the line-height; cell-w is one character advance (~0.6em mono). */
+  --cell-h: 1.55;             /* unitless line-height; box glyphs stay gapless */
+  --cell-w: 0.6em;            /* nominal advance width of one mono glyph */
+
+  /* Weights — the only "hierarchy" lever besides color. */
+  --w-regular: 400;
+  --w-medium:  500;   /* headers, active labels */
+  --w-bold:    700;   /* logo, emphasized values, alerts */
+
+  /* Letter-spacing: ALWAYS 0. On a white-space:pre character grid any tracking
+     accumulates across the row and walks columns out of alignment — a header of
+     ~108 chars at 0.06em drifts a full ~97px. Caps get hierarchy from color,
+     weight and CASE instead. */
+}
+
+/* ----------------------------------------------------------------------------
+   SEMANTIC TYPE ROLES
+   Apply these classes to mark up a TUI rendered in HTML. They are intentionally
+   thin — color + weight + case, never size jumps.
+   ---------------------------------------------------------------------------- */
+
+/* The base text surface every TUI sits on. */
+.tui {
+  font-family: var(--font-mono);
+  font-size: var(--fs);
+  line-height: var(--cell-h);
+  color: var(--fg);
+  background: var(--bg-base);
+  font-variant-ligatures: none;     /* never ligate in a data grid */
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "calt" 0;
+}
+
+/* The ASCII logo / banner — same font, bold, bright, pre-formatted. */
+.tui-logo {
+  font-weight: var(--w-bold);
+  color: var(--orange);
+  white-space: pre;
+  line-height: 1.1;                 /* tight so ASCII art reads as a shape */
+  letter-spacing: 0;
+}
+
+/* A screen / panel title. */
+.tui-title  { font-weight: var(--w-medium); color: var(--fg-bright); }
+
+/* Column headers in a table — caps, faint, tracked. */
+.tui-colhead{
+  font-weight: var(--w-medium);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0;   /* never track a column header — see note above */
+}
+
+/* Body cell text. */
+.tui-cell   { color: var(--fg); }
+.tui-meta   { color: var(--fg-muted); }     /* TTL, timestamps */
+.tui-faint  { color: var(--fg-faint); }     /* hints, placeholders */
+.tui-hint   { color: var(--fg-faint); font-style: italic; }
+
+/* Emphasis by hue. */
+.tui-accent { color: var(--orange); }
+.tui-ok     { color: var(--green); }
+.tui-warn   { color: var(--yellow); }
+.tui-err    { color: var(--red); }
+.tui-info   { color: var(--blue); }
+
+/* Reverse-video selection — the TUI equivalent of a highlighted button. */
+.tui-reverse{ background: var(--orange); color: var(--orange-ink); font-weight: var(--w-medium); }
+
+/* A single terminal ROW. white-space:pre keeps the character grid intact so
+   box-drawing glyphs in fixed columns line up vertically across rows.
+   Inline <span class> coloring does not disturb the grid. */
+.tui-row {
+  white-space: pre;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  line-height: var(--cell-h);
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0;
+}
+
+/* The box-drawing structure layer. */
+.tui-line   { color: var(--line); }
+.tui-line-strong { color: var(--line-strong); }
+.tui-line-focus  { color: var(--line-focus); }
+
+/* ----------------------------------------------------------------------------
+   BOX-DRAWING REFERENCE (for authoring)
+   single:  ┌ ─ ┐ │ ├ ┼ ┤ └ ┴ ┘ ┬
+   rounded: ╭ ╮ ╰ ╯
+   double:  ╔ ═ ╗ ║ ╠ ╬ ╣ ╚ ╩ ╝ ╦
+   heavy:   ┏ ━ ┓ ┃ ┣ ╋ ┫ ┗ ┻ ┛ ┳
+   blocks:  █ ▓ ▒ ░  ▌▐ ▀ ▄   shades for meters/gauges
+   marks:   ● ○ ▲ ▸ ▾ ▴ ► ✓ … · • × »   (1-cell, grid-safe)
+   arrows:  ← → ↑ ↓                     (1-cell, grid-safe)
+   WIDE!:   ↹ ⇧ ↵ ⠹ ⚡ ◆ ★ ✗ ❯          (≠1 cell — NEVER inside a grid row)
+            measured at 15px JetBrains Mono (cell 8.99px):
+            ↹ ⇧ 14.99 · ↵ 12.56 · ⠹ 10.49 · ✗ 9.95 · ❯ 8.29
+            In grid rows spell keys out: Tab · Enter · Shift+Enter;
+            use × for failure and » for a prompt. These glyphs ARE fine in
+            CSS-laid-out chrome (function-bar key caps, tabs) where nothing
+            aligns by character count.
+   ---------------------------------------------------------------------------- */

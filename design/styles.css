@@ -1,0 +1,3 @@
+/* styles.css — the design system's single entry point.
+   Consumers link this one file; it pulls in every foundation stylesheet. */
+@import url('colors_and_type.css');

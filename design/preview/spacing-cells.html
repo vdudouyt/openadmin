@@ -1,0 +1,33 @@
+<!-- @dsCard group="Spacing" viewport="700x200" name="Spacing · The character cell" subtitle="Layout measured in cells, never pixels" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 22px;}
+  .tui-row{font-size:15px;}
+  .lead{font-size:13px;color:var(--fg-faint);margin-bottom:12px;}
+  .lead b{color:var(--orange);font-weight:400;}
+  .rule{margin:10px 0 4px;font-size:12px;color:var(--fg-faint);}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="lead">The atomic unit is the <b>character cell</b> — never a pixel or a half-cell.</div>
+    <div id="out"></div>
+    <div class="rule">padding inside a panel = <b style="color:var(--orange)">1 cell</b> · sections split by 1 blank row or a ├──┤ rule</div>
+  </div>
+<script src="tui-render.js"></script>
+<script>
+  const o = document.getElementById('out');
+  let h = '';
+  // a cell ruler
+  h += line(seg('cell ','tui-faint'), seg('│','tui-line'), seg('1','tui-accent'), seg('│','tui-line'), seg('2','tui-accent'), seg('│','tui-line'), seg('3','tui-accent'), seg('│','tui-line'), seg('4','tui-accent'), seg('│','tui-line'), seg('5','tui-accent'), seg('│','tui-line'), seg('   one glyph = one column','tui-faint'));
+  h += line(seg('     ','tui-faint'), seg('└┴┴┴┴┘','tui-line'));
+  h += line('\u200b');
+  // padding illustration
+  h += line(seg('┌────────────────────────┐','tui-line'));
+  h += line(seg('│','tui-line'), seg(' ','tui-accent'), seg('content sits 1 cell in ','tui-cell'), seg('│','tui-line'));
+  h += line(seg('└────────────────────────┘','tui-line'));
+  o.innerHTML = h;
+</script>
+</body></html>

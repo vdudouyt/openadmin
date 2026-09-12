@@ -1,0 +1,46 @@
+<!-- @dsCard group="Components" viewport="700x200" name="Component · Records table" subtitle="Zebra rows, reverse-video selection, proxy column" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:14px 18px;}
+  .tui-row{font-size:14px;}
+</style></head>
+<body class="tui">
+  <div class="wrap" id="out"></div>
+<script src="tui-render.js"></script>
+<script>
+  const W = [6,16,22,6,4];                 // TYPE NAME CONTENT TTL PRX
+  const INNER = W.reduce((a,b)=>a+b,0)+1;   // +1 leading pad cell
+  const TOTAL = INNER + 2;                  // + left │ + right │
+  function cells(vals, cls){
+    let s = seg(' ');
+    vals.forEach((v,i)=> s += seg(v.t, v.c||cls, W[i], v.a));
+    return s;
+  }
+  function topRule(title, cls){
+    const prefix = '┌─ ' + title + ' ';
+    const dashes = TOTAL - prefix.length - 1;
+    return line(seg('┌─ ', cls), seg(title,'tui-title'), seg(' ', cls), seg('─'.repeat(dashes), cls), seg('┐', cls));
+  }
+  let h='';
+  h += topRule('Records','tui-line-focus');
+  h += line(seg('│','tui-line-focus'), cells([{t:'TYPE'},{t:'NAME'},{t:'CONTENT'},{t:'TTL'},{t:'PRX'}],'tui-colhead'), seg('│','tui-line-focus'));
+  h += line(seg('├','tui-line'), seg('─'.repeat(TOTAL-2),'tui-line'), seg('┤','tui-line'));
+  const rows = [
+    [{t:'A',c:'tui-info'},{t:'www'},{t:'192.0.2.10'},{t:'Auto',c:'tui-meta'},{t:'▲',c:'tui-accent'}],
+    [{t:'AAAA',c:'tui-info'},{t:'www'},{t:'2606:4700::1'},{t:'Auto',c:'tui-meta'},{t:'▲',c:'tui-accent'}],
+  ];
+  rows.forEach(r=> h += line(seg('│','tui-line'), cells(r), seg('│','tui-line')));
+  const selInner = ' ' + pad('CNAME',W[0]) + pad('shop',W[1]) + pad('shops.myshopify.com',W[2]) + pad('Auto',W[3]) + pad('▲',W[4]);
+  h += line(seg('│','tui-line'), `<span class="tui-reverse">${selInner}</span>`, seg('│','tui-line'));
+  const more = [
+    [{t:'MX',c:'tui-info'},{t:'@'},{t:'10 mail.mydomain'},{t:'Auto',c:'tui-meta'},{t:'○',c:'tui-faint'}],
+    [{t:'TXT',c:'tui-info'},{t:'@'},{t:'v=spf1 -all'},{t:'1h',c:'tui-meta'},{t:'○',c:'tui-faint'}],
+  ];
+  more.forEach(r=> h += line(seg('│','tui-line'), cells(r), seg('│','tui-line')));
+  h += line(seg('└','tui-line'), seg('─'.repeat(TOTAL-2),'tui-line'), seg('┘','tui-line'));
+  document.getElementById('out').innerHTML = h;
+</script>
+</body></html>

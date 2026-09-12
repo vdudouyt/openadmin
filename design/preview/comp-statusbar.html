@@ -1,0 +1,32 @@
+<!-- @dsCard group="Components" viewport="700x150" name="Component · Status bar" subtitle="Context · counts · transient status & spinner" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 16px;font-size:13px;}
+  .sb{display:flex;justify-content:space-between;align-items:center;background:var(--statusbar-bg);padding:4px 12px;color:var(--fg-muted);}
+  .sb .z b{color:var(--orange);font-weight:400;}
+  .legend ▲{}
+  .ok{color:var(--green);}
+  .spin{color:var(--orange);}
+  .sb2{margin-top:10px;}
+  .note{margin-top:14px;color:var(--fg-faint);font-size:12px;line-height:1.6;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="sb">
+      <span class="z">zone <b>mydomain.com</b></span>
+      <span>12 records · 3 proxied</span>
+      <span><span style="color:var(--orange)">▲</span> proxied&nbsp;&nbsp;<span style="color:var(--fg-muted)">○</span> dns-only</span>
+      <span class="ok">✓ Saved.</span>
+    </div>
+    <div class="sb sb2">
+      <span class="z">zone <b>mydomain.com</b></span>
+      <span>filter: <span style="color:var(--fg)">type:A</span></span>
+      <span>3 of 12 match</span>
+      <span class="spin">⠹ Loading zone…</span>
+    </div>
+    <div class="note">Optional single row directly above the function bar. Left: context. Middle: counts / filters. Right: transient status — <span class="ok">✓ green</span> for success, <span class="spin">spinner</span> for async, red for errors.</div>
+  </div>
+</body></html>

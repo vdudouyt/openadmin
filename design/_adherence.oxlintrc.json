@@ -1,0 +1,185 @@
+{
+  "plugins": [
+    "react",
+    "import"
+  ],
+  "rules": {
+    "react/forbid-elements": [
+      "warn",
+      {
+        "forbid": []
+      }
+    ],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "components/FunctionBar/**",
+              "components/StatusBar/**",
+              "components/TuiPanel/**",
+              "preview/**",
+              "ui_kits/dns-client/**",
+              "ui_kits/openadmin/**"
+            ],
+            "message": "Import design-system components from 'index.js', not component internals."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a design-system color token via var()."
+      },
+      {
+        "selector": "Literal[value=/\\b\\d+px\\b/]",
+        "message": "Raw px value — use a design-system spacing token via var()."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:JetBrains Mono))/i]",
+        "message": "Font not provided by the design system. Available: JetBrains Mono."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='FunctionBarItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:keyLabel|label|active|danger|disabled|title|onClick|key|ref|className|style|children)$/]",
+        "message": "<FunctionBarItem> doesn't accept that prop. Declared props: keyLabel, label, active, danger, disabled, title, onClick."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='StatusBar'] > JSXAttribute > JSXIdentifier[name!=/^(?:left|hint|message|tone|fontSize|style|key|ref|className|style|children)$/]",
+        "message": "<StatusBar> doesn't accept that prop. Declared props: left, hint, message, tone, fontSize, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='StatusBar'] > JSXAttribute[name.name='tone'] > Literal[value!=/^(?:ok|err|warn|info|)$/]",
+        "message": "<StatusBar> tone must be one of 'ok' | 'err' | 'warn' | 'info' | ''."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='TuiPanel'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|right|rows|width|focus|double|minRows|fontSize|style|children|key|ref|className|style|children)$/]",
+        "message": "<TuiPanel> doesn't accept that prop. Declared props: title, right, rows, width, focus, double, minRows, fontSize, style, children."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/index.js"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "x-omelette": {
+    "components": {
+      "FunctionBarItem": {
+        "replaces": []
+      },
+      "StatusBar": {
+        "replaces": []
+      },
+      "TuiPanel": {
+        "replaces": []
+      }
+    },
+    "tokens": [
+      "--bg-alt",
+      "--bg-base",
+      "--bg-hover",
+      "--bg-inset",
+      "--bg-panel",
+      "--bg-sel",
+      "--bg-sel-2",
+      "--blue",
+      "--blue-dim",
+      "--cell-h",
+      "--cell-w",
+      "--dns-only",
+      "--fg",
+      "--fg-bright",
+      "--fg-disabled",
+      "--fg-faint",
+      "--fg-muted",
+      "--font-mono",
+      "--fs",
+      "--fs-compact",
+      "--fs-cozy",
+      "--green",
+      "--green-dim",
+      "--keycap-bg",
+      "--keycap-fg",
+      "--keylabel-fg",
+      "--line",
+      "--line-double",
+      "--line-focus",
+      "--line-strong",
+      "--magenta",
+      "--orange",
+      "--orange-bright",
+      "--orange-dim",
+      "--orange-ink",
+      "--proxied",
+      "--red",
+      "--red-dim",
+      "--statusbar-bg",
+      "--statusbar-fg",
+      "--w-bold",
+      "--w-medium",
+      "--w-regular",
+      "--yellow",
+      "--yellow-dim",
+      "--yellow-mark"
+    ],
+    "tokenKinds": {
+      "--bg-base": "color",
+      "--bg-inset": "color",
+      "--bg-panel": "color",
+      "--bg-alt": "color",
+      "--bg-hover": "color",
+      "--bg-sel": "color",
+      "--bg-sel-2": "color",
+      "--fg-bright": "color",
+      "--fg": "color",
+      "--fg-muted": "color",
+      "--fg-faint": "color",
+      "--fg-disabled": "color",
+      "--orange": "color",
+      "--orange-bright": "color",
+      "--orange-dim": "color",
+      "--orange-ink": "color",
+      "--green": "color",
+      "--green-dim": "color",
+      "--red": "color",
+      "--red-dim": "color",
+      "--blue": "color",
+      "--blue-dim": "color",
+      "--yellow": "color",
+      "--yellow-dim": "color",
+      "--magenta": "color",
+      "--yellow-mark": "color",
+      "--line": "color",
+      "--line-strong": "color",
+      "--line-focus": "color",
+      "--line-double": "color",
+      "--statusbar-bg": "color",
+      "--statusbar-fg": "color",
+      "--keycap-bg": "color",
+      "--keycap-fg": "color",
+      "--keylabel-fg": "color",
+      "--proxied": "color",
+      "--dns-only": "color",
+      "--font-mono": "font",
+      "--fs": "spacing",
+      "--fs-compact": "spacing",
+      "--fs-cozy": "spacing",
+      "--cell-h": "other",
+      "--cell-w": "spacing",
+      "--w-regular": "font",
+      "--w-medium": "font",
+      "--w-bold": "font"
+    },
+    "fontFamilies": [
+      "JetBrains Mono"
+    ]
+  }
+}

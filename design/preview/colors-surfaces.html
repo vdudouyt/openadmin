@@ -1,0 +1,23 @@
+<!-- @dsCard group="Colors" viewport="700x200" name="Color · Surfaces" subtitle="Dark-gray canvas steps — low contrast by design" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 20px;font-size:14px;}
+  .sw{display:flex;align-items:center;gap:14px;line-height:2.0;}
+  .chip{width:46px;height:22px;border:1px solid var(--line);flex:none;}
+  .tok{color:var(--fg);width:120px;display:inline-block;}
+  .hex{color:var(--fg-muted);width:80px;display:inline-block;}
+  .desc{color:var(--fg-faint);}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="sw"><span class="chip" style="background:#1a1a1c"></span><span class="tok">--bg-base</span><span class="hex">#1a1a1c</span><span class="desc">the terminal canvas</span></div>
+    <div class="sw"><span class="chip" style="background:#151517"></span><span class="tok">--bg-inset</span><span class="hex">#151517</span><span class="desc">recessed wells · textareas · troughs</span></div>
+    <div class="sw"><span class="chip" style="background:#212124"></span><span class="tok">--bg-panel</span><span class="hex">#212124</span><span class="desc">raised panels · dialog bodies</span></div>
+    <div class="sw"><span class="chip" style="background:#232327"></span><span class="tok">--bg-alt</span><span class="hex">#232327</span><span class="desc">alternating table row (zebra)</span></div>
+    <div class="sw"><span class="chip" style="background:#2c2c31"></span><span class="tok">--bg-hover</span><span class="hex">#2c2c31</span><span class="desc">row hover</span></div>
+    <div class="sw"><span class="chip" style="background:#3a2f1c"></span><span class="tok">--bg-sel</span><span class="hex">#3a2f1c</span><span class="desc">selected row · warm orange wash</span></div>
+  </div>
+</body></html>

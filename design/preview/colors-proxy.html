@@ -1,0 +1,31 @@
+<!-- @dsCard group="Colors" viewport="700x165" name="Color · Proxy state" subtitle="Orange ▲ proxied vs grey ○ DNS-only" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:20px 22px;}
+  .row{display:flex;gap:40px;}
+  .state{display:flex;align-items:center;gap:14px;}
+  .glyph{font-size:40px;line-height:1;}
+  .lab{font-size:15px;}
+  .lab .name{font-weight:500;}
+  .lab .sub{color:var(--fg-faint);font-size:13px;}
+  .note{margin-top:18px;color:var(--fg-faint);font-size:13px;line-height:1.6;}
+  .note b{color:var(--orange);font-weight:400;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="row">
+      <div class="state">
+        <span class="glyph" style="color:#f6821f">▲</span>
+        <span class="lab"><div class="name" style="color:#f6821f">Proxied</div><div class="sub">traffic routed through Cloudflare</div></span>
+      </div>
+      <div class="state">
+        <span class="glyph" style="color:#8b8b92">○</span>
+        <span class="lab"><div class="name" style="color:#c2c2c6">DNS only</div><div class="sub">record returned as-is</div></span>
+      </div>
+    </div>
+    <div class="note">The proxy state is the one piece of pure Cloudflare semantics in the grid. It appears as a single glyph in the <b>PROXY</b> column and toggles with <b>F4</b>. Orange ▲ = on, grey ○ = off. Only valid for <b>A</b> · <b>AAAA</b> · <b>CNAME</b> records.</div>
+  </div>
+</body></html>

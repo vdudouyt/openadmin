@@ -1,0 +1,37 @@
+<!-- @dsCard group="Components" viewport="700x150" name="StatusBar" subtitle="Context row — hover hint plus success, error and warning tones" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<style>html,body{margin:0;background:var(--bg-base);font-family:var(--font-mono);color:var(--fg);}
+.wrap{padding:18px 16px;display:flex;flex-direction:column;gap:8px;}
+.cap{font-size:11px;color:var(--fg-faint);margin-top:4px;}</style></head>
+<body>
+<div class="wrap"><div id="root"></div></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<script>
+  const NS = window.CfdnsCloudflareDNSConsoleTUIDesignSystem_650d76 || {};
+  const { StatusBar } = NS;
+  const e = React.createElement;
+  function __missing(name){
+    return React.createElement('div', { style:{
+      fontFamily:'var(--font-mono)', fontSize:13, color:'var(--yellow)',
+      border:'1px solid var(--line)', padding:'10px 14px' } },
+      name + ' is not on the bundle yet — _ds_bundle.js compiles at the end of the turn. Reload after it builds.');
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    !StatusBar ? __missing('StatusBar') : e(React.Fragment, null,
+      e(StatusBar, { left:'10 hosts · 5 mounted', message:'✓ Mounted web-01.', tone:'ok' }),
+      e('div', { style:{height:6} }),
+      e(StatusBar, { left:'10 hosts · 5 mounted',
+        hint:'deploy@10.0.4.11:22 · double-click for a shell',
+        message:'Ready.' }),
+      e('div', { style:{height:6} }),
+      e(StatusBar, { left:'zone mydomain.com', message:'Content is not a valid IPv4 address.', tone:'err' }),
+      e('div', { className:'cap' }, 'left = context · middle = hover hint (mouse motion) · right = transient status')
+    )
+  );
+</script>
+</body></html>

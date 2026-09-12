@@ -1,0 +1,30 @@
+<!-- @dsCard group="Components" viewport="700x175" name="Component · Form fields" subtitle="Empty / focused / error / disabled states" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:16px 20px;font-size:14px;}
+  .fld{display:flex;align-items:center;gap:12px;margin:8px 0;}
+  .lab{width:96px;text-align:right;color:var(--fg-muted);}
+  .lab.foc{color:var(--orange);}
+  .lab.dis{color:var(--fg-disabled);}
+  .well{background:var(--bg-inset);border:1px solid var(--line);padding:2px 8px;min-width:240px;color:var(--fg);}
+  .well.foc{border-color:var(--orange);}
+  .well.err{border-color:var(--red);}
+  .well.dis{color:var(--fg-disabled);border-color:var(--line);}
+  .ph{color:var(--fg-faint);}
+  .cur{display:inline-block;width:8px;height:1.05em;background:var(--orange);vertical-align:-2px;animation:bl 1.06s steps(1) infinite;}
+  @keyframes bl{50%{opacity:0;}}
+  .state{width:74px;color:var(--fg-faint);font-size:12px;}
+  .errmsg{color:var(--red);font-size:12px;margin:2px 0 6px 108px;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="fld"><span class="lab">Name</span><span class="well"><span class="ph">subdomain or @</span></span><span class="state">empty</span></div>
+    <div class="fld"><span class="lab foc">Name</span><span class="well foc">www<span class="cur"></span></span><span class="state">focused</span></div>
+    <div class="fld"><span class="lab">Content</span><span class="well err">192.0.2.999</span><span class="state">error</span></div>
+    <div class="errmsg">not a valid IPv4 address</div>
+    <div class="fld"><span class="lab dis">TTL</span><span class="well dis">Auto (proxied)</span><span class="state">disabled</span></div>
+  </div>
+</body></html>

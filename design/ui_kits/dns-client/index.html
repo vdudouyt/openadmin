@@ -1,0 +1,102 @@
+<!-- @dsCard group="Components" viewport="1000x620" name="UI Kit · cfdns DNS Client" subtitle="Full interactive TUI — records grid, F-key bar, dialogs, bulk-add wizard" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cfdns — Cloudflare DNS Console</title>
+<link rel="stylesheet" href="colors_and_type.css">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#0c0c0d; }
+  body{ font-family:var(--font-mono); }
+
+  /* ---- stage + scaled fixed screen ---- */
+  .tui-stage{ position:fixed; inset:0; overflow:hidden; background:#0c0c0d; }
+  .tui-screen{
+    position:absolute; left:50%; top:50%; transform-origin:center center;
+    width:104ch; background:var(--bg-base); color:var(--fg);
+    font-size:16px; line-height:1.55;
+    border:1px solid #000; box-shadow:0 24px 80px rgba(0,0,0,.6);
+  }
+  .tui-row{ line-height:1.55; }
+
+  /* ---- header band ---- */
+  .tui-header{ position:relative; z-index:1; }
+  .hdr-row{ display:flex; justify-content:space-between; align-items:center; padding:10px 1ch 8px; }
+  .hdr-left{ display:flex; align-items:center; gap:2ch; }
+  .hdr-mark{ width:62px; height:38px; border-radius:5px; background:var(--orange); flex:none; }
+  .hdr-word .hdr-name{ font-size:21px; font-weight:700; color:var(--fg-bright); letter-spacing:1px; line-height:1.1; }
+  .hdr-word .hdr-tag{ font-size:12px; color:var(--fg-muted); letter-spacing:.04em; }
+  .hdr-right{ text-align:right; font-size:13px; line-height:1.5; }
+  .hdr-zone{ color:var(--fg); } .hdr-zone b{ color:var(--orange); font-weight:400; }
+  .hdr-car{ color:var(--fg-muted); }
+  .hdr-acct{ color:var(--fg-faint); font-size:12px; }
+  .hdr-count{ color:var(--fg-muted); font-size:12px; }
+  .hdr-prx{ color:var(--orange); }
+
+  /* ---- status bar ---- */
+  .tui-statusbar{ position:relative; z-index:30; display:flex; align-items:center; gap:2ch;
+    background:var(--statusbar-bg); padding:3px 1ch; font-size:13px; color:var(--fg-muted);
+    overflow:hidden; white-space:nowrap; }
+  .sb-zone b{ color:var(--orange); font-weight:400; }
+  .sb-legend{ margin-left:auto; }
+  .sb-prx{ color:var(--orange); } .sb-dns{ color:var(--fg-muted); }
+  .sb-msg{ min-width:24ch; text-align:right; color:var(--fg-muted); }
+  .sb-msg.tui-ok{ color:var(--green); } .sb-msg.tui-err{ color:var(--red); }
+  .sb-msg.tui-warn{ color:var(--yellow); } .sb-msg.tui-info{ color:var(--blue); }
+  .sb-spin{ color:var(--orange); }
+
+  /* ---- function bar ---- */
+  .tui-fnbar{ position:relative; z-index:30; display:flex; background:var(--statusbar-bg);
+    border-top:1px solid var(--bg-base); font-size:13px; overflow:hidden; white-space:nowrap; }
+  .fk{ display:flex; align-items:center; cursor:pointer; padding:4px 0; user-select:none; }
+  .fk-cap{ color:var(--orange-bright); font-weight:500; padding:0 1px 0 1.3ch; }
+  .fk-lab{ color:var(--fg); padding:0 1.3ch 0 .6ch; }
+  .fk:hover .fk-lab{ color:var(--fg-bright); }
+  .fk:hover{ background:var(--bg-hover); }
+  .fk-active .fk-cap{ background:var(--orange); color:var(--orange-ink); }
+  .fk-lab.fk-danger{ color:var(--red); }
+
+  /* ---- table rows ---- */
+  .tui-clickrow{ cursor:pointer; }
+  .tui-table .tui-clickrow:hover{ background:var(--bg-hover); }
+
+  /* ---- overlay + dialog ---- */
+  .tui-overlay{ position:absolute; inset:0; z-index:20; display:flex; align-items:center;
+    justify-content:center; background:rgba(9,9,11,.55); }
+  .tui-dialog{ background:var(--bg-panel); box-shadow:0 18px 60px rgba(0,0,0,.6); }
+  .tui-dialog .tui-clickrow:hover{ background:rgba(255,255,255,.03); }
+
+  /* ---- cursor ---- */
+  .tui-cursor{ animation:tui-blink 1.06s steps(1) infinite; }
+  @keyframes tui-blink{ 50%{ opacity:0; } }
+  @media (prefers-reduced-motion: reduce){ .tui-cursor{ animation:none; } }
+
+  /* hint shown until first interaction */
+  .tui-boothint{ position:fixed; left:50%; bottom:14px; transform:translateX(-50%);
+    z-index:50; font-size:12px; color:var(--fg-faint); background:rgba(20,20,22,.8);
+    padding:5px 14px; border:1px solid var(--line); pointer-events:none; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="data.js"></script>
+  <script type="text/babel" src="tui.jsx"></script>
+  <script type="text/babel" src="Header.jsx"></script>
+  <script type="text/babel" src="RecordsTable.jsx"></script>
+  <script type="text/babel" src="Chrome.jsx"></script>
+  <script type="text/babel" src="Dialogs.jsx"></script>
+  <script type="text/babel" src="BulkWizard.jsx"></script>
+  <script type="text/babel" src="app.jsx"></script>
+
+  <script>
+    // (boot hint lives in the status bar)
+  </script>
+</body>
+</html>

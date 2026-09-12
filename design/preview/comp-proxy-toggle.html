@@ -1,0 +1,33 @@
+<!-- @dsCard group="Components" viewport="700x200" name="Component · Proxy toggle & checkboxes" subtitle="Radio selector + literal ASCII checkboxes" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 20px;font-size:14px;}
+  .lab{color:var(--fg-muted);margin-bottom:10px;}
+  .row{display:flex;gap:14px;align-items:center;margin:8px 0;}
+  .radio{display:inline-flex;gap:8px;align-items:center;}
+  .pill{padding:2px 12px;border:1px solid var(--line);color:var(--fg-muted);}
+  .pill.on{border-color:var(--orange);background:var(--bg-sel);color:var(--orange);}
+  .mark{font-size:15px;}
+  .chk{color:var(--fg);}
+  .chk .box{color:var(--orange);}
+  .hint{color:var(--fg-faint);font-size:12px;margin-top:6px;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="lab">Proxy status — toggled with <span style="color:var(--orange)">F4</span> · radio selector in the form</div>
+    <div class="row">
+      <span class="radio pill on"><span class="mark" style="color:var(--orange)">(•)</span> ▲ Proxied</span>
+      <span class="radio pill"><span class="mark">( )</span> ○ DNS only</span>
+    </div>
+    <div class="hint">orange ▲ routes traffic through Cloudflare · grey ○ returns the record as-is</div>
+    <div style="height:12px"></div>
+    <div class="lab">Checkboxes — literal ASCII, never a graphical control</div>
+    <div class="row">
+      <span class="chk"><span class="box">[x]</span> Apply to all matching</span>
+      <span class="chk" style="color:var(--fg-muted)"><span style="color:var(--fg-faint)">[ ]</span> Overwrite existing</span>
+    </div>
+  </div>
+</body></html>

@@ -1,0 +1,32 @@
+<!-- @dsCard group="Components" viewport="700x120" name="Component · Function-key bar" subtitle="Always-pinned F-key actions with pressed state" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:18px 16px;}
+  .bar{display:flex;background:var(--statusbar-bg);font-size:14px;}
+  .fk{display:flex;align-items:center;padding:5px 0;}
+  .cap{color:var(--orange-bright);font-weight:500;padding:0 2px 0 10px;}
+  .lab{color:var(--fg);padding:0 10px 0 4px;}
+  .fk:hover .lab{color:var(--fg-bright);}
+  .fk.press .cap{background:var(--orange);color:var(--orange-ink);}
+  .note{margin-top:14px;font-size:12px;color:var(--fg-faint);line-height:1.6;}
+  .note b{color:var(--orange);font-weight:400;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="bar">
+      <span class="fk"><span class="cap">F1</span><span class="lab">Help</span></span>
+      <span class="fk"><span class="cap">F2</span><span class="lab">Add</span></span>
+      <span class="fk"><span class="cap">F3</span><span class="lab">Edit</span></span>
+      <span class="fk"><span class="cap">F4</span><span class="lab">Proxy</span></span>
+      <span class="fk press"><span class="cap">F5</span><span class="lab">Bulk</span></span>
+      <span class="fk"><span class="cap">F6</span><span class="lab">Filter</span></span>
+      <span class="fk"><span class="cap">F7</span><span class="lab">Sort</span></span>
+      <span class="fk"><span class="cap">F8</span><span class="lab" style="color:var(--red)">Delete</span></span>
+      <span class="fk"><span class="cap">F10</span><span class="lab">Quit</span></span>
+    </div>
+    <div class="note">Always pinned to the bottom row. Caps are <b>orange</b>; the active/pressed key inverts to a solid fill (see <b>F5</b>). Destructive actions tint their label red.</div>
+  </div>
+</body></html>

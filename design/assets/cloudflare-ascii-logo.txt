@@ -1,0 +1,31 @@
+cfdns — Cloudflare DNS Console · brand mark (ASCII)
+====================================================
+A terminal cannot draw a real logo at one cell per glyph, so cfdns does NOT try.
+The brand mark is an HONEST primitive: a plain, solid, single-tone orange block,
+2 rows tall to match the height of the two-line wordmark beside it. Paint it
+--orange, render with white-space: pre and line-height: 1.0.
+
+
+[1] HEADER LOCKUP  (2-row block + 2-line wordmark)
+--------------------------------------------------------------------------------
+  ▟███████████▙     cfdns
+  ▜███████████▛     Cloudflare DNS Console
+
+
+[2] COMPACT MARK  (narrow viewports)
+--------------------------------------------------------------------------------
+  ▟████▙     cfdns
+  ▜████▛
+
+
+[3] INLINE GLYPH  (status bar / prompts)
+--------------------------------------------------------------------------------
+  ▟██▙ cfdns
+
+
+Notes
+-----
+• Rounded corners use the quadrant blocks ▟ ▙ ▜ ▛ (each exactly one cell).
+• One solid tone only — never gradient-shade or texture the block.
+• The wordmark: name in --fg-bright (accent first letter --orange if desired),
+  tagline in --fg-muted. Generate other wordmarks with a slim figlet if needed.

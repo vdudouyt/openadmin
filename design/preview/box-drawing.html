@@ -1,0 +1,31 @@
+<!-- @dsCard group="Spacing" viewport="700x300" name="Spacing · Box-drawing & marks" subtitle="Glyph sets + which marks are grid-safe" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html,body{margin:0;background:var(--bg-base);}
+  .wrap{padding:14px 20px;font-size:15px;}
+  .set{display:flex;gap:14px;align-items:baseline;margin:4px 0;}
+  .lab{font-size:12px;color:var(--fg-faint);width:84px;flex:none;text-align:right;}
+  .gly{color:var(--fg);letter-spacing:3px;}
+  .gly.acc{color:var(--orange);}
+  .gly.dim{color:var(--line-strong);}
+  .gly.bad{color:var(--red);}
+  .ok{color:var(--fg-disabled);font-size:11px;margin-left:8px;white-space:nowrap;}
+  .no{color:var(--red);opacity:.75;font-size:11px;margin-left:8px;white-space:nowrap;}
+  .foot{margin-top:10px;font-size:11px;color:var(--fg-faint);line-height:1.6;}
+  .foot b{color:var(--fg);font-weight:400;}
+</style></head>
+<body class="tui">
+  <div class="wrap">
+    <div class="set"><span class="lab">single</span><span class="gly dim">┌ ─ ┐ │ ├ ┼ ┤ └ ┴ ┘ ┬</span></div>
+    <div class="set"><span class="lab">rounded</span><span class="gly dim">╭ ╮ ╰ ╯</span></div>
+    <div class="set"><span class="lab">double</span><span class="gly" style="color:var(--orange-dim)">╔ ═ ╗ ║ ╠ ╬ ╣ ╚ ╩ ╝ ╦</span></div>
+    <div class="set"><span class="lab">heavy</span><span class="gly dim">┏ ━ ┓ ┃ ┣ ╋ ┫ ┗ ┻ ┛ ┳</span></div>
+    <div class="set"><span class="lab">blocks</span><span class="gly">█ ▓ ▒ ░ ▌ ▐ ▀ ▄</span></div>
+    <div class="set"><span class="lab">marks</span><span class="gly acc">▲</span><span class="gly">○ ● ▸ ▾ ▴ ► ✓ … · • × »</span><span class="ok">grid-safe · 1 cell</span></div>
+    <div class="set"><span class="lab">arrows</span><span class="gly">← → ↑ ↓</span><span class="ok">grid-safe · 1 cell</span></div>
+    <div class="set"><span class="lab">never</span><span class="gly bad">↹ ⇧ ↵ ⠹ ✗ ❯ ◆ ★ ⚡</span><span class="no">≠ 1 cell — breaks any aligned row</span></div>
+    <div class="foot">In grid rows spell keys out — <b>Tab</b> · <b>Enter</b> · <b>Shift+Enter</b>. The pretty key glyphs are fine in CSS chrome (key caps, tabs) where nothing aligns by character count.</div>
+  </div>
+</body></html>
