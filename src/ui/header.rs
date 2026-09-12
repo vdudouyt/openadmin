@@ -24,8 +24,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let left = Rect::new(area.x, area.y, room, area.height);
 
     // The Shells screen has no tab strip of its own — its tabs live here, and
-    // the brand steps aside for them.
-    if app.screen == Screen::Shells {
+    // the brand steps aside for them. With nothing open there is nothing to
+    // name, so the brand keeps the space.
+    if app.screen == Screen::Shells && !app.term.is_empty() {
         screens::shells::render_tab_strip(f, left, app);
         return;
     }
@@ -43,8 +44,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         Vec::new()
     };
     if !brand.is_empty() {
-        // Clip to the room the tabs left: a Paragraph pads its whole area, so
-        // drawing into `area` here would blank the strip we just rendered.
+        // Clip to the room the tabs left. A Paragraph does not erase what is
+        // under it, but it does patch its style across its whole rect, so a
+        // styled one drawn into `area` would recolour the strip.
         f.render_widget(Paragraph::new(Line::from(brand)), left);
     }
 }

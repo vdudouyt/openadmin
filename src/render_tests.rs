@@ -160,6 +160,12 @@ fn shells_screen_starts_with_an_empty_state_and_no_footer() {
     );
     // The header tabs are still there — they are the way back out.
     assert!(app.regions.screen_tabs.len() == 3);
+    // With nothing open there are no shell tabs to name, so the brand keeps
+    // the space it would otherwise yield.
+    assert!(
+        out.contains("OpenAdmin"),
+        "the brand shows on an empty Shells screen: {out}"
+    );
 }
 
 /// With no footer and no status line, the header's screen tabs are the whole
@@ -284,6 +290,25 @@ fn open_shells(app: &mut App, names: &[&str]) {
             .unwrap();
     }
     app.screen = Screen::Shells;
+}
+
+/// The brand yields the header only while there are tabs to put there, and
+/// takes the space back when the last shell closes.
+#[test]
+fn the_brand_returns_when_the_last_shell_closes() {
+    let (mut app, _rx) = test_app("brandback");
+    open_shells(&mut app, &["web-01"]);
+
+    let out = render(&mut app, 120, 20);
+    assert!(!out.contains("OpenAdmin"), "the tab takes the space: {out}");
+    assert!(out.contains("web-01"), "{out}");
+
+    app.term.close_active_tab();
+    let out = render(&mut app, 120, 20);
+    assert!(out.contains("OpenAdmin"), "the brand comes back: {out}");
+    assert!(!out.contains("web-01"), "{out}");
+    // And the way out is registered either way.
+    assert_eq!(app.regions.screen_tabs.len(), 3);
 }
 
 /// A lone pane needs no title: the header tab already names the host.

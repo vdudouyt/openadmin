@@ -67,7 +67,8 @@ shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
 This screen spends **one row** on itself. There is no function bar and no
 status line — every key here belongs to the terminal, so neither would earn the
 line of your shell it costs. The shell tabs share the header row with the screen
-tabs, the brand stepping aside for them, and a tab holding a single pane draws
+tabs — the brand stepping aside whenever there is a shell to name, and taking
+the space back when the last one closes — and a tab holding a single pane draws
 no title rule at all: its host name is already in its tab. A stacked group keeps
 one title per pane, because there they tell the panes apart.
 
