@@ -162,12 +162,12 @@ fn shells_screen_starts_with_an_empty_state_and_no_footer() {
     assert!(app.regions.screen_tabs.len() == 3);
 }
 
-/// With no footer, the status line is the only thing that can point at the way
-/// out of a focused pane, so it must.
+/// With no footer and no status line, the header's screen tabs are the whole
+/// escape route from a focused pane, so they must stay registered.
 #[test]
-fn a_focused_pane_says_where_the_keyboard_went() {
+fn the_screen_tabs_survive_a_focused_pane() {
     use crate::term::session::Spawn;
-    let (mut app, _rx) = test_app("clickonly");
+    let (mut app, _rx) = test_app("escaperoute");
     let mut spawn = Spawn::new("/bin/sh");
     spawn.args = vec!["-c".into(), "sleep 30".into()];
     app.term
@@ -181,11 +181,15 @@ fn a_focused_pane_says_where_the_keyboard_went() {
         .unwrap();
     app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
-    assert!(out.contains("keys go to the terminal"), "{out}");
+
+    assert_eq!(app.regions.screen_tabs.len(), 3, "{out}");
+    // The brand steps aside for the shell tabs on this screen.
     assert!(
-        out.contains("click 1/2/3 above"),
-        "the way out is named: {out}"
+        !out.contains("OpenAdmin"),
+        "the wordmark is hidden here: {out}"
     );
+    // The shell tab shares the header row with them.
+    assert!(out.lines().next().unwrap().contains("local"), "{out}");
     app.term.shutdown();
 }
 
@@ -217,8 +221,8 @@ fn the_help_dialog_explains_the_shells_keyboard() {
     assert!(!out.contains("Esc then"), "stale chord docs: {out}");
 }
 
-/// The Shells screen spends three rows on itself — header, tab strip, pane
-/// title — and nothing below the body. Pinned so chrome cannot creep back.
+/// The Shells screen spends exactly one row on itself — the header, carrying
+/// both tab groups. Pinned so chrome cannot creep back.
 #[test]
 fn the_shells_screen_reaches_the_bottom_row() {
     use crate::term::session::Spawn;
@@ -240,10 +244,12 @@ fn the_shells_screen_reaches_the_bottom_row() {
     let _ = render(&mut app, 100, H);
     let (pane, _) = *app.regions.panes.first().expect("a rendered pane");
     assert_eq!(pane.y + pane.height, H, "the pane must run to the last row");
+    assert_eq!(pane.y, 1, "the pane starts directly under the header");
 
-    // header(1) + tab strip(1) + pane title(1) = 3 rows of chrome.
+    // header(1) is the whole budget: no tab strip, no title rule.
+    assert_eq!(app.term.pane_chrome_rows(), 0);
     let id = app.term.focused_session().unwrap();
-    assert_eq!(app.term.session(id).unwrap().size(), (H - 3, 100));
+    assert_eq!(app.term.session(id).unwrap().size(), (H - 1, 100));
 
     // For contrast, Hosts keeps its status line and function bar.
     app.screen = Screen::Hosts;
@@ -257,6 +263,208 @@ fn the_shells_screen_reaches_the_bottom_row() {
         rows[H as usize - 2].contains("hosts"),
         "and its status line"
     );
+    app.term.shutdown();
+}
+
+/// Helper: open `n` single-pane tabs on the Shells screen.
+#[cfg(test)]
+fn open_shells(app: &mut App, names: &[&str]) {
+    use crate::term::session::Spawn;
+    for name in names {
+        let mut spawn = Spawn::new("/bin/sh");
+        spawn.args = vec!["-c".into(), "sleep 30".into()];
+        app.term
+            .open_tab(
+                vec![((*name).to_string(), spawn)],
+                (24, 80),
+                50,
+                "xterm",
+                &app.term_tx,
+            )
+            .unwrap();
+    }
+    app.screen = Screen::Shells;
+}
+
+/// A lone pane needs no title: the header tab already names the host.
+#[test]
+fn a_single_pane_tab_draws_no_title_rule() {
+    let (mut app, _rx) = test_app("notitle");
+    open_shells(&mut app, &["web-01"]);
+    let out = render(&mut app, 100, 20);
+
+    assert_eq!(app.term.pane_chrome_rows(), 0);
+    assert!(
+        !out.contains("active"),
+        "no 'active' label for a lone pane: {out}"
+    );
+    assert!(!out.contains("click to focus"), "{out}");
+    // Row 0 is the header; row 1 is already terminal.
+    let rows: Vec<&str> = out.lines().collect();
+    assert!(rows[0].contains("web-01"), "the tab names the host: {out}");
+    assert!(
+        !rows[1].starts_with('─'),
+        "row 1 must not be a title rule: {out}"
+    );
+    app.term.shutdown();
+}
+
+/// A stacked group still needs titles — that is what tells its panes apart.
+#[test]
+fn a_group_tab_keeps_a_title_per_pane() {
+    use crate::term::session::Spawn;
+    let (mut app, _rx) = test_app("grouptitles");
+    let entries: Vec<(String, Spawn)> = ["a", "b"]
+        .iter()
+        .map(|n| {
+            let mut spawn = Spawn::new("/bin/sh");
+            spawn.args = vec!["-c".into(), "sleep 30".into()];
+            ((*n).to_string(), spawn)
+        })
+        .collect();
+    app.term
+        .open_tab(entries, (24, 80), 50, "xterm", &app.term_tx)
+        .unwrap();
+    app.screen = Screen::Shells;
+
+    let out = render(&mut app, 100, 24);
+    assert_eq!(app.term.pane_chrome_rows(), 1);
+    assert!(
+        out.contains("active"),
+        "the focused pane is labelled: {out}"
+    );
+    assert!(
+        out.contains("click to focus"),
+        "the other one invites a click: {out}"
+    );
+    // Both panes report a title rule.
+    assert!(out.matches('─').count() >= 2, "{out}");
+    app.term.shutdown();
+}
+
+/// An exited lone pane gets its title back, because the notice needs somewhere
+/// to live — and it no longer names a chord that was deleted.
+#[test]
+fn an_exited_pane_reports_itself_without_naming_a_dead_chord() {
+    use crate::term::session::Spawn;
+    use std::time::{Duration, Instant};
+    let (mut app, rx) = test_app("exited");
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), "exit 0".into()];
+    app.term
+        .open_tab(
+            vec![("gone".into(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
+    app.screen = Screen::Shells;
+
+    let id = app.term.focused_session().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !app.term.session(id).unwrap().has_exited() {
+        let _ = rx.recv_timeout(Duration::from_millis(100));
+    }
+    assert!(app.term.session(id).unwrap().has_exited());
+
+    assert_eq!(app.term.pane_chrome_rows(), 1, "the title comes back");
+    let out = render(&mut app, 100, 20);
+    assert!(out.contains("process exited"), "{out}");
+    assert!(out.contains("click × to close"), "{out}");
+    assert!(
+        !out.contains("Esc-"),
+        "no reference to the removed chords: {out}"
+    );
+    app.term.shutdown();
+}
+
+/// Regression: the tab cursor once advanced one column further than it drew, so
+/// every hitbox after the first drifted right. Only reproducible with several
+/// tabs open, which no earlier test did.
+#[test]
+fn shell_tab_hitboxes_land_on_the_tabs_that_were_drawn() {
+    let (mut app, _rx) = test_app("tabhitbox");
+    open_shells(&mut app, &["alpha", "bravo", "charlie"]);
+    let _ = render(&mut app, 120, 20);
+
+    assert_eq!(
+        app.regions.shell_tabs.len(),
+        3,
+        "all three tabs are registered"
+    );
+    let header = render(&mut app, 120, 20);
+    let row0 = header.lines().next().unwrap().chars().collect::<Vec<_>>();
+
+    for (rect, i) in app.regions.shell_tabs.clone() {
+        let name = ["alpha", "bravo", "charlie"][i];
+        let drawn: String = row0[rect.x as usize..(rect.x + rect.width) as usize]
+            .iter()
+            .collect();
+        assert!(
+            drawn.contains(name),
+            "tab {i} hitbox {rect:?} covers {drawn:?}, not {name}"
+        );
+    }
+
+    // And clicking the third one selects the third one.
+    let (rect, _) = app.regions.shell_tabs[2];
+    click(&mut app, rect.x + 2, rect.y);
+    assert_eq!(app.term.active, Some(2));
+    app.term.shutdown();
+}
+
+/// Many tabs must not crowd out the escape route, at any width.
+#[test]
+fn screen_tabs_outrank_shell_tabs_at_every_width() {
+    let (mut app, _rx) = test_app("crowded");
+    open_shells(
+        &mut app,
+        &[
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+        ],
+    );
+    for w in [120u16, 90, 70, 50, 40, 32] {
+        let _ = render(&mut app, w, 20);
+        assert_eq!(
+            app.regions.screen_tabs.len(),
+            3,
+            "width {w}: the way out must survive"
+        );
+        // Shell tabs never overlap the screen tabs.
+        for (srect, _) in &app.regions.screen_tabs {
+            for (trect, i) in &app.regions.shell_tabs {
+                assert!(
+                    trect.x + trect.width <= srect.x || trect.x >= srect.x + srect.width,
+                    "width {w}: shell tab {i} {trect:?} overlaps a screen tab {srect:?}"
+                );
+            }
+        }
+    }
+    app.term.shutdown();
+}
+
+/// The active tab is always rendered, however many are open.
+#[test]
+fn the_tab_window_follows_the_active_tab() {
+    let (mut app, _rx) = test_app("tabwindow");
+    open_shells(
+        &mut app,
+        &["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"],
+    );
+    for i in 0..6 {
+        app.term.select_tab(i);
+        let _ = render(&mut app, 60, 20);
+        assert!(
+            app.regions.shell_tabs.iter().any(|(_, t)| *t == i),
+            "tab {i} is active but was not rendered"
+        );
+    }
+    // With tabs hidden, the strip says so.
+    app.term.select_tab(0);
+    let out = render(&mut app, 60, 20);
+    assert!(out.contains('›'), "hidden tabs are marked: {out}");
     app.term.shutdown();
 }
 

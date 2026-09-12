@@ -64,18 +64,20 @@ mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
 shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
 `Ctrl+A`, vim keeps a zero-latency `Esc`.
 
-This screen also draws **no chrome below the body** — no function bar and no
-status line. Every key here belongs to the terminal, so neither row would earn
-the line of your shell it costs. What is left is three rows: the header, the
-tab strip, and a title per pane. The tab strip carries the one reminder you
-need, in the space beside the tabs.
+This screen spends **one row** on itself. There is no function bar and no
+status line — every key here belongs to the terminal, so neither would earn the
+line of your shell it costs. The shell tabs share the header row with the screen
+tabs, the brand stepping aside for them, and a tab holding a single pane draws
+no title rule at all: its host name is already in its tab. A stacked group keeps
+one title per pane, because there they tell the panes apart.
 
 That means **the mouse is how you drive the app while a pane is focused**:
 
-* the `1 Hosts` / `2 Shells` / `3 Chat` tabs in the header switch screens —
-  they shed their labels before they ever disappear, so a narrow terminal
-  never strands you
-* a shell tab selects itself on click, and its `×` closes it
+* the `1 Hosts` / `2 Shells` / `3 Chat` tabs on the right of the header switch
+  screens — they shed their labels before they ever disappear, and shell tabs
+  are never allowed to crowd them out, so a narrow terminal cannot strand you
+* a shell tab selects itself on click, and its `×` closes it; `‹` and `›` mark
+  tabs scrolled out of view
 * to quit, switch to Hosts and use `F10` (or click Quit there)
 
 With **no shell open** there is nothing to be transparent to, so the keyboard

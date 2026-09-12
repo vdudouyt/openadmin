@@ -59,6 +59,26 @@ impl TerminalManager {
         self.active.and_then(|i| self.tabs.get(i))
     }
 
+    /// Rows the active tab spends on pane titles.
+    ///
+    /// A lone pane needs no title — the header tab already names the host — so
+    /// it gets none, and the terminal takes the whole rect. It gets one back
+    /// once the process exits, because the notice needs somewhere to live.
+    /// Every consumer of pane geometry goes through this, so the PTY size and
+    /// the mouse mapping cannot drift from what is drawn.
+    pub fn pane_chrome_rows(&self) -> u16 {
+        let Some(tab) = self.active_tab() else {
+            return 0;
+        };
+        if tab.panes.len() > 1 {
+            return PANE_CHROME_ROWS;
+        }
+        match tab.panes.first().and_then(|id| self.sessions.get(id)) {
+            Some(s) if s.has_exited() => PANE_CHROME_ROWS,
+            _ => 0,
+        }
+    }
+
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
         match self.active {
             Some(i) => self.tabs.get_mut(i),
@@ -211,13 +231,14 @@ impl TerminalManager {
     /// Resize every pane of the active tab to match `rects`. Returns whether
     /// anything actually changed.
     pub fn sync_sizes(&mut self, rects: &[Rect]) -> bool {
+        let chrome = self.pane_chrome_rows();
         let Some(tab) = self.active.and_then(|i| self.tabs.get(i)) else {
             return false;
         };
         let ids: Vec<SessionId> = tab.panes.clone();
         let mut changed = false;
         for (id, rect) in ids.iter().zip(rects) {
-            let rows = rect.height.saturating_sub(PANE_CHROME_ROWS);
+            let rows = rect.height.saturating_sub(chrome);
             let size = (rows, rect.width);
             if let Some(s) = self.sessions.get_mut(id)
                 && s.size() != (rows.max(1), rect.width.max(1))
@@ -263,9 +284,12 @@ impl TerminalManager {
 
 /// The starting size for each pane when a tab of `n` panes opens into `size`.
 fn pane_size((rows, cols): (u16, u16), n: usize) -> (u16, u16) {
+    // Only a stacked group spends rows on titles; the first render corrects
+    // this anyway through `sync_sizes`.
+    let chrome = if n > 1 { PANE_CHROME_ROWS } else { 0 };
     let n = n.max(1) as u16;
     let per = rows / n;
-    (per.saturating_sub(PANE_CHROME_ROWS).max(1), cols.max(1))
+    (per.saturating_sub(chrome).max(1), cols.max(1))
 }
 
 #[cfg(test)]

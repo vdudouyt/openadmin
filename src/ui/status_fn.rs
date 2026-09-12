@@ -1,9 +1,9 @@
 //! The 1-row status line and the bottom function-key bar
 //! (`design/ui_kits/openadmin/AppChrome.jsx:39-65`).
 //!
-//! The function bar is per-screen. On the Shells screen the caps read `Esc-N`
-//! rather than `FN`, because no F-key is reserved there — every one of them
-//! goes to the terminal.
+//! Both are per-screen, and neither is drawn on the Shells screen: every key
+//! there belongs to the terminal, so a key-cap bar would advertise nothing
+//! while costing a row of somebody's shell.
 
 use crate::app::{App, Mode, Screen, StatusKind};
 use crate::ui::theme;

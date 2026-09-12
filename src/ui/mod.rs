@@ -22,16 +22,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Block::new().style(theme::base()), area);
     app.regions.clear();
 
-    // A terminal too small for the chrome gets the body and nothing else.
+    // A terminal too small for the chrome gets the body and nothing else —
+    // the body of whichever screen is actually active, not always Shells.
     if area.height < 6 || area.width < 30 {
-        screens::shells::render(f, area, app);
+        match app.screen {
+            Screen::Hosts => screens::hosts::render(f, area, app),
+            Screen::Shells => screens::shells::render(f, area, app),
+            Screen::Chat => screens::chat::render(f, area, app),
+        }
         return;
     }
 
     // The Shells screen keeps no chrome of its own below the body: every key
     // there belongs to the terminal, so neither a function bar nor a status
-    // line would earn the row it costs. Its guidance lives on the tab strip
-    // instead, which exists anyway.
+    // line would earn the row it costs. Its tabs live on the header row, so
+    // the whole screen spends a single row on itself.
     let chrome = if app.screen == Screen::Shells { 0 } else { 1 };
     let [header_a, body_a, status_a, fn_a] = Layout::vertical([
         Constraint::Length(1),

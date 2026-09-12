@@ -624,8 +624,8 @@ impl App {
                 }
             }
             Mode::Normal => match self.screen {
-                // The Shells screen hands every key to the terminal; the app is
-                // reachable only through the Esc-digit chords.
+                // The Shells screen hands every key to the terminal; the app
+                // is reachable only with the mouse, via the header tabs.
                 Screen::Shells => self.key_shells(key),
                 Screen::Hosts => self.key_hosts(key),
                 Screen::Chat => self.key_chat(key),
@@ -943,13 +943,16 @@ impl App {
             return false;
         }
 
-        // Pane-local coordinates, below the 1-row title border.
-        let col = at.x.saturating_sub(rect.x);
-        let row =
-            at.y.saturating_sub(rect.y + crate::term::manager::PANE_CHROME_ROWS);
-        if at.y < rect.y + crate::term::manager::PANE_CHROME_ROWS {
+        // Pane-local coordinates. A single-pane tab draws no title rule, so
+        // the offset must come from the same accessor the renderer used —
+        // hard-coding 1 here would swallow the pane's first row and land every
+        // forwarded click one line high.
+        let chrome = self.term.pane_chrome_rows();
+        if at.y < rect.y + chrome {
             return false;
         }
+        let col = at.x.saturating_sub(rect.x);
+        let row = at.y.saturating_sub(rect.y + chrome);
 
         match crate::term::keys::encode_mouse(ev, col, row, mode, encoding) {
             Some(bytes) => {
