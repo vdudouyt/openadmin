@@ -1739,3 +1739,113 @@ fn the_agent_is_shown_ssh_hosts_only() {
         "but not ftp: {seen:?}"
     );
 }
+
+/// Render and hand back the buffer, for tests that care about colour rather
+/// than glyphs.
+fn render_buf(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    term.backend().buffer().clone()
+}
+
+/// Inputs are boxes on the panel, not wells sunk into it.
+///
+/// The old field was a run of `BG_INSET` two shades darker than the dialog,
+/// which read as a hole rather than a control. Every input now wears the
+/// composer's treatment: the panel's own background inside an orange border.
+#[test]
+fn form_inputs_are_orange_boxes_on_the_panel_background() {
+    use crate::ui::theme;
+    let (mut app, _rx) = test_app("inputstyle");
+    app.open_add();
+    let buf = render_buf(&mut app, 110, 30);
+
+    let mut inset = 0;
+    let mut bright = 0;
+    let mut dim = 0;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y)];
+            if c.bg == theme::BG_INSET {
+                inset += 1;
+            }
+            if c.fg == theme::ORANGE_BRIGHT {
+                bright += 1;
+            }
+            if c.fg == theme::ORANGE_DIM {
+                dim += 1;
+            }
+        }
+    }
+    assert_eq!(inset, 0, "no well is left anywhere in the form");
+    // The focused field is bright, the rest dim — the only thing separating
+    // them, since every box is orange.
+    assert!(bright > 0, "the focused box is drawn bright");
+    assert!(
+        dim > bright,
+        "and the unfocused ones outnumber it: {dim}/{bright}"
+    );
+
+    let out = render(&mut app, 110, 30);
+    for label in [
+        "┌ Host name",
+        "┌ Type",
+        "┌ Address",
+        "┌ Port",
+        "┌ Mount point",
+        "┌ Login",
+        "┌ Password",
+    ] {
+        assert!(out.contains(label), "{label} is boxed: {out}");
+    }
+}
+
+/// The same treatment on the two dialogs that stand between the operator and
+/// the program starting at all.
+#[test]
+fn the_password_dialogs_use_the_same_boxes() {
+    use crate::ui::dialogs::password_prompt;
+    for (title, fields, err) in [
+        ("Unlock Database", &[("Password", "•••")][..], None),
+        (
+            "Create Database",
+            &[("New password", "•••"), ("Confirm", "")][..],
+            Some("Passwords do not match."),
+        ),
+    ] {
+        let mut term = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        term.draw(|f| password_prompt(f, title, fields, 0, err, "Enter unlock   Esc quit"))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains(title), "{text}");
+        for (label, _) in fields {
+            assert!(
+                text.contains(&format!("┌ {label}")),
+                "{label} is boxed: {text}"
+            );
+        }
+        if let Some(e) = err {
+            assert!(text.contains(e), "the error still shows: {text}");
+        }
+        assert!(
+            text.contains("Esc quit"),
+            "and the hint is not clipped: {text}"
+        );
+        assert_eq!(
+            (0..buf.area.height)
+                .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+                .filter(|&(x, y)| buf[(x, y)].bg == crate::ui::theme::BG_INSET)
+                .count(),
+            0,
+            "no wells here either"
+        );
+    }
+}

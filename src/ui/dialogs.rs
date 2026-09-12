@@ -9,14 +9,12 @@ use crate::app::approve::Row;
 use crate::app::form::FormField;
 use crate::app::{App, Click};
 use crate::ui::theme;
-use crate::ui::widgets::{centered, padl, sanitize, wrap};
+use crate::ui::widgets::{centered, sanitize, wrap};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
-
-const LABEL_W: usize = 14;
 
 fn modal_block(title: &str) -> Block<'static> {
     Block::bordered()
@@ -72,50 +70,120 @@ fn button_row(
     Line::from(spans).right_aligned()
 }
 
-/// `label  [ value        ]` with the inset well and a cursor when focused.
-fn field_line(
+/// The frame every text input wears: the dialog's own background inside an
+/// orange box, the label in the top border, an optional note in the bottom.
+///
+/// Inputs used to be an inset *well* — a patch of `BG_INSET`, two shades
+/// darker than the panel — which read as a hole cut in the dialog rather than
+/// a control sitting on it. The Chat composer (`ui/screens/chat.rs`) was the
+/// one place that did it the other way, and it is the one that looked right.
+///
+/// Every input is orange, so focus cannot be carried by hue: the focused box
+/// is bright and bold where the others are dim, and it is the only one
+/// wearing a cursor.
+fn input_block(label: &str, focused: bool, hint: &str) -> Block<'static> {
+    let (border, label_style) = if focused {
+        (
+            Style::new().fg(theme::ORANGE_BRIGHT),
+            Style::new()
+                .fg(theme::ORANGE_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (Style::new().fg(theme::ORANGE_DIM), theme::muted())
+    };
+    let mut block = Block::bordered()
+        .border_style(border)
+        .style(Style::new().bg(theme::BG_PANEL))
+        .padding(Padding::horizontal(1))
+        .title_top(Line::styled(format!(" {label} "), label_style));
+    if !hint.is_empty() {
+        block =
+            block.title_bottom(Line::styled(format!(" {hint} "), theme::faint()).right_aligned());
+    }
+    block
+}
+
+/// One text input. `area` is the whole box, borders included — three rows.
+fn input_box(
+    f: &mut Frame,
+    area: Rect,
     label: &str,
     value: &str,
     focused: bool,
-    width: usize,
     placeholder: &str,
-) -> Line<'static> {
-    let label_style = if focused {
-        theme::proxied()
+    hint: &str,
+) {
+    // A note that does not fit is dropped, not clipped: the bottom title is
+    // right-aligned, so overflow eats the *start* of it and leaves something
+    // like `└uto from the host name`, which reads as a rendering bug.
+    let hint = if hint.chars().count() + 5 <= area.width as usize {
+        hint
     } else {
-        theme::muted()
+        ""
     };
-    let mut spans = vec![
-        Span::styled(padl(label, LABEL_W), label_style),
-        Span::raw("  "),
-        Span::styled(" ", Style::new().bg(theme::BG_INSET)),
-    ];
-    let shown_len = value.chars().count();
+    let block = input_block(label, focused, hint);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
     if value.is_empty() && !focused {
-        spans.push(Span::styled(
-            placeholder.to_string(),
-            theme::faint().bg(theme::BG_INSET),
-        ));
+        spans.push(Span::styled(placeholder.to_string(), theme::faint()));
     } else {
-        spans.push(Span::styled(
-            value.to_string(),
-            theme::body().bg(theme::BG_INSET),
-        ));
+        // A value longer than the box shows its tail: that is where the typing
+        // is, and a cursor scrolled off the right edge is a cursor nobody can
+        // follow.
+        let room = inner.width as usize - usize::from(focused);
+        let len = value.chars().count();
+        let shown: String = value.chars().skip(len.saturating_sub(room)).collect();
+        spans.push(Span::styled(shown, theme::body()));
     }
-    let used =
-        1 + if value.is_empty() && !focused {
-            placeholder.chars().count()
-        } else {
-            shown_len
-        } + usize::from(focused);
     if focused {
-        spans.push(Span::styled("█", theme::proxied().bg(theme::BG_INSET)));
+        spans.push(Span::styled("█", Style::new().fg(theme::ORANGE_BRIGHT)));
     }
-    spans.push(Span::styled(
-        " ".repeat(width.saturating_sub(used)),
-        Style::new().bg(theme::BG_INSET),
-    ));
-    Line::from(spans)
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+/// The protocol cycler wears the same box, so a row of controls reads as a row
+/// of controls rather than a field and a gadget.
+fn cycle_box(f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
+    let block = input_block(label, focused, "");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let (l, r) = if focused {
+        ("◂ ", " ▸")
+    } else {
+        ("  ", " ▾")
+    };
+    let style = if focused {
+        theme::bright()
+    } else {
+        theme::body()
+    };
+    f.render_widget(
+        Paragraph::new(Line::styled(format!("{l}{value}{r}"), style)),
+        inner,
+    );
+}
+
+/// Split a row into a wide field and a narrow one beside it.
+///
+/// On a narrow terminal the preferred width is given up rather than the
+/// second field: squeezing a box down to `┌ ┐` shows nothing and still costs
+/// the row. Below twice the usable minimum the pair does not fit at all, and
+/// the second width comes back zero for the caller to skip.
+fn columns(total: u16, first: u16) -> (u16, u16) {
+    const MIN: u16 = 14;
+    if total < MIN * 2 + 1 {
+        return (total, 0);
+    }
+    let first = first.clamp(MIN, total - MIN - 1);
+    (first, total - first - 1)
 }
 
 pub fn host_form(f: &mut Frame, app: &mut App) {
@@ -130,7 +198,7 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     });
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    if inner.height < 6 {
+    if inner.height < 6 || inner.width < 24 {
         return;
     }
 
@@ -140,136 +208,132 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     } else {
         form.mount.clone()
     };
-    let mut lines: Vec<Line> = Vec::new();
     let f_is = |x: FormField| form.focus == x;
 
-    // Register each field row as a focus target as it is laid out.
-    let push_field = |app: &mut App,
-                      lines: &mut Vec<Line>,
-                      field: FormField,
-                      label: &str,
-                      value: &str,
-                      width: usize,
-                      placeholder: &str| {
-        let y = inner.y + lines.len() as u16;
-        app.regions.clicks.push((
-            Rect::new(inner.x, y, inner.width, 1),
-            Click::FocusField(field),
-        ));
-        lines.push(field_line(label, value, f_is(field), width, placeholder));
+    // Boxed fields cost three rows each, so the pairs that belong together sit
+    // together: a port beside its address, a password beside its login. That
+    // buys back the height the borders spend and reads better than a column of
+    // eight lonely boxes.
+    let bottom = inner.y + inner.height;
+    let mut y = inner.y;
+    let place = |h: u16, y: &mut u16| -> Option<Rect> {
+        if *y + h > bottom {
+            return None;
+        }
+        let r = Rect::new(inner.x, *y, inner.width, h);
+        *y += h;
+        Some(r)
     };
 
-    push_field(
-        app,
-        &mut lines,
-        FormField::Name,
-        "Host name",
-        &form.name,
-        34,
-        "nickname, e.g. web-01",
-    );
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(LABEL_W + 2)),
-        Span::styled("a human label — the mount point follows it", theme::faint()),
-    ]));
-
-    // Type is a cycler, not a text field.
-    {
-        let y = inner.y + lines.len() as u16;
+    if let Some(row) = place(3, &mut y) {
+        let (a, b) = columns(row.width, 40);
+        let name = Rect::new(row.x, row.y, a, 3);
         app.regions
             .clicks
-            .push((Rect::new(inner.x, y, inner.width, 1), Click::CycleType(1)));
-        let focused = f_is(FormField::Type);
-        let label_style = if focused {
-            theme::proxied()
-        } else {
-            theme::muted()
-        };
-        let arrows = if focused {
-            ("◂ ", " ▸")
-        } else {
-            ("  ", " ▾")
-        };
-        lines.push(Line::from(vec![
-            Span::styled(padl("Type", LABEL_W), label_style),
-            Span::raw("  "),
-            Span::styled(
-                format!(" {}{}{} ", arrows.0, form.proto, arrows.1),
-                theme::body().bg(theme::BG_INSET),
-            ),
-        ]));
+            .push((name, Click::FocusField(FormField::Name)));
+        input_box(
+            f,
+            name,
+            "Host name",
+            &form.name,
+            f_is(FormField::Name),
+            "nickname, e.g. web-01",
+            "the mount point follows it",
+        );
+        if b > 0 {
+            let ty = Rect::new(row.x + a + 1, row.y, b, 3);
+            app.regions.clicks.push((ty, Click::CycleType(1)));
+            cycle_box(f, ty, "Type", &form.proto, f_is(FormField::Type));
+        }
     }
 
-    push_field(
-        app,
-        &mut lines,
-        FormField::Addr,
-        "Address",
-        &form.addr,
-        34,
-        "host or IP",
-    );
-    push_field(
-        app,
-        &mut lines,
-        FormField::Port,
-        "Port",
-        &form.port,
-        8,
-        "22",
-    );
-    push_field(
-        app,
-        &mut lines,
-        FormField::Mount,
-        "Mount point",
-        &mount_shown,
-        34,
-        "/net/<name>",
-    );
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(LABEL_W + 2)),
-        if form.mount_auto {
-            Span::styled(
-                "auto from host name — type here to override",
-                theme::faint(),
-            )
-        } else {
-            Span::styled("overridden · clear to restore auto", theme::warn())
-        },
-    ]));
-    push_field(
-        app,
-        &mut lines,
-        FormField::Login,
-        "Login",
-        &form.login,
-        24,
-        "user",
-    );
-    let masked = "•".repeat(form.pass.chars().count());
-    push_field(
-        app,
-        &mut lines,
-        FormField::Pass,
-        "Password",
-        &masked,
-        24,
-        "optional with a key",
-    );
-
-    lines.push(Line::default());
-
-    // SSH key row.
-    {
-        let y = inner.y + lines.len() as u16;
+    if let Some(row) = place(3, &mut y) {
+        let (a, b) = columns(row.width, 48);
+        let addr = Rect::new(row.x, row.y, a, 3);
         app.regions
             .clicks
-            .push((Rect::new(inner.x, y, inner.width, 1), Click::GenKey));
-        let mut spans = vec![
-            Span::styled(padl("SSH key", LABEL_W), theme::muted()),
-            Span::raw("  "),
-        ];
+            .push((addr, Click::FocusField(FormField::Addr)));
+        input_box(
+            f,
+            addr,
+            "Address",
+            &form.addr,
+            f_is(FormField::Addr),
+            "host or IP",
+            "",
+        );
+        if b > 0 {
+            let port = Rect::new(row.x + a + 1, row.y, b, 3);
+            app.regions
+                .clicks
+                .push((port, Click::FocusField(FormField::Port)));
+            input_box(f, port, "Port", &form.port, f_is(FormField::Port), "22", "");
+        }
+    }
+
+    if let Some(row) = place(3, &mut y) {
+        app.regions
+            .clicks
+            .push((row, Click::FocusField(FormField::Mount)));
+        input_box(
+            f,
+            row,
+            "Mount point",
+            &mount_shown,
+            f_is(FormField::Mount),
+            "/net/<name>",
+            if form.mount_auto {
+                "auto from the host name — type to override"
+            } else {
+                "overridden · clear to restore auto"
+            },
+        );
+    }
+
+    if let Some(row) = place(3, &mut y) {
+        let (a, b) = columns(row.width, 33);
+        let login = Rect::new(row.x, row.y, a, 3);
+        app.regions
+            .clicks
+            .push((login, Click::FocusField(FormField::Login)));
+        input_box(
+            f,
+            login,
+            "Login",
+            &form.login,
+            f_is(FormField::Login),
+            "user",
+            "",
+        );
+        if b > 0 {
+            let pass = Rect::new(row.x + a + 1, row.y, b, 3);
+            app.regions
+                .clicks
+                .push((pass, Click::FocusField(FormField::Pass)));
+            let masked = "•".repeat(form.pass.chars().count());
+            input_box(
+                f,
+                pass,
+                "Password",
+                &masked,
+                f_is(FormField::Pass),
+                "optional with a key",
+                "",
+            );
+        }
+    }
+
+    // Whatever is left holds the key row, the reminder and the buttons.
+    if y >= bottom {
+        return;
+    }
+    let tail = Rect::new(inner.x, y, inner.width, bottom - y);
+    let mut lines: Vec<Line> = Vec::new();
+    {
+        app.regions
+            .clicks
+            .push((Rect::new(tail.x, tail.y, tail.width, 1), Click::GenKey));
+        let mut spans = vec![Span::styled("SSH key", theme::muted()), Span::raw("   ")];
         if form.has_key() {
             spans.push(Span::styled("✓ ", theme::ok()));
             spans.push(Span::styled("key installed", theme::body()));
@@ -288,7 +352,6 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
         }
         lines.push(Line::from(spans));
     }
-
     lines.push(Line::default());
     lines.push(Line::styled(
         "Tab next field   ←/→ change type   Enter save   Esc cancel",
@@ -300,9 +363,9 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     } else {
         " Add Host "
     };
-    let row = button_row(
+    lines.push(button_row(
         app,
-        inner,
+        tail,
         lines.len() as u16,
         &[
             (
@@ -316,10 +379,9 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
                 Click::Key(ratatui::crossterm::event::KeyCode::Esc),
             ),
         ],
-    );
-    lines.push(row);
+    ));
 
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), tail);
 }
 
 /// The plan confirmation dialog: one row per step, one per host under it, each
@@ -781,25 +843,46 @@ pub fn password_prompt(
     hint: &str,
 ) {
     let area = f.area();
-    let rect = centered(
-        area,
-        62,
-        (9 + fields.len() as u16) + u16::from(error.is_some()) * 2,
-    );
+    // Six rows of chrome — frame, padding, a blank and the hint — plus three
+    // for every boxed field, and two more when there is an error to show.
+    let height = 6 + 3 * fields.len() as u16 + u16::from(error.is_some()) * 2;
+    // Wide enough for the whole key hint: a reminder clipped mid-word is worse
+    // than no reminder, and this is the one screen with no other way out.
+    let rect = centered(area, 72, height);
     f.render_widget(Clear, rect);
     let block = modal_block(title);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
+    if inner.height == 0 || inner.width < 12 {
+        return;
+    }
 
-    let mut lines: Vec<Line> = Vec::new();
+    let bottom = inner.y + inner.height;
+    let mut y = inner.y;
+    let line = |f: &mut Frame, y: u16, l: Line<'static>| {
+        f.render_widget(Paragraph::new(l), Rect::new(inner.x, y, inner.width, 1));
+    };
     if let Some(e) = error {
-        lines.push(Line::styled(e.to_string(), theme::err()));
-        lines.push(Line::default());
+        line(f, y, Line::styled(e.to_string(), theme::err()));
+        y += 2;
     }
     for (i, (label, value)) in fields.iter().enumerate() {
-        lines.push(field_line(label, value, i == focus, 30, ""));
+        if y + 3 > bottom {
+            return;
+        }
+        input_box(
+            f,
+            Rect::new(inner.x, y, inner.width, 3),
+            label,
+            value,
+            i == focus,
+            "",
+            "",
+        );
+        y += 3;
     }
-    lines.push(Line::default());
-    lines.push(Line::styled(hint.to_string(), theme::faint()));
-    f.render_widget(Paragraph::new(lines), inner);
+    y += 1;
+    if y < bottom {
+        line(f, y, Line::styled(hint.to_string(), theme::faint()));
+    }
 }
