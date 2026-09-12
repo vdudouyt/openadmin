@@ -142,7 +142,7 @@ impl ExecStream {
 }
 
 /// The instructions the model runs under.
-pub fn system_prompt(cfg: &Config) -> String {
+pub fn system_prompt() -> String {
     format!(
         "You are the agent inside OpenAdmin, a terminal tool an operator uses to administer \
          a fleet of remote machines over SSH. You help them diagnose and fix those machines.\n\
@@ -151,7 +151,12 @@ pub fn system_prompt(cfg: &Config) -> String {
          \n\
          1. Look first, freely. `{run}` needs no permission and costs the operator nothing, \
          so use it to establish what is actually true before you propose anything. Never \
-         guess at a configuration you could read. {desc}\n\
+         guess at a configuration you could read. Its schema lists every command it will \
+         run and every option each one accepts. Those lists are complete and are the \
+         table that enforces them, so read them and pick from them rather than working \
+         out what is likely to be allowed — a command outside them is refused without \
+         connecting to anything, and you will have spent a turn learning what the \
+         schema already told you. Anything that writes belongs in a plan.\n\
          \n\
          2. Propose one large plan, not many small ones. When you know what needs to \
          change, put everything the task needs into a single `{plan}` call — every script, \
@@ -180,7 +185,6 @@ pub fn system_prompt(cfg: &Config) -> String {
          Be concise. The operator is reading a terminal, not a report.",
         run = tools::RUN_READONLY,
         plan = tools::PROPOSE_PLAN,
-        desc = readonly::describe(&cfg.agent.readonly_commands),
     )
 }
 
@@ -207,7 +211,7 @@ impl Worker {
         cancel: Arc<AtomicBool>,
         events: Sender<AgentEvent>,
     ) -> Self {
-        let history = vec![Message::system(system_prompt(&cfg))];
+        let history = vec![Message::system(system_prompt())];
         Worker {
             client,
             cfg,
@@ -642,7 +646,7 @@ mod tests {
 
     #[test]
     fn the_system_prompt_states_the_rules_that_matter() {
-        let p = system_prompt(&Config::default());
+        let p = system_prompt();
         assert!(p.contains("one large plan"), "{p}");
         assert!(p.contains("cannot execute anything yourself"), "{p}");
         assert!(
@@ -651,8 +655,12 @@ mod tests {
         );
         assert!(p.contains("bash -s"), "{p}");
         assert!(p.contains("only those hosts"), "{p}");
-        // The boundary is stated up front rather than discovered by refusal.
-        assert!(p.contains("systemctl is limited"), "{p}");
+        // The grammar itself lives in the `run_readonly` schema, beside the
+        // arguments being filled in, which is where it is read at the moment
+        // it is needed. The prompt's job is to send the model there and to say
+        // the lists are closed, so it picks rather than guesses.
+        assert!(p.contains("complete"), "{p}");
+        assert!(p.contains("schema"), "{p}");
     }
 
     #[test]

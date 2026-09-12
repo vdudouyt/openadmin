@@ -436,7 +436,13 @@ mod tests {
             .find(|d| d.function.name == RUN_READONLY)
             .unwrap();
         assert!(ro.function.description.contains("no confirmation"));
-        assert!(ro.function.description.contains("whitelisted"));
+        // The schema carries the whole grammar, not a summary of it: this is
+        // the copy the model reads while filling in the arguments, and every
+        // gap in it is a refusal and a round trip.
+        let d = &ro.function.description;
+        assert!(d.contains("exhaustive"), "{d}");
+        assert!(d.contains("first word one of: status show cat"), "{d}");
+        assert!(d.contains("-maxdepth"), "{d}");
     }
 
     #[test]

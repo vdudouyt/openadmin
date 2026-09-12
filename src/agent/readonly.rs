@@ -561,7 +561,8 @@ pub fn validate(program: &str, args: &[String], allowed: &[String]) -> Result<()
         if !operands_only && is_option(a) {
             if !option_allowed(a, allow, clustered) {
                 bail!(
-                    "{program} may not be used with {a:?}. Permitted options: {}.",
+                    "{program} may not be used with {a:?}.{} Permitted options: {}.",
+                    bundling_hint(a, allow, clustered),
                     allow.join(" ")
                 );
             }
@@ -603,16 +604,100 @@ pub fn validate(program: &str, args: &[String], allowed: &[String]) -> Result<()
     Ok(())
 }
 
-/// One line for the system prompt, so the model knows the boundary up front
-/// rather than discovering it by being refused.
+/// Why `journalctl -rn 50` was refused when `-r` and `-n` are both permitted.
+///
+/// Bundling is off for most commands, so an unrecognised option can never be
+/// split into permitted letters. That makes a bundle of *permitted* letters
+/// collateral damage, and without this the model has to work out for itself
+/// why a refusal names options it thought it had used. Naming the rewrite
+/// turns a round trip of reasoning into a substitution.
+fn bundling_hint(token: &str, allow: &[&str], clustered: bool) -> String {
+    if clustered || !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 {
+        return String::new();
+    }
+    let split: Vec<String> = token[1..].chars().map(|c| format!("-{c}")).collect();
+    if split.iter().all(|o| allow.contains(&o.as_str())) {
+        return format!(
+            " Options here are not bundled — pass {} as separate arguments.",
+            split.join(" ")
+        );
+    }
+    String::new()
+}
+
+/// The whole policy, rendered from the table that enforces it.
+///
+/// The model is told this up front, in the `run_readonly` schema, because the
+/// alternative is that it works the boundary out by being refused — which
+/// costs a round trip each time, and before that costs it the reasoning to
+/// guess. Generated rather than written, so a description can never drift from
+/// the rule: edit the table and this follows.
 pub fn describe(allowed: &[String]) -> String {
-    format!(
-        "Permitted read-only commands: {}. Options are whitelisted per command, so an \
-         unfamiliar flag is refused: systemctl is limited to status/show/cat/is-*/list-*; \
-         find has no -exec or -delete; journalctl cannot vacuum or follow; ip cannot \
-         set/add/del; sysctl cannot write.",
-        allowed.join(" ")
-    )
+    let mut free: Vec<&str> = Vec::new();
+    let mut restricted: Vec<String> = Vec::new();
+
+    for name in allowed {
+        match rule_for(name) {
+            // Configured but with no rule: `validate` refuses it, so it is not
+            // advertised as available.
+            None => continue,
+            Some(Args::Free) => free.push(name),
+            Some(Args::Only {
+                allow,
+                subcommands,
+                verbs,
+                operand_must_not_contain,
+                clustered,
+                ..
+            }) => {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(subs) = subcommands {
+                    parts.push(format!("first word one of: {}", subs.join(" ")));
+                }
+                if let Some(vs) = verbs {
+                    parts.push(format!(
+                        "if a second word follows, one of: {}",
+                        vs.join(" ")
+                    ));
+                }
+                if !allow.is_empty() {
+                    parts.push(format!(
+                        "options{}: {}",
+                        if clustered { "" } else { ", never bundled" },
+                        allow.join(" ")
+                    ));
+                } else {
+                    parts.push("no options".to_string());
+                }
+                if !operand_must_not_contain.is_empty() {
+                    parts.push(format!(
+                        "no argument may contain: {}",
+                        operand_must_not_contain.join(" ")
+                    ));
+                }
+                restricted.push(format!("{name} — {}", parts.join("; ")));
+            }
+        }
+    }
+
+    let mut out = String::from(
+        "These are the only commands that run unattended, and the option lists are \
+         exhaustive: anything not named here is refused before a connection is made. \
+         Prefer a listed option to a clever one; anything else belongs in a plan.\n\n",
+    );
+    if !free.is_empty() {
+        out.push_str(&format!(
+            "Any options (nothing they accept writes): {}.\n",
+            free.join(" ")
+        ));
+    }
+    if !restricted.is_empty() {
+        out.push_str("\nRestricted — each line is the whole grammar:\n");
+        for line in &restricted {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -771,10 +856,65 @@ mod tests {
         assert!(err.contains("no read-only rule"), "{err}");
     }
 
+    /// The description is generated from the same table `validate` reads, so
+    /// the two cannot drift. This checks the rendering carries every part of a
+    /// rule the model has to obey — options, the required first word, the verb
+    /// after it, and bundling.
     #[test]
-    fn the_description_names_the_boundary() {
+    fn the_description_is_the_rule_itself() {
         let d = describe(&allowed());
-        assert!(d.contains("journalctl"));
-        assert!(d.contains("whitelisted"));
+        assert!(d.contains("exhaustive"), "{d}");
+        assert!(d.contains("ls cat head"), "free-form commands listed: {d}");
+        assert!(
+            d.contains("first word one of: status show cat"),
+            "systemctl's subcommands: {d}"
+        );
+        assert!(
+            d.contains("if a second word follows, one of: show list"),
+            "ip's read-only verbs: {d}"
+        );
+        assert!(d.contains("-maxdepth"), "find's primaries: {d}");
+        // `-executable` is permitted and contains the substring, so match the
+        // whole token.
+        assert!(!d.contains(" -exec "), "and not the ones it refuses: {d}");
+        assert!(!d.contains("-delete"), "{d}");
+        assert!(d.contains("never bundled"), "clustering is stated: {d}");
+        assert!(
+            d.contains("no argument may contain: ="),
+            "sysctl cannot assign: {d}"
+        );
+    }
+
+    /// A refusal should cost a substitution, not a fresh round of reasoning.
+    #[test]
+    fn a_refused_bundle_names_the_rewrite() {
+        let err = validate("journalctl", &["-rn".into(), "50".into()], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not bundled"), "{err}");
+        assert!(err.contains("-r -n"), "it spells out the fix: {err}");
+
+        // A bundle containing something genuinely refused gets no such hint:
+        // splitting it would not help, and suggesting it would mislead.
+        let err = validate("journalctl", &["-rf".into()], &allowed())
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("not bundled"), "{err}");
+
+        // Where the program's own parser is unambiguous, bundles are allowed
+        // and there is nothing to explain.
+        assert!(validate("tail", &["-qv".into()], &allowed()).is_ok());
+    }
+
+    /// Every permitted command must reach the model with its grammar. A rule
+    /// added to the table but left out of the description is the drift this
+    /// whole approach exists to prevent — and each omission is a refusal the
+    /// model pays for with a round trip.
+    #[test]
+    fn every_permitted_command_is_described() {
+        let d = describe(&allowed());
+        for c in DEFAULT_COMMANDS {
+            assert!(d.contains(c), "{c} is permitted but not described: {d}");
+        }
     }
 }
