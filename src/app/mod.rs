@@ -184,12 +184,17 @@ pub struct App {
     pub agent: Option<AgentHandle>,
     /// Where agent events are sent, so a worker can be started later.
     agent_events: Sender<AgentEvent>,
-    /// A proposal waiting for the operator. The dialog is never opened
-    /// automatically — a modal appearing under the fingers is how a reflexive
-    /// Enter authorizes a fleet-wide run.
+    /// A proposal waiting for the operator. It suspends the turn, so the
+    /// dialog shows itself as soon as that is free (`maybe_auto_open_plan`) —
+    /// but disarmed, because a modal appearing under the fingers is how a
+    /// reflexive Enter authorizes a fleet-wide run.
     pub pending_plan: Option<Plan>,
-    /// The plan dialog's state while `Mode::ConfirmPlan` is up.
+    /// The dialog's state. Outlives `Mode::ConfirmPlan`, so a plan put away
+    /// with `F2` comes back with its checkboxes intact.
     pub plan: Option<PlanSelection>,
+    /// Set by `F2` while the dialog is up: the operator has seen it and wants
+    /// it out of the way, so it must not spring back on the next frame.
+    pub plan_hidden: bool,
     pub term: TerminalManager,
 
     pub status: Status,
@@ -235,6 +240,7 @@ impl App {
             agent: None,
             agent_events,
             pending_plan: None,
+            plan_hidden: false,
             plan: None,
             term: TerminalManager::new(),
             status: Status::default(),
@@ -410,6 +416,7 @@ impl App {
                     state: PlanState::Proposed,
                 });
                 self.pending_plan = Some(*plan);
+                self.plan_hidden = false;
                 self.flash("Plan proposed — nothing has run.", StatusKind::Warn);
             }
             AgentEvent::ExecStarted {
@@ -1189,9 +1196,32 @@ impl App {
     }
 
     fn key_confirm_plan(&mut self, key: KeyEvent) {
+        // Every key but ↵ says the operator is looking at the dialog, so it
+        // arms the one that isn't safe to guess at.
+        if key.code != KeyCode::Enter
+            && let Some(sel) = self.plan.as_mut()
+        {
+            sel.arm();
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => self.reject_plan(),
-            KeyCode::Enter => self.confirm_plan(),
+            // F2 opens it, so F2 puts it away again — leaving the plan
+            // waiting rather than deciding it.
+            KeyCode::F(2) => self.hide_plan(),
+            KeyCode::Enter => {
+                // A dialog that opened by itself absorbs the first ↵. The
+                // operator may have had a keystroke in flight when it
+                // appeared, and that keystroke must not run scripts on a
+                // fleet. The second one is theirs.
+                if self.plan.as_ref().is_some_and(|s| !s.armed) {
+                    if let Some(sel) = self.plan.as_mut() {
+                        sel.arm();
+                    }
+                    self.flash("Read the plan — ↵ again to run it.", StatusKind::Warn);
+                    return;
+                }
+                self.confirm_plan()
+            }
             KeyCode::Char(' ') => {
                 if let Some(sel) = self.plan.as_mut() {
                     sel.toggle_cursor();
@@ -1236,6 +1266,14 @@ impl App {
 
     pub fn on_mouse(&mut self, ev: MouseEvent) {
         let at = Position::new(ev.column, ev.row);
+        // Moving a pointer onto a modal is something only a person who can see
+        // it does, so any mouse event arms an auto-opened plan dialog — which
+        // is what lets its Run button work on the first click.
+        if self.mode == Mode::ConfirmPlan
+            && let Some(sel) = self.plan.as_mut()
+        {
+            sel.arm();
+        }
         if ev.kind == MouseEventKind::Moved {
             self.hover = Some(at);
             return;

@@ -1321,10 +1321,12 @@ fn a_plan(script: &str, hosts: Vec<i64>) -> Plan {
     }
 }
 
-/// A proposal must never open its own dialog. A modal appearing under the
-/// fingers is how a reflexive Enter authorizes a fleet-wide run.
+/// Arrival alone opens nothing: the event handler records a card and stops.
+/// Showing the dialog is a separate decision with its own conditions
+/// (`maybe_auto_open_plan`), and the card has to stand on its own for every
+/// case where those conditions say no.
 #[test]
-fn a_proposal_does_not_open_the_dialog_by_itself() {
+fn a_proposal_arrives_as_a_card_that_advertises_the_key() {
     use crate::agent::AgentEvent;
     let (mut app, _rx) = test_app("noautoopen");
     app.screen = Screen::Chat;
@@ -1534,4 +1536,185 @@ fn a_long_plan_scrolls_and_keeps_the_cursor_visible() {
     );
     // 12 steps across 2 hosts is 24 host-runs, and the button says so.
     assert!(out.contains("Run 12 step(s) on 24 host(s)"), "{out}");
+}
+
+/// Drive the loop's invariant the way `event_loop` does, once.
+fn tick(app: &mut App) -> bool {
+    app.maybe_auto_open_plan()
+}
+
+/// The wait is the thing worth removing: the turn is suspended until the plan
+/// is answered, so a plan nobody has looked at is an agent doing nothing.
+#[test]
+fn a_waiting_plan_opens_itself_on_the_chat_screen() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("autoopen");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+
+    assert!(tick(&mut app), "it opened");
+    assert_eq!(app.mode, Mode::ConfirmPlan);
+    assert!(
+        !app.plan.as_ref().unwrap().armed,
+        "and it is disarmed, having opened on its own"
+    );
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("Confirm Plan"), "{out}");
+    assert!(out.contains("↵ twice to run"), "which it says: {out}");
+    assert!(!tick(&mut app), "and it does not re-open over itself");
+}
+
+/// On the Shells screen every key belongs to a remote terminal. A modal there
+/// would eat one — possibly mid-command, in a program like mc that reads
+/// single keys.
+#[test]
+fn a_waiting_plan_does_not_steal_the_shells_screen() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("autoopen-shells");
+    app.screen = Screen::Shells;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+
+    assert!(!tick(&mut app), "not while a shell has the keyboard");
+    assert_eq!(app.mode, Mode::Normal);
+
+    // It is waiting, not lost: arriving on Chat is enough.
+    app.screen = Screen::Chat;
+    assert!(tick(&mut app));
+    assert_eq!(app.mode, Mode::ConfirmPlan);
+}
+
+/// A sentence half typed into the composer is work in progress. The dialog
+/// would not merely interrupt it — it would read the letters as commands, and
+/// `n` on its own rejects the plan.
+#[test]
+fn a_waiting_plan_does_not_interrupt_a_half_typed_message() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("autoopen-draft");
+    app.screen = Screen::Chat;
+    app.chat.draft = "no, wait — check the".into();
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+
+    assert!(!tick(&mut app), "not over a draft");
+    assert_eq!(app.mode, Mode::Normal);
+    let out = render(&mut app, 120, 30);
+    assert!(
+        out.contains("awaiting review"),
+        "the card still offers it: {out}"
+    );
+
+    app.chat.draft.clear();
+    assert!(tick(&mut app), "and it appears once the draft is gone");
+}
+
+/// The hazard that kept this feature out to begin with: a dialog landing under
+/// the fingers, and the keystroke already in flight running scripts on a fleet.
+#[test]
+fn an_auto_opened_dialog_absorbs_the_first_enter() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("autoopen-arm");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+    tick(&mut app);
+
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::ConfirmPlan, "still up, nothing ran");
+    assert!(app.pending_plan.is_some(), "and still unanswered");
+
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal, "the second one is deliberate");
+    assert!(app.pending_plan.is_none());
+}
+
+/// Opening it yourself is already the deliberate act; making that ↵ twice
+/// would be friction with nothing to prevent.
+#[test]
+fn a_dialog_the_operator_opened_runs_on_the_first_enter() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("openarm");
+    app.screen = Screen::Shells; // no auto-open here
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+    app.screen = Screen::Chat;
+    key(&mut app, KeyCode::F(2));
+    assert!(app.plan.as_ref().unwrap().armed);
+
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal, "it ran");
+}
+
+/// Anything that proves a person is looking at the dialog arms it — including
+/// the pointer arriving, which is what lets the Run button work first click.
+#[test]
+fn touching_an_auto_opened_dialog_arms_it() {
+    use crate::agent::AgentEvent;
+    for touch in 0..2 {
+        let (mut app, _rx) = test_app(&format!("autoopen-touch{touch}"));
+        app.screen = Screen::Chat;
+        app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+        tick(&mut app);
+        assert!(!app.plan.as_ref().unwrap().armed);
+
+        if touch == 0 {
+            key(&mut app, KeyCode::Down);
+        } else {
+            app.on_mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 40,
+                row: 12,
+                modifiers: KeyModifiers::empty(),
+            });
+        }
+        assert!(app.plan.as_ref().unwrap().armed, "touch {touch}");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal, "touch {touch}: it ran");
+    }
+}
+
+/// The dialog now arrives uninvited, on top of the transcript that explains
+/// why it exists. Putting it away must not be the same act as refusing it.
+#[test]
+fn hiding_a_plan_leaves_it_waiting_and_it_does_not_spring_back() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("planhide");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1, 2]))));
+    tick(&mut app);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char(' ')); // uncheck a host
+
+    key(&mut app, KeyCode::F(2));
+    assert_eq!(app.mode, Mode::Normal, "out of the way");
+    assert!(app.pending_plan.is_some(), "but not answered");
+    assert!(!tick(&mut app), "and it stays out of the way");
+    let out = render(&mut app, 120, 30);
+    assert!(
+        out.contains("awaiting review"),
+        "the card still offers it: {out}"
+    );
+
+    key(&mut app, KeyCode::F(2));
+    assert_eq!(app.mode, Mode::ConfirmPlan, "F2 brings it back");
+    let sel = app.plan.as_ref().unwrap();
+    assert!(!sel.host_on[0][0], "with the checkbox as it was left");
+    assert!(
+        sel.armed,
+        "and asking for it is deliberate enough to run it"
+    );
+}
+
+/// A second proposal is a new decision: whatever the operator did with the
+/// last one must not keep the new one off the screen.
+#[test]
+fn a_new_proposal_shows_itself_even_after_the_last_was_hidden() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("planhide2");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
+    tick(&mut app);
+    key(&mut app, KeyCode::F(2));
+
+    let mut next = a_plan("df -h", vec![1]);
+    next.id = 2;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(next)));
+    assert!(tick(&mut app), "the new one opens");
+    assert_eq!(app.plan.as_ref().unwrap().plan.id, 2);
 }

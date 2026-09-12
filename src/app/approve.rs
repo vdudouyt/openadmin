@@ -87,6 +87,10 @@ pub struct PlanSelection {
     pub host_on: Vec<Vec<bool>>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Whether `↵` runs. A dialog the operator opened is armed; one that
+    /// opened itself is not, until they touch it. See
+    /// `App::maybe_auto_open_plan`.
+    pub armed: bool,
 }
 
 impl PlanSelection {
@@ -104,7 +108,19 @@ impl PlanSelection {
             host_on,
             cursor: 0,
             scroll: 0,
+            armed: true,
         }
+    }
+
+    /// A dialog that appeared on its own does not run on the next `↵`.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Any deliberate touch — a cursor move, a toggle, the pointer entering
+    /// the dialog — is proof somebody is looking at it.
+    pub fn arm(&mut self) {
+        self.armed = true;
     }
 
     /// The flattened row list the dialog draws and the cursor walks.
@@ -239,8 +255,65 @@ impl crate::app::App {
             self.flash("No plan is waiting for review.", super::StatusKind::Warn);
             return;
         };
-        self.plan = Some(PlanSelection::new(plan));
+        // Reopening after a hide keeps the checkboxes as they were left; a
+        // different plan starts fresh.
+        if self.plan.as_ref().map(|s| s.plan.id) != Some(plan.id) {
+            self.plan = Some(PlanSelection::new(plan));
+        }
+        if let Some(sel) = self.plan.as_mut() {
+            // Asking for it is already the deliberate act.
+            sel.arm();
+        }
+        self.plan_hidden = false;
         self.mode = super::Mode::ConfirmPlan;
+    }
+
+    /// Step out of the dialog without answering it.
+    ///
+    /// The plan stays pending and the checkboxes keep their state; the card
+    /// and `F2` bring it back. This exists because the dialog now opens
+    /// itself: it lands on top of the transcript the operator needs in order
+    /// to judge it, and the only other way out is `Esc`, which rejects.
+    pub(super) fn hide_plan(&mut self) {
+        if self.pending_plan.is_none() {
+            return;
+        }
+        self.mode = super::Mode::Normal;
+        self.plan_hidden = true;
+        self.flash("Plan hidden — F2 brings it back.", super::StatusKind::Warn);
+    }
+
+    /// Show a waiting plan by itself, at the first moment it cannot cost
+    /// anything.
+    ///
+    /// A plan is the one thing here that stops the turn until it is answered,
+    /// so making the operator discover it wastes the very time the agent saved.
+    /// But a modal is an input thief: on the Shells screen it would eat a
+    /// keystroke meant for a remote shell, and over a half-typed message it
+    /// would swallow the sentence and read the letters as commands — `n`
+    /// alone rejects. So it opens only on Chat, with no other dialog up and
+    /// nothing in the composer. When a condition fails nothing is lost: the
+    /// card and the `F2` cap still advertise it, and this is retried every
+    /// frame, so it appears the moment the operator arrives.
+    ///
+    /// It opens *disarmed* — see `App::key_confirm_plan`.
+    ///
+    /// Returns whether it opened, so the caller knows to redraw.
+    pub fn maybe_auto_open_plan(&mut self) -> bool {
+        if self.pending_plan.is_none()
+            || self.plan_hidden
+            || self.mode != super::Mode::Normal
+            || self.screen != super::Screen::Chat
+            || self.alert.is_some()
+            || !self.chat.draft.trim().is_empty()
+        {
+            return false;
+        }
+        self.open_plan();
+        if let Some(sel) = self.plan.as_mut() {
+            sel.disarm();
+        }
+        true
     }
 }
 

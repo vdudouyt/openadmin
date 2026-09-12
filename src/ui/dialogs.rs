@@ -487,7 +487,13 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
 
     lines.push(Line::default());
     // Kept short enough to fit the dialog: a clipped hint helps nobody.
-    let mut hint = "↑↓ move · Space toggle · a/x all/none · ↵ run · Esc reject".to_string();
+    // The disarmed hint is the only place the extra ↵ is explained, so it says
+    // so plainly rather than leaving the first one looking broken.
+    let mut hint = if sel.armed {
+        "↑↓ move · Space toggle · a/x · ↵ run · F2 hide · Esc reject".to_string()
+    } else {
+        "↑↓ move · Space toggle · a/x · ↵ twice to run · F2 hide · Esc reject".to_string()
+    };
     if hidden > 0 {
         hint.push_str(&format!(" · ↓{hidden} more"));
     }

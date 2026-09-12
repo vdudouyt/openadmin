@@ -194,6 +194,12 @@ fn event_loop(
 ) -> Result<()> {
     let mut dirty = true;
     while !app.should_quit {
+        // A waiting plan shows itself as soon as doing so is free. Checked
+        // here rather than where the plan arrives, so every route onto the
+        // Chat screen is covered by one rule instead of five.
+        if app.maybe_auto_open_plan() {
+            dirty = true;
+        }
         if dirty {
             terminal.draw(|f| ui::draw(f, app))?;
             dirty = false;
