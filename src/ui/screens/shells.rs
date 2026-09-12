@@ -129,6 +129,10 @@ fn render_pane_title(
 }
 
 /// Columns one tab occupies: `" ● title 3 × "`.
+///
+/// Counts chars, not display cells, so a CJK nickname measures narrow. The
+/// strip is clipped to its band, so the consequence is a truncated tab rather
+/// than one that reaches into the screen tabs.
 fn tab_width(tab: &crate::term::manager::Tab) -> u16 {
     let count = if tab.group {
         1 + tab.panes.len().to_string().chars().count()

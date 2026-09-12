@@ -128,6 +128,9 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
         x += widths[i] + 2;
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans).right_aligned()), area);
+    // Draw into exactly the columns measured, so the strip and the left band
+    // are provably disjoint instead of merely drawn in the right order.
+    let strip = Rect::new(area.x + area.width - total, area.y, total, area.height);
+    f.render_widget(Paragraph::new(Line::from(spans)), strip);
     total
 }

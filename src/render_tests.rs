@@ -342,18 +342,21 @@ fn a_group_tab_keeps_a_title_per_pane() {
     app.term.shutdown();
 }
 
-/// An exited lone pane gets its title back, because the notice needs somewhere
-/// to live — and it no longer names a chord that was deleted.
+/// A dead pane says so without naming a chord that was deleted. Only a group
+/// keeps such a pane on screen — a lone one is reaped within the frame.
 #[test]
 fn an_exited_pane_reports_itself_without_naming_a_dead_chord() {
     use crate::term::session::Spawn;
     use std::time::{Duration, Instant};
     let (mut app, rx) = test_app("exited");
-    let mut spawn = Spawn::new("/bin/sh");
-    spawn.args = vec!["-c".into(), "exit 0".into()];
+
+    let mut dies = Spawn::new("/bin/sh");
+    dies.args = vec!["-c".into(), "exit 0".into()];
+    let mut lives = Spawn::new("/bin/sh");
+    lives.args = vec!["-c".into(), "sleep 30".into()];
     app.term
         .open_tab(
-            vec![("gone".into(), spawn)],
+            vec![("gone".into(), dies), ("alive".into(), lives)],
             (24, 80),
             50,
             "xterm",
@@ -362,14 +365,16 @@ fn an_exited_pane_reports_itself_without_naming_a_dead_chord() {
         .unwrap();
     app.screen = Screen::Shells;
 
-    let id = app.term.focused_session().unwrap();
+    let id = app.term.active_tab().unwrap().panes[0];
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !app.term.session(id).unwrap().has_exited() {
         let _ = rx.recv_timeout(Duration::from_millis(100));
     }
     assert!(app.term.session(id).unwrap().has_exited());
 
-    assert_eq!(app.term.pane_chrome_rows(), 1, "the title comes back");
+    // The group already spends a row per pane, so nothing about the geometry
+    // moves when one of them dies.
+    assert_eq!(app.term.pane_chrome_rows(), 1);
     let out = render(&mut app, 100, 20);
     assert!(out.contains("process exited"), "{out}");
     assert!(out.contains("click × to close"), "{out}");
@@ -488,6 +493,39 @@ fn the_screen_tabs_shed_labels_rather_than_disappear() {
             );
         }
     }
+}
+
+/// Even a terminal too small for the full chrome keeps the header: it is the
+/// only clickable way between screens, and on Shells the only way out.
+#[test]
+fn a_tiny_terminal_keeps_the_screen_tabs() {
+    let (mut app, _rx) = test_app("tinytabs");
+    open_shells(&mut app, &["alpha"]);
+    for (w, h) in [(29u16, 12u16), (40, 5), (25, 3)] {
+        let _ = render(&mut app, w, h);
+        assert_eq!(
+            app.regions.screen_tabs.len(),
+            3,
+            "{w}x{h}: the escape route must survive"
+        );
+    }
+    // Below three rows there is genuinely no room, and that must not panic.
+    let _ = render(&mut app, 20, 2);
+    let _ = render(&mut app, 1, 1);
+    app.term.shutdown();
+}
+
+/// The small-terminal path shows the screen you are on, not always Shells.
+#[test]
+fn a_tiny_terminal_shows_the_active_screen() {
+    let (mut app, _rx) = test_app("tinyscreen");
+    app.screen = Screen::Hosts;
+    let out = render(&mut app, 28, 12);
+    assert!(
+        out.contains("Known Hosts"),
+        "Hosts must render its own body: {out}"
+    );
+    assert!(!out.contains("No open shells"), "{out}");
 }
 
 /// Absurd sizes must not panic — the classic ratatui crash.

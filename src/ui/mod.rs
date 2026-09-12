@@ -22,13 +22,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Block::new().style(theme::base()), area);
     app.regions.clear();
 
-    // A terminal too small for the chrome gets the body and nothing else —
-    // the body of whichever screen is actually active, not always Shells.
+    // A terminal too small for the full chrome still gets the header, because
+    // it is the only clickable way between screens — and on Shells the only
+    // way out of a focused pane. Below three rows even that has to go.
     if area.height < 6 || area.width < 30 {
+        let body = if area.height >= 3 {
+            let [header_a, body_a] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+            header::render(f, header_a, app);
+            body_a
+        } else {
+            area
+        };
         match app.screen {
-            Screen::Hosts => screens::hosts::render(f, area, app),
-            Screen::Shells => screens::shells::render(f, area, app),
-            Screen::Chat => screens::chat::render(f, area, app),
+            Screen::Hosts => screens::hosts::render(f, body, app),
+            Screen::Shells => screens::shells::render(f, body, app),
+            Screen::Chat => screens::chat::render(f, body, app),
         }
         return;
     }

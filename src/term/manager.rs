@@ -62,19 +62,20 @@ impl TerminalManager {
     /// Rows the active tab spends on pane titles.
     ///
     /// A lone pane needs no title — the header tab already names the host — so
-    /// it gets none, and the terminal takes the whole rect. It gets one back
-    /// once the process exits, because the notice needs somewhere to live.
-    /// Every consumer of pane geometry goes through this, so the PTY size and
-    /// the mouse mapping cannot drift from what is drawn.
+    /// it gets none and the terminal takes the whole rect. Every consumer of
+    /// pane geometry goes through this, so the PTY size and the mouse mapping
+    /// cannot drift from what is drawn.
+    ///
+    /// This depends on the pane count alone, which is fixed for a tab's whole
+    /// life. Deliberately *not* on whether a pane has exited: that flag is set
+    /// by the reader thread and could flip between the resize and the draw,
+    /// and shrinking a `vt100` parser truncates its rows from the end — which
+    /// is exactly where a dead shell's last output sits. A lone pane that
+    /// exits is reaped within the frame anyway (`reap_finished`), so there is
+    /// nothing to show a title for.
     pub fn pane_chrome_rows(&self) -> u16 {
-        let Some(tab) = self.active_tab() else {
-            return 0;
-        };
-        if tab.panes.len() > 1 {
-            return PANE_CHROME_ROWS;
-        }
-        match tab.panes.first().and_then(|id| self.sessions.get(id)) {
-            Some(s) if s.has_exited() => PANE_CHROME_ROWS,
+        match self.active_tab() {
+            Some(tab) if tab.panes.len() > 1 => PANE_CHROME_ROWS,
             _ => 0,
         }
     }
