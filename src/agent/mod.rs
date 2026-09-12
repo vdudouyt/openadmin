@@ -149,14 +149,36 @@ pub fn system_prompt() -> String {
          \n\
          HOW YOU WORK\n\
          \n\
-         1. Look first, freely. `{run}` needs no permission and costs the operator nothing, \
-         so use it to establish what is actually true before you propose anything. Never \
-         guess at a configuration you could read. Its schema lists every command it will \
-         run and every option each one accepts. Those lists are complete and are the \
-         table that enforces them, so read them and pick from them rather than working \
-         out what is likely to be allowed — a command outside them is refused without \
-         connecting to anything, and you will have spent a turn learning what the \
-         schema already told you. Anything that writes belongs in a plan.\n\
+         1. Look first. `{run}` needs no permission, so use it to establish what is \
+         actually true before you propose anything, and never guess at a configuration \
+         you could read.\n\
+         \n\
+         It is not free, and the cost is time the operator spends watching. Every call \
+         opens its own SSH connection — TCP, key exchange, authentication, one command, \
+         teardown. Nothing is reused between calls and they run one at a time, so a \
+         call is a second or more of a person waiting, and ten calls is a person \
+         waiting ten times.\n\
+         \n\
+         So make each call earn its place. Before you send one, name the question it \
+         answers; if its answer would only prompt an obvious next call, send the command \
+         that answers both. One `cat` over several paths beats one call per file. \
+         `grep -n <pattern> <file>` beats reading a file to search it by eye. \
+         `systemctl status <unit>` beats three probes for the same facts.\n\
+         \n\
+         It reads the *state* of a machine: services, configuration, disks, logs, \
+         processes, packages. It is not a file browser and it is not a code reader. Do \
+         not walk a source tree, and do not page through a script to work out what a \
+         program does. What a program does shows in what it leaves behind — its unit \
+         status, its exit code, its log, the files it writes, the ports it holds — so \
+         diagnose from those. When one file's contents genuinely decide what to do \
+         next, read that file in a single call, whole, and move on.\n\
+         \n\
+         Its schema lists every command it will run and every option each one accepts. \
+         Those lists are complete and are the table that enforces them, so read them and \
+         pick from them rather than working out what is likely to be allowed — a command \
+         outside them is refused without connecting to anything, and you will have spent \
+         a turn learning what the schema already told you. Anything that writes belongs \
+         in a plan.\n\
          \n\
          2. Propose one large plan, not many small ones. When you know what needs to \
          change, put everything the task needs into a single `{plan}` call — every script, \
@@ -661,6 +683,26 @@ mod tests {
         // the lists are closed, so it picks rather than guesses.
         assert!(p.contains("complete"), "{p}");
         assert!(p.contains("schema"), "{p}");
+        // Unattended is not the same as free: one SSH connection per call, run
+        // one at a time, with somebody watching. Stated as the mechanism and
+        // with a test that can be applied *before* a call, rather than an
+        // adjective to feel bad about afterwards.
+        assert!(p.contains("not free"), "{p}");
+        assert!(p.contains("own SSH connection"), "{p}");
+        assert!(p.contains("name the question it"), "{p}");
+        // And it is for machine state, not for reading programs — with the
+        // method that replaces it, since a vibe-administration tool cannot
+        // answer "what does this script do?" by interrogating its operator.
+        assert!(p.contains("not a code reader"), "{p}");
+        assert!(p.contains("leaves behind"), "{p}");
+        // Reading is unattended, which is not the same as free: one SSH
+        // connection per call, run one at a time, with somebody watching.
+        // Stated as the mechanism, with a rule that can actually be applied
+        // before a call rather than an adjective to feel bad about.
+        assert!(p.contains("not free"), "{p}");
+        assert!(p.contains("own SSH connection"), "{p}");
+        assert!(p.contains("name the question it answers"), "{p}");
+        assert!(p.contains("not a code reader"), "{p}");
     }
 
     #[test]

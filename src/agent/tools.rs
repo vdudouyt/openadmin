@@ -78,8 +78,14 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             RUN_READONLY,
             format!(
                 "Run one read-only command on one host and return its output and exit \
-                 status. Runs unattended, with no confirmation, so use it freely to find \
-                 out what is actually true before proposing any change. {}",
+                 status. Runs unattended, with no confirmation. Each call opens its own \
+                 SSH connection and calls run one at a time, so it is seconds of the \
+                 operator's time: send the command that answers the whole question \
+                 rather than several that narrow it. It reads machine state — services, \
+                 configuration, disks, logs, processes. It is not a file browser and not \
+                 a code reader: diagnose a program from what it leaves behind — unit \
+                 status, exit codes, logs, the files it writes — rather than paging \
+                 through its source. {}",
                 readonly::describe(allow)
             ),
             serde_json::json!({
@@ -436,6 +442,14 @@ mod tests {
             .find(|d| d.function.name == RUN_READONLY)
             .unwrap();
         assert!(ro.function.description.contains("no confirmation"));
+        // The cost, and what it is not for, stated where the call is
+        // constructed rather than only in the system prompt.
+        assert!(ro.function.description.contains("own SSH connection"));
+        assert!(ro.function.description.contains("not a code reader"));
+        // The cost and the two things it is not for are stated where the call
+        // is constructed, not only in the system prompt.
+        assert!(ro.function.description.contains("own SSH connection"));
+        assert!(ro.function.description.contains("not a code reader"));
         // The schema carries the whole grammar, not a summary of it: this is
         // the copy the model reads while filling in the arguments, and every
         // gap in it is a refusal and a round trip.
