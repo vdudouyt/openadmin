@@ -378,12 +378,33 @@ impl Worker {
 
             let acc: TurnAccumulator = outcome.turn;
             let calls = acc.tool_calls();
-            self.history.push(acc.into_message());
 
+            // A cancelled turn must not leave tool calls in the history. An
+            // assistant message carrying `tool_calls` is only valid when every
+            // one of them is answered by a `tool` message, and these never will
+            // be — we are about to stop. Appending it anyway poisons the history
+            // for the rest of the session: every later request replays it and
+            // the server rejects the lot with a 400. So keep the partial text,
+            // which the operator watched stream, and drop the calls.
             if outcome.cancelled {
+                let partial = Message::assistant_tool_calls(Some(acc.text), Vec::new());
+                if partial.content.is_some() {
+                    self.history.push(partial);
+                }
                 let _ = self.events.send(AgentEvent::Cancelled);
                 return Ok(());
             }
+
+            // An assistant message with neither content nor tool calls has
+            // nothing to replay, and some OpenAI-compatible servers reject one
+            // outright. Dropping it keeps the history valid when a server hands
+            // back an empty turn.
+            let message = acc.into_message();
+            let empty = message.content.is_none() && message.tool_calls.is_empty();
+            if !empty {
+                self.history.push(message);
+            }
+
             if calls.is_empty() {
                 let _ = self.events.send(AgentEvent::Done);
                 return Ok(());
@@ -575,6 +596,7 @@ mod tests {
             vec![ScriptedTurn {
                 deltas: vec!["Looks ".into(), "fine.".into()],
                 tool_calls: Vec::new(),
+                cancelled: false,
             }],
             "how are things?",
             &dir,
@@ -824,5 +846,169 @@ mod tests {
         // Write-only, so the model does not try to read the fleet through them.
         assert!(p.contains("write-only"), "{p}");
         assert!(p.contains("cannot read a host back"), "{p}");
+    }
+    /// Walk a conversation the way the server does: every `tool_calls` on an
+    /// assistant turn must be answered, in order, by a `tool` message naming
+    /// that id. A history that breaks this is what a 400 from the API *is*.
+    fn assert_history_is_replayable(messages: &[Message]) {
+        for (i, m) in messages.iter().enumerate() {
+            if m.role != crate::agent::proto::Role::Assistant || m.tool_calls.is_empty() {
+                continue;
+            }
+            for call in &m.tool_calls {
+                let answered = messages[i + 1..]
+                    .iter()
+                    .take_while(|n| n.role == crate::agent::proto::Role::Tool)
+                    .any(|n| n.tool_call_id.as_deref() == Some(call.id.as_str()));
+                assert!(
+                    answered,
+                    "message {i} asks for tool call {:?} and nothing answers it; the server \
+                     rejects this whole history with a 400.\nhistory: {messages:#?}",
+                    call.id
+                );
+            }
+            assert!(
+                m.content.is_some() || !m.tool_calls.is_empty(),
+                "message {i} is an empty assistant turn"
+            );
+        }
+    }
+
+    /// Drive two prompts through one worker, so a turn can poison the history
+    /// for the turn after it.
+    fn run_two_turns(
+        turns: Vec<ScriptedTurn>,
+        first: &str,
+        second: &str,
+        dir: &Path,
+    ) -> (Vec<AgentEvent>, Arc<ScriptedClient>) {
+        let client = Arc::new(ScriptedClient::new(turns));
+        let (ev_tx, ev_rx) = channel();
+        let (cmd_tx, cmd_rx) = channel();
+        let worker = Worker::new(
+            Box::new(Arc::clone(&client)),
+            Config::default(),
+            dir.to_path_buf(),
+            Arc::new(Stream::default()),
+            Arc::new(ExecStream::default()),
+            Arc::new(AtomicBool::new(false)),
+            ev_tx,
+        );
+        for text in [first, second] {
+            cmd_tx
+                .send(AgentCommand::Send {
+                    text: text.to_string(),
+                    hosts: hosts(),
+                })
+                .unwrap();
+        }
+        drop(cmd_tx);
+        worker.run(cmd_rx);
+        (ev_rx.iter().collect(), client)
+    }
+
+    /// The regression: cancelling while a tool call is streaming used to append
+    /// the assistant turn that requested it and then stop, leaving the call
+    /// unanswered for the rest of the session. Every later prompt replayed that
+    /// history and the server answered 400 — so one cancel broke the chat until
+    /// restart.
+    #[test]
+    fn cancelling_a_tool_call_leaves_a_history_the_server_still_accepts() {
+        let dir = scratch("cancel-tool");
+        let (events, client) = run_two_turns(
+            vec![
+                ScriptedTurn::call_cancelled("call_1", tools::RUN_READONLY, serde_json::json!({})),
+                ScriptedTurn::text("all done"),
+            ],
+            "look at web-01",
+            "never mind, what about db-main",
+            &dir,
+        );
+
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::Cancelled)),
+            "the cancel should be reported"
+        );
+
+        // Two requests went out: the cancelled one, then the follow-up. The
+        // second is the one that used to fail.
+        assert_eq!(client.request_count(), 2);
+        let replayed = client.last_request();
+        assert_history_is_replayable(&replayed);
+
+        // Nothing in the history asks for a tool at all: the call was abandoned,
+        // never run, so the conversation should not claim otherwise.
+        assert!(
+            replayed.iter().all(|m| m.tool_calls.is_empty()),
+            "a cancelled call must not survive in the history: {replayed:#?}"
+        );
+        // And the follow-up prompt did reach the model.
+        assert!(
+            replayed
+                .iter()
+                .any(|m| m.content.as_deref() == Some("never mind, what about db-main")),
+            "{replayed:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancelling after some text has streamed keeps the text — the operator
+    /// watched it arrive, so dropping it would make the transcript disagree with
+    /// the conversation the model is shown.
+    #[test]
+    fn cancelling_after_text_keeps_the_partial_answer() {
+        let dir = scratch("cancel-text");
+        let (_events, client) = run_two_turns(
+            vec![
+                ScriptedTurn {
+                    deltas: vec!["I had a look and".to_string()],
+                    tool_calls: Vec::new(),
+                    cancelled: true,
+                },
+                ScriptedTurn::text("ok"),
+            ],
+            "first",
+            "second",
+            &dir,
+        );
+        let replayed = client.last_request();
+        assert_history_is_replayable(&replayed);
+        assert!(
+            replayed
+                .iter()
+                .any(|m| m.content.as_deref() == Some("I had a look and")),
+            "the partial answer should survive: {replayed:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancelled before a single token arrived: there is nothing to keep, and an
+    /// assistant message with neither content nor tool calls is rejected by some
+    /// OpenAI-compatible servers.
+    #[test]
+    fn an_empty_turn_is_not_appended_to_the_history() {
+        let dir = scratch("cancel-empty");
+        let (_events, client) = run_two_turns(
+            vec![
+                ScriptedTurn {
+                    deltas: Vec::new(),
+                    tool_calls: Vec::new(),
+                    cancelled: true,
+                },
+                ScriptedTurn::text("ok"),
+            ],
+            "first",
+            "second",
+            &dir,
+        );
+        let replayed = client.last_request();
+        assert_history_is_replayable(&replayed);
+        assert!(
+            replayed
+                .iter()
+                .all(|m| m.content.is_some() || !m.tool_calls.is_empty()),
+            "an empty assistant turn reached the wire: {replayed:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

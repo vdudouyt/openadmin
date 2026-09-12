@@ -1,0 +1,61 @@
+name: tests
+
+# Every branch. `branches: ['**']` rather than a bare `on: push`, because a push
+# trigger with no filter also fires for tag pushes — which would make every
+# release run this workflow a second time under a ref it was not written for.
+# `**` matches every branch name, slashes included, and nothing else.
+on:
+  push:
+    branches: ['**']
+
+# The tests need to read the repository and nothing else. Declaring any
+# permissions block drops every scope that is not listed.
+permissions:
+  contents: read
+
+# A second push to the same branch supersedes the first instead of queueing
+# behind it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace is the difference between a diagnosable CI failure and a
+  # reproduce-it-locally hunt.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    # The PTY tests spawn `sleep 30` children behind 10s deadline loops. If one
+    # ever wedges, fail in 20 minutes rather than sitting on the default 6 hours.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The only package the suite needs. It matters at run time as well as at
+      # link time: 81 of the tests open a real SQLCipher database on disk (the
+      # four in src/db/mod.rs and all 77 in src/render_tests.rs, whose
+      # `test_app` helper calls `db.create`), and libsqlcipher-dev Depends on
+      # libsqlcipher1. Everything else the tests reach for is already on the
+      # runner image — openssh-client for the one test that shells out to
+      # ssh-keygen, /bin/sh and coreutils for the PTY tests, pkg-config for
+      # libsqlite3-sys's probe, and cc because ring compiles C in its build
+      # script.
+      - name: Install libsqlcipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsqlcipher-dev
+
+      # Stable, because the project pins no toolchain and declares no
+      # rust-version. Edition 2024 needs 1.85; the let-chains in src/ssh.rs and
+      # src/app/mod.rs need 1.88.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # --locked so a drifting Cargo.lock fails here rather than surprising
+      # somebody later. The lock is committed and already resolves cleanly.
+      - run: cargo test --locked

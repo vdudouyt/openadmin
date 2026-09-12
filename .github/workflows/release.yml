@@ -1,0 +1,96 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+# Nothing by default; the job below opts into exactly what it needs.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # Enough to create a release and attach an asset to it. Nothing else.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Needed to link: rusqlite's `sqlcipher` feature makes libsqlite3-sys
+      # probe for the system library rather than bundling one.
+      - name: Install libsqlcipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsqlcipher-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # save-if: false — a cache written under refs/tags/v0.1.0 is scoped to a ref
+      # that will never run again, so reading one is useful and writing one is not.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
+      # No tests here, by decision: a tag builds and publishes.
+      - run: cargo build --release --locked
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+
+          # Guard against a build that silently linked plain SQLite: PRAGMA key
+          # would become a no-op and the database would ship unencrypted.
+          if ! ldd target/release/openadmin | grep -q libsqlcipher; then
+            echo "::error::openadmin is not linked against libsqlcipher"
+            ldd target/release/openadmin
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          name="openadmin-${version}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${name}"
+
+          # Both binaries, deliberately. ssh::helper_path() resolves
+          # openadmin-sshpass as a sibling of the running executable, so a
+          # tarball carrying only `openadmin` ships a build that cannot
+          # authenticate to anything.
+          cp target/release/openadmin \
+             target/release/openadmin-sshpass \
+             README.md \
+             "dist/${name}/"
+
+          tar -C dist -czf "${name}.tar.gz" "${name}"
+          echo "archive=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+          echo "--- contents ---"
+          tar tzf "${name}.tar.gz"
+          echo "--- linkage ---"
+          ldd target/release/openadmin
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ steps.package.outputs.archive }}
+          # Without this, a packaging typo publishes an empty release quietly.
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          # v1.2.3-rc1 and the like are marked as prereleases automatically.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            x86_64 Linux, built on Ubuntu 24.04.
+
+            Requires **glibc 2.39 or newer** (Ubuntu 24.04+, Debian 13+, Fedora 40+)
+            and the **`libsqlcipher1`** package. It will not start on Ubuntu 22.04 or
+            Debian 12.
+
+            Also needs `ssh`, `ssh-keygen`, `sshfs` and `fusermount` on `PATH` at
+            runtime, with OpenSSH 8.4 or newer.
+
+            Keep `openadmin-sshpass` beside `openadmin`: it is looked up as a sibling
+            of the running executable.

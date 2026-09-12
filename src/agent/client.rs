@@ -175,6 +175,11 @@ pub mod scripted {
     pub struct ScriptedTurn {
         pub deltas: Vec<String>,
         pub tool_calls: Vec<ToolCall>,
+        /// End this turn as the operator cancelling, after everything above has
+        /// been accumulated. The real client can do exactly this: it checks
+        /// `cancel` before each SSE line, so a cancel landing after a tool call
+        /// has streamed yields `cancelled` *with* calls in the accumulator.
+        pub cancelled: bool,
     }
 
     impl ScriptedTurn {
@@ -182,12 +187,22 @@ pub mod scripted {
             ScriptedTurn {
                 deltas: vec![s.to_string()],
                 tool_calls: Vec::new(),
+                cancelled: false,
+            }
+        }
+
+        /// A tool call the operator cancels as it arrives.
+        pub fn call_cancelled(id: &str, name: &str, arguments: serde_json::Value) -> Self {
+            ScriptedTurn {
+                cancelled: true,
+                ..Self::call(id, name, arguments)
             }
         }
 
         pub fn call(id: &str, name: &str, arguments: serde_json::Value) -> Self {
             ScriptedTurn {
                 deltas: Vec::new(),
+                cancelled: false,
                 tool_calls: vec![ToolCall {
                     id: id.to_string(),
                     kind: "function".to_string(),
@@ -278,6 +293,16 @@ pub mod scripted {
                 }
             }
             for (i, call) in scripted.tool_calls.iter().enumerate() {
+                // The real client checks `cancel` before every SSE line, and a
+                // tool call arrives over many of them — so it can return
+                // `cancelled` with calls already accumulated. Mirror that here,
+                // or the fake cannot express the case that matters most.
+                if cancel.load(Ordering::Relaxed) {
+                    return Ok(TurnOutcome {
+                        turn: acc,
+                        cancelled: true,
+                    });
+                }
                 let chunk: ChatChunk = serde_json::from_value(serde_json::json!({
                     "choices": [{"delta": {"tool_calls": [{
                         "index": i,
@@ -293,7 +318,7 @@ pub mod scripted {
             }
             Ok(TurnOutcome {
                 turn: acc,
-                cancelled: false,
+                cancelled: scripted.cancelled,
             })
         }
     }
@@ -362,6 +387,7 @@ mod tests {
         let c = ScriptedClient::new(vec![ScriptedTurn {
             deltas: vec!["Hel".into(), "lo".into()],
             tool_calls: Vec::new(),
+            cancelled: false,
         }]);
         let cancel = AtomicBool::new(false);
         let mut seen = String::new();
@@ -399,6 +425,7 @@ mod tests {
         let c = ScriptedClient::new(vec![ScriptedTurn {
             deltas: vec!["one ".into(), "two ".into(), "three".into()],
             tool_calls: Vec::new(),
+            cancelled: false,
         }]);
         let cancel = AtomicBool::new(false);
         let mut seen = String::new();
