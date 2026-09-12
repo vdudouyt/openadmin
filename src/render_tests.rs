@@ -1941,3 +1941,55 @@ fn a_multiline_message_keeps_its_shape_in_the_transcript() {
         "the blank line between them survives: {out}"
     );
 }
+
+/// A long prompt folds instead of sliding out of view sideways. Text that
+/// scrolls off as you type is text you cannot re-read, and a prompt is written
+/// to be re-read before it is sent.
+#[test]
+fn the_composer_wraps_a_long_line_and_grows_to_fit() {
+    let (mut app, _rx) = test_app("composer-wrap");
+    app.screen = Screen::Chat;
+    let long = "check whether the nginx workers are leaking descriptors on the busiest hosts";
+    app.on_paste(long);
+    assert_eq!(app.chat.draft.lines().len(), 1, "still one logical line");
+
+    let out = render(&mut app, 60, 24);
+    let rows: Vec<&str> = out.lines().collect();
+    let first = rows
+        .iter()
+        .position(|r| r.contains("check whether"))
+        .expect("the prompt is shown");
+    assert!(
+        rows[first + 1].contains("hosts"),
+        "the tail folded onto the next row rather than scrolling away: {out}"
+    );
+    // Every word survived the fold.
+    let shown: String = rows[first..].concat();
+    for word in ["nginx", "descriptors", "busiest"] {
+        assert!(shown.contains(word), "{word} is missing: {out}");
+    }
+}
+
+/// Folding does not let the composer grow without limit: the rows come out of
+/// the transcript above it.
+#[test]
+fn the_composer_stops_growing_at_its_cap() {
+    let (mut app, _rx) = test_app("composer-cap");
+    app.screen = Screen::Chat;
+    app.on_paste(
+        &(1..=40)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    // The cap is applied when the composer is dressed, which happens as it is
+    // drawn — so measure what the frame actually decided.
+    let _ = render(&mut app, 80, 24);
+    let tall = app.chat.draft.measure(80).preferred_rows;
+    assert_eq!(tall, 10, "capped at ten rows, borders included");
+
+    // And an empty composer still occupies its minimum.
+    app.chat.draft = tui_textarea::TextArea::default();
+    let _ = render(&mut app, 80, 24);
+    assert_eq!(app.chat.draft.measure(80).preferred_rows, 3);
+}

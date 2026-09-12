@@ -10,11 +10,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
+use tui_textarea::WrapMode;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
+    configure_composer(app);
+    let wanted = app.chat.draft.measure(area.width).preferred_rows;
     let [body, composer] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(composer_height(app))])
-            .areas(area);
+        Layout::vertical([Constraint::Min(3), Constraint::Length(wanted)]).areas(area);
 
     // Say plainly when there is no model rather than rendering an empty label.
     let right = if app.cfg.agent.configured() {
@@ -165,19 +167,12 @@ fn status_style(s: crate::app::chat::ToolStatus) -> Style {
     }
 }
 
-/// How tall the composer wants to be, borders included.
+/// Dress the composer and tell it how tall it may be.
 ///
-/// It grows with the draft and stops at `MAX`, past which the text area
-/// scrolls inside itself — the transcript above is the thing being paid for,
-/// and a composer that could eat the whole screen would be a worse trade than
-/// scrolling a long prompt.
-fn composer_height(app: &App) -> u16 {
-    const MIN: u16 = 3;
-    const MAX: u16 = 10;
-    (app.chat.draft.lines().len() as u16 + 2).clamp(MIN, MAX)
-}
-
-fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
+/// Done before the layout is split, because the height comes from asking the
+/// text area to measure itself — and it can only do that once it knows the
+/// frame it is wearing, since the borders are rows too.
+fn configure_composer(app: &mut App) {
     let hint = if app.busy {
         " ^C cancel   PgUp/PgDn scroll "
     } else if app.pending_plan.is_some() {
@@ -193,11 +188,35 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         .padding(Padding::horizontal(1))
         .title_bottom(Line::styled(hint, theme::faint()).right_aligned());
 
+    let draft = &mut app.chat.draft;
+    draft.set_block(block);
+    draft.set_style(theme::body());
+    draft.set_cursor_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
+    draft.set_cursor_line_style(Style::default());
+    draft.set_placeholder_text("ask the agent to inspect or change a host…");
+    draft.set_placeholder_style(theme::faint());
+    // A long line folds instead of scrolling sideways. Text that slides out of
+    // view as you type is text you cannot re-read, and a prompt is written to
+    // be re-read before it is sent. `Word` keeps words whole and splits only a
+    // token too long to fit — a path or a URL, which is most of what gets
+    // pasted here.
+    draft.set_wrap_mode(WrapMode::Word);
+    // The box grows with the draft and stops, after which it scrolls inside
+    // itself: the rows come out of the transcript above, and a composer free
+    // to eat the screen would be the worse trade.
+    draft.set_min_rows(3);
+    draft.set_max_rows(10);
+}
+
+fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     // While a turn is running the composer says so rather than inviting input
     // it would only queue behind the model.
     if app.busy && app.chat.draft.is_empty() {
-        let inner = block.inner(area);
-        f.render_widget(block, area);
+        let block = app.chat.draft.block().cloned();
+        let inner = block.as_ref().map_or(area, |b| b.inner(area));
+        if let Some(b) = block {
+            f.render_widget(b, area);
+        }
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("» ", theme::proxied().add_modifier(Modifier::BOLD)),
@@ -207,15 +226,7 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         );
         return;
     }
-
-    // The text area draws itself, so it is handed our frame rather than
-    // bringing its own: one orange box, the same as every other input.
-    let draft = &mut app.chat.draft;
-    draft.set_block(block);
-    draft.set_style(theme::body());
-    draft.set_cursor_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
-    draft.set_cursor_line_style(Style::default());
-    draft.set_placeholder_text("ask the agent to inspect or change a host…");
-    draft.set_placeholder_style(theme::faint());
-    f.render_widget(&*draft, area);
+    // The text area draws itself, wearing the frame set above: one orange box,
+    // the same as every other input.
+    f.render_widget(&app.chat.draft, area);
 }
