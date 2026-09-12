@@ -57,10 +57,6 @@ impl Message {
         Message::plain(Role::User, text)
     }
 
-    pub fn assistant(text: impl Into<String>) -> Self {
-        Message::plain(Role::Assistant, text)
-    }
-
     fn plain(role: Role, text: impl Into<String>) -> Self {
         Message {
             role,
@@ -233,12 +229,20 @@ impl TurnAccumulator {
                     self.calls.resize(call.index + 1, PartialCall::default());
                 }
                 let slot = &mut self.calls[call.index];
-                if let Some(id) = &call.id {
-                    slot.id.push_str(id);
+                // `id` and `name` identify the call rather than accumulate:
+                // servers normally send them once, but some repeat them on
+                // every fragment, and appending turns `run_readonly` into
+                // `run_readonlyrun_readonly`. Only `arguments` is a stream.
+                if let Some(id) = &call.id
+                    && slot.id.is_empty()
+                {
+                    slot.id = id.clone();
                 }
                 if let Some(f) = &call.function {
-                    if let Some(name) = &f.name {
-                        slot.name.push_str(name);
+                    if let Some(name) = &f.name
+                        && slot.name.is_empty()
+                    {
+                        slot.name = name.clone();
                     }
                     if let Some(args) = &f.arguments {
                         slot.arguments.push_str(args);
@@ -250,10 +254,6 @@ impl TurnAccumulator {
             }
         }
         delta_text
-    }
-
-    pub fn has_tool_calls(&self) -> bool {
-        self.calls.iter().any(|c| !c.name.is_empty())
     }
 
     /// The completed tool calls, in the order the model emitted them.
@@ -368,7 +368,7 @@ mod tests {
             Some("lo".to_string())
         );
         assert_eq!(acc.text, "Hello");
-        assert!(!acc.has_tool_calls());
+        assert!(acc.tool_calls().is_empty());
     }
 
     /// The load-bearing case: arguments arrive in fragments that mean nothing
@@ -393,7 +393,7 @@ mod tests {
             acc.push(&frag_chunk(frag));
         }
 
-        assert!(acc.has_tool_calls());
+        assert!(!acc.tool_calls().is_empty());
         let calls = acc.tool_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "call_9");
@@ -430,6 +430,30 @@ mod tests {
         assert_eq!(calls[0].function.name, "list_hosts");
         assert_eq!(calls[1].id, "b");
         assert_eq!(calls[1].function.name, "list_artifacts");
+    }
+
+    /// Some servers repeat `id` and `name` on every fragment. Appending them
+    /// would yield `run_readonlyrun_readonly`, which then matches no tool —
+    /// found by pointing the app at a stub that does exactly that.
+    #[test]
+    fn a_repeated_id_and_name_are_not_concatenated() {
+        let mut acc = TurnAccumulator::default();
+        for frag in ["{\"host\"", ":\"web-01\"", "}"] {
+            let chunk: ChatChunk = serde_json::from_value(serde_json::json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "run_readonly", "arguments": frag}
+                }]}}]
+            }))
+            .unwrap();
+            acc.push(&chunk);
+        }
+        let calls = acc.tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "run_readonly");
+        assert_eq!(calls[0].function.arguments, r#"{"host":"web-01"}"#);
     }
 
     #[test]

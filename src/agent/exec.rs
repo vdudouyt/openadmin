@@ -28,6 +28,7 @@ pub struct Captured {
 }
 
 impl Captured {
+    #[allow(dead_code)] // used by the plan executor, next commit
     pub fn success(&self) -> bool {
         self.exit == Some(0)
     }

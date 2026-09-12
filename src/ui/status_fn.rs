@@ -33,7 +33,13 @@ pub fn render_status(f: &mut Frame, area: Rect, app: &App) {
             let n = app.term.tab_count();
             format!("{n} shell{} open", if n == 1 { "" } else { "s" })
         }
-        Screen::Chat => format!("agent · {}", app.cfg.model),
+        Screen::Chat => {
+            if app.cfg.agent.configured() {
+                format!("agent · {}", app.cfg.agent.model)
+            } else {
+                "agent · no model set".to_string()
+            }
+        }
     };
 
     let msg_w = (area.width / 3).clamp(20, 48);
@@ -181,14 +187,20 @@ fn entries(app: &App) -> Vec<Entry> {
                 e(&cap(10), "Quit", 10, false),
             ]
         }
-        Screen::Chat => vec![
-            e("F1", "Help", 1, false),
-            e("↵", "Send", 0xff, false),
-            e("^R", "Run command", 0xff, false),
-            e("@", "Add context", 0xff, false),
-            e("F9", "Screen", 9, false),
-            e("F10", "Quit", 10, false),
-        ],
+        // Only what actually works: the old caps advertised a `^R` and an `@`
+        // that were never implemented.
+        Screen::Chat => {
+            let mut caps = vec![e("F1", "Help", 1, false)];
+            if app.busy {
+                caps.push(e("^C", "Cancel", 0xff, false));
+            } else {
+                caps.push(e("↵", "Send", 0xff, false));
+            }
+            caps.push(e("PgUp", "Scroll", 0xff, false));
+            caps.push(e("F9", "Screen", 9, false));
+            caps.push(e("F10", "Quit", 10, false));
+            caps
+        }
     }
 }
 

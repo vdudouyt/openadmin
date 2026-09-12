@@ -8,13 +8,15 @@
 pub mod chat;
 pub mod form;
 
+use crate::agent::plan::Plan;
+use crate::agent::{AgentCommand, AgentEvent, Stream, Worker};
 use crate::config::Config;
 use crate::db::DataBase;
 use crate::db::model::{HostRecord, mount_for};
 use crate::term::manager::TerminalManager;
 use crate::term::session::{Spawn, TermEvent};
 use crate::{keys, mount, mtab, ssh};
-use chat::ChatState;
+use chat::{ChatState, PlanState};
 use form::{FormField, FormState};
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -22,7 +24,9 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Position, Rect};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 /// How long a transient status message stays before reverting.
@@ -138,6 +142,15 @@ impl Regions {
     }
 }
 
+/// A running agent worker, when a model is configured.
+pub struct AgentHandle {
+    tx: Sender<AgentCommand>,
+    /// Streamed text, drained on every `Delta`.
+    stream: Arc<Stream>,
+    /// Raised to stop an in-flight turn; the worker polls it.
+    cancel: Arc<AtomicBool>,
+}
+
 pub struct App {
     pub screen: Screen,
     pub mode: Mode,
@@ -154,6 +167,14 @@ pub struct App {
     pub alert: Option<String>,
 
     pub chat: ChatState,
+    /// `None` until a model is configured.
+    pub agent: Option<AgentHandle>,
+    /// Where agent events are sent, so a worker can be started later.
+    agent_events: Sender<AgentEvent>,
+    /// A proposal waiting for the operator. The dialog is never opened
+    /// automatically — a modal appearing under the fingers is how a reflexive
+    /// Enter authorizes a fleet-wide run.
+    pub pending_plan: Option<Plan>,
     pub term: TerminalManager,
 
     pub status: Status,
@@ -177,7 +198,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db: DataBase, cfg: Config, datadir: PathBuf, term_tx: Sender<TermEvent>) -> Self {
+    pub fn new(
+        db: DataBase,
+        cfg: Config,
+        datadir: PathBuf,
+        term_tx: Sender<TermEvent>,
+        agent_events: Sender<AgentEvent>,
+    ) -> Self {
         let mut app = App {
             screen: Screen::Hosts,
             mode: Mode::Normal,
@@ -189,7 +216,10 @@ impl App {
             pending_delete: Vec::new(),
             key_dialog: None,
             alert: None,
-            chat: ChatState::seeded(),
+            chat: ChatState::default(),
+            agent: None,
+            agent_events,
+            pending_plan: None,
             term: TerminalManager::new(),
             status: Status::default(),
             spinner_frame: 0,
@@ -206,7 +236,153 @@ impl App {
             should_quit: false,
         };
         app.reload();
+        app.start_agent();
         app
+    }
+
+    /// Start the worker if a model is configured. Idempotent.
+    pub fn start_agent(&mut self) {
+        if self.agent.is_some() || !self.cfg.agent.configured() {
+            return;
+        }
+        let client = match crate::agent::client::HttpClient::new(
+            &self.cfg.agent.base_url,
+            &self.cfg.agent.key(),
+            &self.cfg.agent.model,
+            self.cfg.agent.stream_timeout_secs,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                self.fail(format!("agent not started: {e}"));
+                return;
+            }
+        };
+        let (tx, rx) = channel();
+        let stream = Arc::new(Stream::default());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker = Worker::new(
+            Box::new(client),
+            self.cfg.clone(),
+            self.datadir.clone(),
+            Arc::clone(&stream),
+            Arc::clone(&cancel),
+            self.agent_events.clone(),
+        );
+        if std::thread::Builder::new()
+            .name("openadmin-agent".into())
+            .spawn(move || worker.run(rx))
+            .is_err()
+        {
+            self.fail("could not start the agent worker");
+            return;
+        }
+        self.agent = Some(AgentHandle { tx, stream, cancel });
+    }
+
+    /// Hand the composed message to the worker.
+    fn send_chat(&mut self) {
+        if self.busy {
+            return;
+        }
+        if self.agent.is_none() {
+            self.start_agent();
+        }
+        let Some(handle) = self.agent.as_ref() else {
+            self.flash(
+                "No model configured — set agent.model in ~/.openadmin/config.toml.",
+                StatusKind::Warn,
+            );
+            return;
+        };
+        let Some(text) = self.chat.take_draft() else {
+            return;
+        };
+        handle.cancel.store(false, Ordering::Release);
+        if handle
+            .tx
+            .send(AgentCommand::Send {
+                text,
+                hosts: self.hosts.clone(),
+            })
+            .is_err()
+        {
+            self.agent = None;
+            self.fail("the agent worker has stopped");
+            return;
+        }
+        self.busy = true;
+        self.flash("Thinking…", StatusKind::Loading);
+    }
+
+    /// Stop an in-flight turn. The worker notices between stream lines.
+    pub fn cancel_agent(&mut self) {
+        if let Some(h) = self.agent.as_ref() {
+            h.cancel.store(true, Ordering::Release);
+        }
+    }
+
+    /// Fold one worker event into the transcript.
+    pub fn on_agent_event(&mut self, ev: AgentEvent) {
+        match ev {
+            AgentEvent::Delta => {
+                if let Some(h) = self.agent.as_ref() {
+                    let text = h.stream.take();
+                    if !text.is_empty() {
+                        self.chat.push_delta(&text);
+                    }
+                }
+            }
+            AgentEvent::ToolStarted { name, arg } => {
+                self.chat.finish_stream();
+                self.chat.turns.push(chat::Turn::Tool {
+                    name,
+                    arg,
+                    status: chat::ToolStatus::Running,
+                    out: Vec::new(),
+                });
+            }
+            AgentEvent::ToolFinished { ok, out } => {
+                if let Some(chat::Turn::Tool { status, out: o, .. }) = self.chat.turns.last_mut() {
+                    *status = if ok {
+                        if out.is_empty() {
+                            chat::ToolStatus::Empty
+                        } else {
+                            chat::ToolStatus::Ok
+                        }
+                    } else {
+                        chat::ToolStatus::Fail
+                    };
+                    *o = out;
+                }
+            }
+            AgentEvent::Proposed(plan) => {
+                self.chat.finish_stream();
+                self.chat.turns.push(chat::Turn::Plan {
+                    id: plan.id,
+                    title: plan.title.clone(),
+                    steps: plan.steps.len(),
+                    hosts: plan.host_count(),
+                    state: PlanState::Proposed,
+                });
+                self.pending_plan = Some(*plan);
+                self.flash("Plan proposed — nothing has run.", StatusKind::Warn);
+            }
+            AgentEvent::Done => {
+                self.chat.finish_stream();
+                self.busy = false;
+                self.flash("Ready.", StatusKind::Idle);
+            }
+            AgentEvent::Cancelled => {
+                self.chat.finish_stream();
+                self.busy = false;
+                self.flash("Cancelled.", StatusKind::Warn);
+            }
+            AgentEvent::Error(e) => {
+                self.chat.finish_stream();
+                self.busy = false;
+                self.fail(e);
+            }
+        }
     }
 
     // ---- host list ------------------------------------------------------
@@ -598,6 +774,10 @@ impl App {
     }
 
     pub fn quit(&mut self) {
+        if let Some(h) = self.agent.take() {
+            h.cancel.store(true, Ordering::Release);
+            let _ = h.tx.send(AgentCommand::Shutdown);
+        }
         self.stop_proxy_tunnel();
         self.term.shutdown();
         self.should_quit = true;
@@ -693,15 +873,24 @@ impl App {
     }
 
     fn key_chat(&mut self, key: KeyEvent) {
+        // Ctrl+C means "stop that" while something is running — which is what
+        // it means in every shell — and keeps meaning "quit" when idle.
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && self.busy
+        {
+            self.cancel_agent();
+            return;
+        }
         if self.key_global(key) {
             return;
         }
         match key.code {
-            KeyCode::Enter => {
-                if self.chat.send() {
-                    self.flash("Agent backend is not wired up yet.", StatusKind::Warn);
-                }
-            }
+            KeyCode::Enter => self.send_chat(),
+            KeyCode::Esc if self.busy => self.cancel_agent(),
+            KeyCode::Esc => self.chat.draft.clear(),
+            KeyCode::PageUp => self.chat.scroll_by(10),
+            KeyCode::PageDown => self.chat.scroll_by(-10),
             KeyCode::Backspace => {
                 self.chat.draft.pop();
             }
@@ -1008,6 +1197,8 @@ impl App {
     fn on_scroll(&mut self, delta: isize) {
         match self.screen {
             Screen::Hosts if self.mode == Mode::Normal => self.move_cursor(delta),
+            // Up the screen is back in time, so the sign is inverted.
+            Screen::Chat if self.mode == Mode::Normal => self.chat.scroll_by(-delta),
             _ => {}
         }
     }

@@ -142,7 +142,10 @@ impl LlmClient for HttpClient {
 /// Turn an HTTP failure into something a person can act on.
 fn describe_error(status: u16, body: &str) -> String {
     let detail = serde_json::from_str::<ErrorEnvelope>(body)
-        .map(|e| e.error.message)
+        .map(|e| match e.error.code {
+            Some(code) if !code.is_empty() => format!("{} ({code})", e.error.message),
+            _ => e.error.message,
+        })
         .unwrap_or_else(|_| body.trim().chars().take(300).collect());
 
     let hint = match status {
@@ -227,6 +230,19 @@ pub mod scripted {
         }
     }
 
+    /// So a test can keep a handle for assertions while the worker owns one.
+    impl LlmClient for std::sync::Arc<ScriptedClient> {
+        fn stream_turn(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDef],
+            cancel: &AtomicBool,
+            on_delta: &mut dyn FnMut(&str),
+        ) -> Result<TurnOutcome> {
+            (**self).stream_turn(messages, tools, cancel, on_delta)
+        }
+    }
+
     impl LlmClient for ScriptedClient {
         fn stream_turn(
             &self,
@@ -298,6 +314,16 @@ mod tests {
         assert!(msg.contains("Incorrect API key provided"), "{msg}");
         assert!(msg.contains("config.toml"), "{msg}");
 
+        // The machine-readable code says more than the prose sometimes.
+        let msg = describe_error(
+            404,
+            r#"{"error":{"message":"no such model","code":"model_not_found"}}"#,
+        );
+        assert!(
+            msg.contains("model_not_found"),
+            "the code is surfaced too: {msg}"
+        );
+
         // A non-JSON body (a proxy's HTML error page, say) still says something.
         let msg = describe_error(502, "<html>bad gateway</html>");
         assert!(msg.contains("HTTP 502"), "{msg}");
@@ -362,7 +388,7 @@ mod tests {
         let out = c
             .stream_turn(&[Message::user("go")], &[], &cancel, &mut |_| {})
             .unwrap();
-        assert!(out.turn.has_tool_calls());
+        assert!(!out.turn.tool_calls().is_empty());
         let calls = out.turn.tool_calls();
         assert_eq!(calls[0].function.name, "list_hosts");
         assert_eq!(calls[0].id, "call_1");

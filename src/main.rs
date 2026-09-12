@@ -18,6 +18,7 @@ mod ui;
 #[cfg(test)]
 mod render_tests;
 
+use agent::AgentEvent;
 use anyhow::{Context, Result};
 use app::App;
 use config::Config;
@@ -38,6 +39,7 @@ use term::session::TermEvent;
 enum AppEvent {
     Input(Event),
     Term(TermEvent),
+    Agent(AgentEvent),
 }
 
 struct Args {
@@ -129,11 +131,13 @@ fn run(
 
     let (tx, rx) = channel::<AppEvent>();
     let (term_tx, term_rx) = channel::<TermEvent>();
+    let (agent_tx, agent_rx) = channel::<AgentEvent>();
     spawn_input_thread(tx.clone());
-    spawn_term_bridge(term_rx, tx);
+    spawn_term_bridge(term_rx, tx.clone());
+    spawn_agent_bridge(agent_rx, tx);
 
     let owned = std::mem::replace(db, DataBase::new(datadir.join("openadmin.sqlite")));
-    let mut app = App::new(owned, cfg, datadir, term_tx);
+    let mut app = App::new(owned, cfg, datadir, term_tx, agent_tx);
     event_loop(terminal, &mut app, &rx)
 }
 
@@ -165,6 +169,21 @@ fn spawn_term_bridge(term_rx: Receiver<TermEvent>, tx: Sender<AppEvent>) {
         .expect("spawn terminal bridge");
 }
 
+/// Merge agent events into the same channel, exactly as the terminal bridge
+/// does. The worker owns a `Sender<AgentEvent>`; this relabels them.
+fn spawn_agent_bridge(agent_rx: Receiver<AgentEvent>, tx: Sender<AppEvent>) {
+    std::thread::Builder::new()
+        .name("openadmin-agent-bridge".into())
+        .spawn(move || {
+            while let Ok(ev) = agent_rx.recv() {
+                if tx.send(AppEvent::Agent(ev)).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("spawn agent bridge");
+}
+
 /// The main loop. Unlike cfdns's fixed 100 ms poll, this blocks on a channel so
 /// PTY output redraws immediately; the timeout exists only to service the
 /// spinner, the status auto-revert, and a held Esc.
@@ -182,7 +201,8 @@ fn event_loop(
 
         // Input and PTY output both arrive on the channel; the timeout only
         // services the spinner and the status auto-revert.
-        match rx.recv_timeout(Duration::from_millis(200)) {
+        let wait = if app.busy { 80 } else { 200 };
+        match rx.recv_timeout(Duration::from_millis(wait)) {
             Ok(AppEvent::Input(ev)) => {
                 match ev {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
@@ -197,6 +217,10 @@ fn event_loop(
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
+                dirty = true;
+            }
+            Ok(AppEvent::Agent(ev)) => {
+                app.on_agent_event(ev);
                 dirty = true;
             }
             Ok(AppEvent::Term(ev)) => {
@@ -215,10 +239,14 @@ fn event_loop(
         if app.term.take_dirty() {
             dirty = true;
         }
+        let spin_before = app.spinner_frame;
         app.tick_spinner();
         let before = app.status.kind;
         app.maybe_revert_status();
-        if app.status.kind != before {
+        // `tick_spinner` mutates a counter nothing else compares, so without
+        // this a spinning spinner only advances when something else happens to
+        // redraw.
+        if app.status.kind != before || app.spinner_frame != spin_before {
             dirty = true;
         }
     }
@@ -233,6 +261,8 @@ fn is_hard_quit(k: &KeyEvent, app: &App) -> bool {
         && k.modifiers.contains(KeyModifiers::CONTROL)
         && app.screen != app::Screen::Shells
         && app.mode == app::Mode::Normal
+        // While a turn is running, Ctrl+C means "stop that", not "quit".
+        && !(app.screen == app::Screen::Chat && app.busy)
 }
 
 /// Pre-loop bootstrap: unlock an existing database, or create a new one. Runs

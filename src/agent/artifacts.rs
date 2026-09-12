@@ -25,6 +25,7 @@ pub fn dir(datadir: &Path) -> PathBuf {
 }
 
 /// Create the directory if it is missing, owner-only like `keys/`.
+#[allow(dead_code)] // used by the plan executor, next commit
 pub fn ensure_dir(datadir: &Path) -> Result<PathBuf> {
     let d = dir(datadir);
     std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;

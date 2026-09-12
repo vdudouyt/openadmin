@@ -63,7 +63,11 @@ fn test_app(tag: &str) -> (App, Receiver<TermEvent>) {
     }
 
     let (tx, rx) = channel();
-    (App::new(db, Config::default(), dir, tx), rx)
+    // The agent receiver is leaked deliberately: these tests never start a
+    // worker, and a dropped receiver would make every event send fail.
+    let (agent_tx, agent_rx) = channel();
+    std::mem::forget(agent_rx);
+    (App::new(db, Config::default(), dir, tx, agent_tx), rx)
 }
 
 fn render(app: &mut App, w: u16, h: u16) -> String {
@@ -205,9 +209,12 @@ fn chat_screen_renders_the_transcript_and_composer() {
     app.screen = Screen::Chat;
     let out = render(&mut app, 120, 34);
     assert!(out.contains("Agent"), "{out}");
-    assert!(out.contains("claude-sonnet-4.5"));
+    // No model is guessed, so the panel says so instead of showing a blank.
+    assert!(out.contains("no model set"), "{out}");
     assert!(out.contains("»"), "the composer prompt is missing");
-    assert!(out.contains("ssh"), "tool calls render");
+    // The transcript starts empty: a fabricated sample above the operator's
+    // first real message would be worse than useless.
+    assert!(app.chat.turns.is_empty());
 }
 
 #[test]
@@ -1057,23 +1064,39 @@ fn help_toggles_and_closes_on_escape() {
 }
 
 #[test]
-fn chat_composer_accepts_typing_and_records_the_turn() {
-    use crate::app::StatusKind;
+fn chat_composer_accepts_typing() {
     let (mut app, _rx) = test_app("compose");
     app.screen = Screen::Chat;
-    let before = app.chat.turns.len();
     for c in "restart api".chars() {
         key(&mut app, KeyCode::Char(c));
     }
     assert_eq!(app.chat.draft, "restart api");
+    key(&mut app, KeyCode::Esc);
+    assert!(app.chat.draft.is_empty(), "Esc clears the draft when idle");
+}
+
+/// With no model configured, Enter must say so and keep what was typed —
+/// silently swallowing the message would be the worst of both.
+#[test]
+fn sending_without_a_model_warns_and_keeps_the_draft() {
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("nomodel");
+    app.screen = Screen::Chat;
+    assert!(!app.cfg.agent.configured());
+    for c in "hello".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.chat.turns.len(), before + 1);
-    assert_eq!(
-        app.status.kind,
-        StatusKind::Warn,
-        "the stub says so plainly"
+
+    assert_eq!(app.status.kind, StatusKind::Warn);
+    assert!(
+        app.status.text.contains("No model configured"),
+        "{}",
+        app.status.text
     );
-    assert!(app.status.text.contains("not wired up"));
+    assert_eq!(app.chat.draft, "hello", "the message is not lost");
+    assert!(app.chat.turns.is_empty(), "nothing was recorded");
+    assert!(!app.busy);
 }
 
 #[test]
