@@ -42,6 +42,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let mut lines: Vec<Line> = Vec::new();
+    // Which transcript line carries the pending plan card, if any.
+    let mut card_line: Option<usize> = None;
     for turn in &app.chat.turns {
         match turn {
             Turn::User(text) => {
@@ -103,10 +105,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 state,
             } => {
                 let (glyph, label, style) = match state {
-                    PlanState::Proposed => ("▸", "awaiting review", theme::proxied()),
+                    PlanState::Proposed => {
+                        ("▸", "awaiting review — F2, or click here", theme::proxied())
+                    }
                     PlanState::Rejected => ("×", "rejected", theme::muted()),
                     PlanState::Ran => ("✓", "ran", theme::ok()),
                 };
+                if *state == PlanState::Proposed {
+                    // Remembered so a click on the card opens the dialog; the
+                    // y is fixed up after the scroll window is known.
+                    card_line = Some(lines.len());
+                }
                 lines.push(Line::from(vec![
                     Span::styled(format!("{glyph} plan #{id} "), style),
                     Span::styled(sanitize(title), theme::bright()),
@@ -137,6 +146,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let visible: Vec<Line> = lines[start..end].to_vec();
     f.render_widget(Paragraph::new(visible), inner);
 
+    // The card is only clickable while it is actually on screen.
+    app.regions.plan_card = card_line
+        .filter(|l| (start..end).contains(l))
+        .map(|l| Rect::new(inner.x, inner.y + (l - start) as u16, inner.width, 2));
+
     render_composer(f, composer, app);
 }
 
@@ -153,6 +167,8 @@ fn status_style(s: crate::app::chat::ToolStatus) -> Style {
 fn render_composer(f: &mut Frame, area: Rect, app: &App) {
     let hint = if app.busy {
         " ^C cancel   PgUp/PgDn scroll "
+    } else if app.pending_plan.is_some() {
+        " F2 review the plan   Enter send   PgUp/PgDn scroll "
     } else {
         " Enter send   PgUp/PgDn scroll "
     };

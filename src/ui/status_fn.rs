@@ -205,6 +205,9 @@ fn entries(app: &App) -> Vec<Entry> {
             } else {
                 caps.push(e("↵", "Send", 0xff, false));
             }
+            if app.pending_plan.is_some() {
+                caps.push(e("F2", "Review plan", 2, false));
+            }
             caps.push(e("PgUp", "Scroll", 0xff, false));
             caps.push(e("F9", "Screen", 9, false));
             caps.push(e("F10", "Quit", 10, false));

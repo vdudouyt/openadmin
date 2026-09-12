@@ -130,6 +130,8 @@ pub struct Regions {
     pub shell_closes: Vec<(Rect, usize)>,
     /// Terminal panes of the active tab, by pane index.
     pub panes: Vec<(Rect, usize)>,
+    /// The pending plan's card in the transcript, while it is on screen.
+    pub plan_card: Option<Rect>,
     /// Dialog controls, captured per render.
     pub clicks: Vec<(Rect, Click)>,
 }
@@ -146,6 +148,7 @@ impl Regions {
         self.shell_tabs.clear();
         self.shell_closes.clear();
         self.panes.clear();
+        self.plan_card = None;
         self.clicks.clear();
     }
 }
@@ -1371,7 +1374,15 @@ impl App {
         match self.screen {
             Screen::Hosts => self.click_hosts(at),
             Screen::Shells => self.click_shells(at),
-            Screen::Chat => {}
+            Screen::Chat => self.click_chat(at),
+        }
+    }
+
+    /// The plan card is the transcript's one clickable thing: with the mouse
+    /// working everywhere else, a card that says "click here" has to.
+    fn click_chat(&mut self, at: Position) {
+        if self.regions.plan_card.is_some_and(|r| r.contains(at)) {
+            self.open_plan();
         }
     }
 

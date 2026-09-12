@@ -1339,6 +1339,48 @@ fn a_proposal_does_not_open_the_dialog_by_itself() {
     let out = render(&mut app, 120, 30);
     assert!(out.contains("plan #1"), "a card names it: {out}");
     assert!(out.contains("awaiting review"), "{out}");
+    // ...and says how to get in. A dialog nobody can find is a dialog that
+    // does not exist — which is exactly how this shipped the first time.
+    assert!(out.contains("F2"), "the card names the key: {out}");
+    let rows: Vec<&str> = out.lines().collect();
+    assert!(
+        rows[rows.len() - 1].contains("F2") && rows[rows.len() - 1].contains("Review plan"),
+        "the function bar offers it too: {}",
+        rows[rows.len() - 1]
+    );
+}
+
+/// The card advertises "click here", so it has to be clickable.
+#[test]
+fn clicking_the_plan_card_opens_the_dialog() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("cardclick");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1]))));
+    let _ = render(&mut app, 120, 30);
+
+    let card = app.regions.plan_card.expect("the card registers a hitbox");
+    click(&mut app, card.x + 4, card.y);
+    assert_eq!(app.mode, Mode::ConfirmPlan, "the dialog opened");
+}
+
+/// Once decided, the card is no longer a way in.
+#[test]
+fn a_decided_card_is_not_clickable() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("decidedcard");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1]))));
+    app.function_key(2);
+    key(&mut app, KeyCode::Esc); // reject
+
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("rejected"), "{out}");
+    assert!(
+        app.regions.plan_card.is_none(),
+        "no hitbox on a decided card"
+    );
+    assert!(!out.contains("F2"), "and the key is not offered: {out}");
 }
 
 #[test]
