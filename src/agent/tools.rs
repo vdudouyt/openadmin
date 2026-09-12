@@ -1,12 +1,19 @@
-//! The four tools, and the dispatch for the three that need no confirmation.
+//! The six tools, and the dispatch for the five that need no confirmation.
 //!
-//! `propose_plan` is the fourth and it executes nothing: it returns a `Plan`
+//! `propose_plan` is the sixth and it executes nothing: it returns a `Plan`
 //! for the UI to show. Nothing in this module can run a scriptlet or upload a
 //! file — `ToolCtx` carries no executor, no channel and no handle that reaches
 //! one, so the only outbound effects reachable from here are a validated
 //! read-only command and reading the artifacts directory.
+//!
+//! `create_host` and `edit_host` write the operator's local host database, and
+//! they reach it the same indirect way a plan reaches the executor: `ToolCtx`
+//! holds no `DataBase` either. They validate a request and return it as data
+//! for `crate::app` to perform. Both are write-only — they return a receipt and
+//! never a field value, so no host detail can come back through them.
 
 use super::exec::run_capture;
+use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
 use super::plan::{Plan, PlanRequest, resolve};
 use super::proto::ToolDef;
 use super::{artifacts, readonly};
@@ -15,7 +22,7 @@ use crate::config::Config;
 // and a `derive(Serialize)` on it would put both on the wire the first time
 // anyone listed a host. Tools name their fields one at a time, or — as
 // `list_hosts` now does — send nothing but the name.
-use crate::db::model::HostRecord;
+use crate::db::model::{HOST_TYPES, HostRecord};
 use crate::ssh;
 use crate::ui::widgets::sanitize;
 use serde::Deserialize;
@@ -34,6 +41,13 @@ pub struct ToolCtx<'a> {
     pub cancel: &'a AtomicBool,
     /// The id the next proposal receives.
     pub next_plan_id: u64,
+    /// Host names written earlier in this same turn. `hosts` is a snapshot from
+    /// when the turn began, so without this a host the model just created would
+    /// look absent to `edit_host` and free to `create_host` — which matters
+    /// when the operator pastes a list and the model enters it one call at a
+    /// time. The app applies writes in the order they arrive, so an edit naming
+    /// one of these resolves against a record that exists by then.
+    pub written_this_turn: &'a [String],
 }
 
 /// What a dispatched tool produced.
@@ -43,6 +57,13 @@ pub enum ToolOutcome {
     /// A proposal. The tool result is only a receipt; the plan goes to the UI
     /// and waits for a human.
     Proposal { receipt: String, plan: Box<Plan> },
+    /// A validated host-record write. As with `Proposal`, the tool result is
+    /// only a receipt: the write travels to `crate::app`, which owns the
+    /// database. The receipt names the fields set, never their values.
+    HostWrite {
+        receipt: String,
+        write: Box<HostWrite>,
+    },
 }
 
 impl ToolOutcome {
@@ -50,6 +71,7 @@ impl ToolOutcome {
         match self {
             ToolOutcome::Text(t) => t,
             ToolOutcome::Proposal { receipt, .. } => receipt,
+            ToolOutcome::HostWrite { receipt, .. } => receipt,
         }
     }
 }
@@ -58,6 +80,21 @@ pub const RUN_READONLY: &str = "run_readonly";
 pub const LIST_HOSTS: &str = "list_hosts";
 pub const LIST_ARTIFACTS: &str = "list_artifacts";
 pub const PROPOSE_PLAN: &str = "propose_plan";
+pub const CREATE_HOST: &str = "create_host";
+pub const EDIT_HOST: &str = "edit_host";
+
+/// The sentence both host tools carry, so the restriction is stated at the one
+/// place the model reads at call time rather than only in the system prompt.
+const ONLY_WHEN_ASKED: &str = "Use it ONLY when the operator has asked you, in so many \
+    words, to add or change a host in the host database. Never on your own initiative, \
+    never to tidy up what you found, and never as a side effect of some other task — if a \
+    host record looks wrong to you, say so and let the operator decide.";
+
+/// What these tools cannot reach, stated so the model does not spend a turn
+/// discovering it.
+const NOT_SETTABLE: &str = "It cannot set an SSH key or the SOCKS-proxy flag, and cannot \
+    delete a host: the operator does those on the Hosts screen (F2 add, F3 edit, F7 \
+    generate a key, F6 proxy, F8 delete).";
 
 /// The schemas sent with every request.
 pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
@@ -142,6 +179,101 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                 "required": ["steps"]
             }),
         ),
+        ToolDef::function(
+            CREATE_HOST,
+            format!(
+                "Add one host to the operator's local host database, so it appears on the \
+                 Hosts screen and can be used by name afterwards. {asked}\n\
+                 \n\
+                 Write-only: it returns a receipt naming the fields it set and nothing \
+                 else. It cannot read a host back, and no tool can — so never call it to \
+                 find out what a field currently holds. {cannot}\n\
+                 \n\
+                 Omitted fields take a default: type ssh, port 22 for ssh and 21 for ftp, \
+                 and a mount point derived from the name. `name` and `address` are \
+                 required, and `name` must not already be in use.",
+                asked = ONLY_WHEN_ASKED,
+                cannot = NOT_SETTABLE,
+            ),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short label for the machine, and the handle every \
+                                        other tool takes. Must not already exist."
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": HOST_TYPES,
+                        "description": "Protocol. Defaults to SSH."
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "Hostname or IP address. May be host:/remote/path, \
+                                        which is the form sshfs mounts use."
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "0-65535. Defaults to 22 for SSH, 21 for FTP."
+                    },
+                    "login": {"type": "string", "description": "Remote user name."},
+                    "password": {
+                        "type": "string",
+                        "description": "Remote password. Omit it for a key-authenticated \
+                                        host; you cannot attach a key here."
+                    },
+                    "mount_point": {
+                        "type": "string",
+                        "description": "Local path for the sshfs mount. Defaults to the \
+                                        configured prefix plus the name."
+                    }
+                },
+                "required": ["name", "address"]
+            }),
+        ),
+        ToolDef::function(
+            EDIT_HOST,
+            format!(
+                "Change fields on one host that is already in the operator's local host \
+                 database. {asked}\n\
+                 \n\
+                 Write-only: it returns a receipt naming the fields it set and nothing \
+                 else. It cannot read a field back — not even the one it is about to \
+                 overwrite — and no tool can, so never call it to discover a current \
+                 value. {cannot}\n\
+                 \n\
+                 Pass `host` plus only the fields you are changing; every field you leave \
+                 out keeps the value it has. Setting `name` renames the host, which \
+                 changes the handle the other tools take; it does not re-derive the mount \
+                 point, so set `mount_point` too if that should follow.",
+                asked = ONLY_WHEN_ASKED,
+                cannot = NOT_SETTABLE,
+            ),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "Name of the existing host to change, from list_hosts."
+                    },
+                    "name": {"type": "string", "description": "New name. Renames the host."},
+                    "type": {"type": "string", "enum": HOST_TYPES, "description": "Protocol."},
+                    "address": {
+                        "type": "string",
+                        "description": "Hostname or IP address, or host:/remote/path."
+                    },
+                    "port": {"type": "integer", "description": "0-65535."},
+                    "login": {"type": "string", "description": "Remote user name."},
+                    "password": {"type": "string", "description": "Remote password."},
+                    "mount_point": {
+                        "type": "string",
+                        "description": "Local path for the sshfs mount."
+                    }
+                },
+                "required": ["host"]
+            }),
+        ),
     ]
 }
 
@@ -192,9 +324,11 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
         },
         RUN_READONLY => ToolOutcome::Text(run_readonly(ctx, arguments)),
         PROPOSE_PLAN => propose(ctx, arguments),
+        CREATE_HOST => create_host(ctx, arguments),
+        EDIT_HOST => edit_host(ctx, arguments),
         other => ToolOutcome::Text(format!(
             "there is no tool called {other:?}. Available: {LIST_HOSTS}, {RUN_READONLY}, \
-             {LIST_ARTIFACTS}, {PROPOSE_PLAN}."
+             {LIST_ARTIFACTS}, {PROPOSE_PLAN}, {CREATE_HOST}, {EDIT_HOST}."
         )),
     }
 }
@@ -267,6 +401,106 @@ fn propose(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
     }
 }
 
+/// Every host name the model may refer to: the turn's snapshot plus anything
+/// written since it began.
+fn known_names<'a>(ctx: &'a ToolCtx<'a>) -> Vec<&'a str> {
+    ctx.hosts
+        .iter()
+        .map(|h| h.name.as_str())
+        .chain(ctx.written_this_turn.iter().map(String::as_str))
+        .collect()
+}
+
+/// Join field names for a receipt. Names only: a receipt never carries a value,
+/// which is what keeps both host tools write-only.
+fn field_list(names: &[&str]) -> String {
+    match names {
+        [] => "nothing".to_string(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn create_host(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
+    let fields: HostFields = match serde_json::from_str(arguments) {
+        Ok(f) => f,
+        Err(e) => return ToolOutcome::Text(format!("could not read the arguments: {e}")),
+    };
+    let taken = known_names(ctx);
+    if let Err(e) = validate_create(&fields, &taken) {
+        return ToolOutcome::Text(format!("refused: {e}"));
+    }
+    // validate_create rejects a missing or blank name, so this is present.
+    let name = fields
+        .name
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let receipt = format!(
+        "Created host {name:?}, setting {}. It is on the operator's Hosts screen now; \
+         use {name:?} as the host name from here on.",
+        field_list(&fields.names())
+    );
+    ToolOutcome::HostWrite {
+        receipt,
+        write: Box::new(HostWrite::Create(fields)),
+    }
+}
+
+fn edit_host(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
+    let mut value: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return ToolOutcome::Text(format!("could not read the arguments: {e}")),
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return ToolOutcome::Text("could not read the arguments: expected an object.".to_string());
+    };
+    // `host` names the record; the rest are the fields to set. Taking it out
+    // first lets `HostFields` keep rejecting unknown keys, so a misspelled
+    // field name is a refusal rather than a change that silently does nothing.
+    let host = match obj.remove("host") {
+        Some(serde_json::Value::String(s)) => s,
+        Some(_) => {
+            return ToolOutcome::Text(
+                "could not read the arguments: host must be a string.".to_string(),
+            );
+        }
+        None => {
+            return ToolOutcome::Text(format!(
+                "could not read the arguments: host is required — the name of the host to \
+                 change, from {LIST_HOSTS}."
+            ));
+        }
+    };
+    let fields: HostFields = match serde_json::from_value(value) {
+        Ok(f) => f,
+        Err(e) => return ToolOutcome::Text(format!("could not read the arguments: {e}")),
+    };
+    // `any`, not `find`: nothing here needs to look at the record, and not
+    // binding it is what makes "this tool reads no field" plain to read.
+    let taken = known_names(ctx);
+    if !taken.iter().any(|n| *n == host) {
+        // No name, and no list: the point of a write-only tool is that you
+        // cannot learn from it which hosts exist.
+        return ToolOutcome::Text(format!(
+            "refused: no host by that name. This tool changes a record that already \
+             exists; {CREATE_HOST} adds a new one."
+        ));
+    }
+    if let Err(e) = validate_edit(&fields, &host, &taken) {
+        return ToolOutcome::Text(format!("refused: {e}"));
+    }
+    let receipt = format!(
+        "Updated host {host:?}, setting {}. Every other field is unchanged.",
+        field_list(&fields.names())
+    );
+    ToolOutcome::HostWrite {
+        receipt,
+        write: Box::new(HostWrite::Edit { name: host, fields }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +545,7 @@ mod tests {
             cfg,
             cancel,
             next_plan_id: 1,
+            written_this_turn: &[],
         }
     }
 
@@ -404,7 +639,7 @@ mod tests {
                 assert!(receipt.contains("Nothing has run"), "{receipt}");
                 assert!(receipt.contains("waiting for the operator"), "{receipt}");
             }
-            ToolOutcome::Text(t) => panic!("expected a proposal, got: {t}"),
+            other => panic!("expected a proposal, got: {}", other.text()),
         }
     }
 
@@ -426,7 +661,7 @@ mod tests {
     fn the_tool_schemas_name_the_boundary() {
         let cfg = Config::default();
         let defs = definitions(&cfg);
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 6);
         let plan = defs
             .iter()
             .find(|d| d.function.name == PROPOSE_PLAN)
@@ -485,5 +720,189 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let out = dispatch(&ctx(&h, &cfg, &dir, &cancel), LIST_ARTIFACTS, "{}");
         assert!(out.text().contains("artifacts/"), "{}", out.text());
+    }
+    /// Every value the fixture hosts hold. No host tool may put any of these
+    /// into its result, because the result is the model's context.
+    const EXISTING_DETAIL: [&str; 7] = [
+        "10.0.4.11",
+        "10.0.8.3",
+        "deploy",
+        "postgres",
+        "hunter2",
+        "s3cret",
+        "passphrase",
+    ];
+
+    #[test]
+    fn creating_a_host_returns_a_receipt_and_asks_the_app_to_write_it() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&h, &cfg, Path::new("/tmp"), &cancel),
+            CREATE_HOST,
+            r#"{"name":"web-03","address":"10.0.4.13","login":"deploy","password":"n3w"}"#,
+        );
+        let text = out.text().to_string();
+        // The write is data for `crate::app`: the tool cannot reach the database.
+        match out {
+            ToolOutcome::HostWrite { write, .. } => match *write {
+                crate::agent::hosts::HostWrite::Create(f) => {
+                    assert_eq!(f.name.as_deref(), Some("web-03"));
+                    assert_eq!(f.pass.as_deref(), Some("n3w"));
+                }
+                other => panic!("expected a create, got {other:?}"),
+            },
+            other => panic!("expected a host write, got: {}", other.text()),
+        }
+        assert!(text.contains("web-03"), "{text}");
+        assert!(
+            text.contains("password"),
+            "the receipt names the fields set: {text}"
+        );
+        // Names the fields, never the values.
+        assert!(!text.contains("n3w"), "the new password leaked: {text}");
+        assert!(
+            !text.contains("10.0.4.13"),
+            "the new address leaked: {text}"
+        );
+    }
+
+    /// The write-only property, as a test: an edit cannot disclose what it is
+    /// about to overwrite, nor anything else the database holds.
+    #[test]
+    fn editing_a_host_discloses_nothing_it_overwrote() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&h, &cfg, Path::new("/tmp"), &cancel),
+            EDIT_HOST,
+            r#"{"host":"web-01","password":"rotated","port":2222}"#,
+        );
+        let text = out.text().to_string();
+        assert!(matches!(out, ToolOutcome::HostWrite { .. }), "{text}");
+        assert!(text.contains("web-01"), "{text}");
+        assert!(text.contains("port") && text.contains("password"), "{text}");
+        for detail in EXISTING_DETAIL {
+            assert!(!text.contains(detail), "{detail} leaked: {text}");
+        }
+        // Not even the values it was just handed.
+        assert!(!text.contains("rotated"), "the new password leaked: {text}");
+        assert!(!text.contains("2222"), "the new port leaked: {text}");
+    }
+
+    /// A refusal must not become a way to ask "does this host exist?".
+    #[test]
+    fn a_missing_host_is_refused_without_saying_which_hosts_exist() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&h, &cfg, Path::new("/tmp"), &cancel),
+            EDIT_HOST,
+            r#"{"host":"web-99","port":22}"#,
+        );
+        let text = out.text();
+        assert!(text.starts_with("refused:"), "{text}");
+        for name in ["web-01", "db-main"] {
+            assert!(!text.contains(name), "{name} leaked: {text}");
+        }
+        for detail in EXISTING_DETAIL {
+            assert!(!text.contains(detail), "{detail} leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_create_is_refused_without_confirming_the_name() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&h, &cfg, Path::new("/tmp"), &cancel),
+            CREATE_HOST,
+            r#"{"name":"web-01","address":"1.2.3.4"}"#,
+        );
+        let text = out.text();
+        assert!(text.starts_with("refused:"), "{text}");
+        assert!(
+            !text.contains("web-01"),
+            "confirmed the name exists: {text}"
+        );
+    }
+
+    /// The operator pastes a list and the model enters it one call at a time.
+    /// `hosts` is the turn's snapshot, so without `written_this_turn` the second
+    /// call would both be allowed to duplicate a name and unable to edit it.
+    #[test]
+    fn a_host_written_earlier_in_the_turn_is_already_known() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let written = vec!["web-03".to_string()];
+        let c = ToolCtx {
+            hosts: &h,
+            datadir: Path::new("/tmp"),
+            cfg: &cfg,
+            cancel: &cancel,
+            next_plan_id: 1,
+            written_this_turn: &written,
+        };
+        // Editable, because the app will have applied the create by then.
+        let edit = dispatch(&c, EDIT_HOST, r#"{"host":"web-03","port":2022}"#);
+        assert!(
+            matches!(edit, ToolOutcome::HostWrite { .. }),
+            "{}",
+            edit.text()
+        );
+        // And not creatable twice.
+        let again = dispatch(&c, CREATE_HOST, r#"{"name":"web-03","address":"1.2.3.4"}"#);
+        assert!(again.text().starts_with("refused:"), "{}", again.text());
+    }
+
+    #[test]
+    fn a_misspelled_field_is_refused_rather_than_silently_dropped() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(
+            &ctx(&h, &cfg, Path::new("/tmp"), &cancel),
+            EDIT_HOST,
+            r#"{"host":"web-01","passwrod":"oops"}"#,
+        );
+        assert!(
+            out.text().starts_with("could not read the arguments"),
+            "{}",
+            out.text()
+        );
+        assert!(out.text().contains("passwrod"), "{}", out.text());
+    }
+
+    #[test]
+    fn the_host_tool_schemas_state_the_restriction_and_the_write_only_property() {
+        let cfg = Config::default();
+        let defs = definitions(&cfg);
+        for name in [CREATE_HOST, EDIT_HOST] {
+            let d = defs.iter().find(|d| d.function.name == name).unwrap();
+            let desc = &d.function.description;
+            // Only on an explicit request, stated where it is read at call time.
+            assert!(
+                desc.contains("ONLY when the operator has asked"),
+                "{name}: {desc}"
+            );
+            assert!(
+                desc.contains("Never on your own initiative"),
+                "{name}: {desc}"
+            );
+            // Write-only, so the model does not try to read through it.
+            assert!(desc.contains("Write-only"), "{name}: {desc}");
+            assert!(desc.contains("cannot read"), "{name}: {desc}");
+            // And what it cannot reach, so that is not learned by refusal.
+            assert!(desc.contains("SSH key"), "{name}: {desc}");
+            assert!(
+                desc.contains("cannot \ndelete") || desc.contains("cannot delete"),
+                "{name}: {desc}"
+            );
+        }
     }
 }

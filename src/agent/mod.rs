@@ -13,6 +13,7 @@ pub mod artifacts;
 pub mod client;
 pub mod exec;
 pub mod exec_plan;
+pub mod hosts;
 pub mod plan;
 pub mod proto;
 pub mod readonly;
@@ -66,6 +67,9 @@ pub enum AgentEvent {
         out: Vec<String>,
     },
     Proposed(Box<Plan>),
+    /// A host record the model was told to write. `crate::app` owns `DataBase`
+    /// and is what performs it; the worker only carries the request across.
+    HostWrite(Box<hosts::HostWrite>),
     /// One (step, host) pair is starting.
     ExecStarted {
         step: usize,
@@ -196,6 +200,31 @@ pub fn system_prompt() -> String {
          If any host failed, work out why and propose a follow-up plan targeting only \
          those hosts.\n\
          \n\
+         THE HOST DATABASE\n\
+         \n\
+         `{create}` and `{edit}` write the operator's own list of machines — the records \
+         behind the Hosts screen. Use them ONLY when the operator has asked you, in so many \
+         words, to add or change a host: they paste a list of servers and ask you to enter \
+         it, or they tell you a port or a password has changed. That request is the only \
+         thing that authorises a call.\n\
+         \n\
+         Never call either one on your own initiative. Not to correct an address you \
+         believe is wrong, not to record a machine you noticed while reading another, not \
+         to tidy up after a connection failed, and never as a step towards some other \
+         task. If a record looks wrong to you, say so in a sentence and let the operator \
+         decide — they may know something you do not, and it is their database.\n\
+         \n\
+         These take effect immediately. There is no dialog and no confirmation, which is \
+         exactly why the rule above matters: a write you were not asked for is one the \
+         operator finds out about afterwards.\n\
+         \n\
+         Both are write-only. They return a receipt naming the fields they set, and \
+         nothing else — they cannot read a host back, and no tool can. `{list}` gives you \
+         names and deliberately nothing more, because OpenAdmin fills in the address, \
+         port, login and credentials itself when it connects. So never call a host tool to \
+         discover what a field currently holds, and do not ask the operator to read one \
+         out to you; to change one field, set that field and leave the rest out.\n\
+         \n\
          WRITING SCRIPTS\n\
          \n\
          Scripts run non-interactively under `bash -s`, as the login user of each host. \
@@ -207,6 +236,9 @@ pub fn system_prompt() -> String {
          Be concise. The operator is reading a terminal, not a report.",
         run = tools::RUN_READONLY,
         plan = tools::PROPOSE_PLAN,
+        list = tools::LIST_HOSTS,
+        create = tools::CREATE_HOST,
+        edit = tools::EDIT_HOST,
     )
 }
 
@@ -221,6 +253,8 @@ pub struct Worker {
     cancel: Arc<AtomicBool>,
     events: Sender<AgentEvent>,
     next_plan_id: u64,
+    /// Host names written during the turn in progress. Cleared when one starts.
+    written_this_turn: Vec<String>,
 }
 
 impl Worker {
@@ -244,6 +278,7 @@ impl Worker {
             cancel,
             events,
             next_plan_id: 1,
+            written_this_turn: Vec::new(),
         }
     }
 
@@ -313,6 +348,7 @@ impl Worker {
 
     /// One user message, through however many tool round-trips it takes.
     fn turn(&mut self, text: String, hosts: &[HostRecord]) -> Result<(), String> {
+        self.written_this_turn.clear();
         self.history.push(Message::user(text));
         self.continue_turn(hosts)
     }
@@ -368,6 +404,7 @@ impl Worker {
                     cfg: &self.cfg,
                     cancel: &self.cancel,
                     next_plan_id: self.next_plan_id,
+                    written_this_turn: &self.written_this_turn,
                 };
                 let out = tools::dispatch(&ctx, &call.function.name, &call.function.arguments);
                 let text = out.text().to_string();
@@ -381,10 +418,30 @@ impl Worker {
                     out: text.lines().map(str::to_string).collect(),
                 });
 
-                if let ToolOutcome::Proposal { plan, .. } = out {
-                    self.next_plan_id += 1;
-                    proposed = true;
-                    let _ = self.events.send(AgentEvent::Proposed(plan));
+                match out {
+                    ToolOutcome::Proposal { plan, .. } => {
+                        self.next_plan_id += 1;
+                        proposed = true;
+                        let _ = self.events.send(AgentEvent::Proposed(plan));
+                    }
+                    // A host write does not end the turn: entering a pasted
+                    // list is several calls, and stopping after the first
+                    // would make the operator prompt again for each one.
+                    ToolOutcome::HostWrite { write, .. } => {
+                        self.written_this_turn.push(match write.as_ref() {
+                            hosts::HostWrite::Create(f) => {
+                                f.name.clone().unwrap_or_default().trim().to_string()
+                            }
+                            hosts::HostWrite::Edit { name, fields } => fields
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| name.clone())
+                                .trim()
+                                .to_string(),
+                        });
+                        let _ = self.events.send(AgentEvent::HostWrite(write));
+                    }
+                    ToolOutcome::Text(_) => {}
                 }
                 self.history.push(Message::tool_result(&call.id, text));
             }
@@ -423,6 +480,18 @@ fn describe_call(name: &str, arguments: &str) -> String {
             .get("title")
             .and_then(|t| t.as_str())
             .unwrap_or("plan")
+            .to_string(),
+        // The name only. A password can be among the arguments, and the label
+        // goes into the transcript the operator reads and scrolls back through.
+        tools::CREATE_HOST => v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("new host")
+            .to_string(),
+        tools::EDIT_HOST => v
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("host")
             .to_string(),
         _ => String::new(),
     }
@@ -731,5 +800,29 @@ mod tests {
         );
         // Malformed arguments must not panic the transcript.
         assert_eq!(describe_call(tools::RUN_READONLY, "{"), "? · ?");
+    }
+    /// The host tools are the one place the boundary is an instruction rather
+    /// than a type — nothing stops the model calling them — so the instruction
+    /// is stated twice, in the prompt and in both schemas, and tested in both.
+    #[test]
+    fn the_system_prompt_restricts_the_host_tools_to_an_explicit_request() {
+        let p = system_prompt();
+        assert!(p.contains("THE HOST DATABASE"), "{p}");
+        assert!(p.contains("create_host") && p.contains("edit_host"), "{p}");
+        // Only on an explicit request, and never on the model's own initiative.
+        assert!(p.contains("ONLY when the operator has asked you"), "{p}");
+        assert!(p.contains("in so many words"), "{p}");
+        assert!(
+            p.contains("Never call either one on your own initiative"),
+            "{p}"
+        );
+        // Say what it is for, so the rule has a shape rather than being a scold.
+        assert!(p.contains("paste a list of servers"), "{p}");
+        // Why the rule carries the weight here: there is no dialog behind it.
+        assert!(p.contains("take effect immediately"), "{p}");
+        assert!(p.contains("no confirmation"), "{p}");
+        // Write-only, so the model does not try to read the fleet through them.
+        assert!(p.contains("write-only"), "{p}");
+        assert!(p.contains("cannot read a host back"), "{p}");
     }
 }

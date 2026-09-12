@@ -9,6 +9,7 @@ pub mod approve;
 pub mod chat;
 pub mod form;
 
+use crate::agent::hosts::HostWrite;
 use crate::agent::plan::Plan;
 use crate::agent::{AgentCommand, AgentEvent, ExecStream, Stream, Worker};
 use crate::config::Config;
@@ -435,6 +436,7 @@ impl App {
                 self.plan_hidden = false;
                 self.flash("Plan proposed — nothing has run.", StatusKind::Warn);
             }
+            AgentEvent::HostWrite(write) => self.apply_host_write(*write),
             AgentEvent::ExecStarted {
                 step,
                 host,
@@ -501,6 +503,45 @@ impl App {
     }
 
     // ---- host list ------------------------------------------------------
+
+    /// Write a host record the operator asked the agent to write.
+    ///
+    /// The merge happens against what the database holds *now*, not the
+    /// snapshot the turn began with, so a field the operator edited mid-turn is
+    /// not silently reverted by a stale value. `crate::agent` cannot reach
+    /// `DataBase` at all — it hands over a validated description and this is
+    /// the only thing that performs it.
+    fn apply_host_write(&mut self, write: HostWrite) {
+        let existing = match &write {
+            HostWrite::Create(_) => None,
+            HostWrite::Edit { name, .. } => {
+                match self.hosts.iter().find(|h| &h.name == name) {
+                    Some(h) => Some(h.clone()),
+                    // Only reachable if the record went away between the tool
+                    // validating and this running. The operator is told, because
+                    // they are the one who asked for the change.
+                    None => {
+                        self.fail(format!("No host called {name} to edit."));
+                        return;
+                    }
+                }
+            }
+        };
+        let creating = existing.is_none();
+        let rec = write.apply(existing.as_ref(), &self.cfg.mount_prefix);
+        let name = rec.name.clone();
+        match self.db.save(&rec) {
+            Ok(_) => {
+                // The cursor is left where it is: the operator may be reading
+                // the Hosts screen, and a write they did not initiate should not
+                // move what is under their fingers.
+                self.reload();
+                let what = if creating { "added" } else { "changed" };
+                self.flash(format!("Agent {what} host {name}."), StatusKind::Warn);
+            }
+            Err(e) => self.fail(format!("Could not save {name}: {e}")),
+        }
+    }
 
     pub fn reload(&mut self) {
         match self.db.search("") {
