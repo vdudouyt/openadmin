@@ -4,6 +4,7 @@
 //!   --password <value>  unlock without the prompt (development only)
 //!   --datadir  <value>  data directory (default ~/.openadmin)
 
+mod agent;
 mod app;
 mod config;
 mod db;
