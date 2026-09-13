@@ -8,6 +8,7 @@ use super::proto::{
     ChatChunk, ChatRequest, ErrorEnvelope, Message, SseLine, ToolDef, TurnAccumulator,
     parse_sse_line,
 };
+use crate::config::AgentConfig;
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,13 +42,32 @@ pub struct HttpClient {
     url: String,
     auth: Option<String>,
     model: String,
+    /// Empty means the field is not sent at all.
+    reasoning_effort: String,
+}
+
+/// The `Authorization` value, or `None` when there is no key.
+///
+/// A local llama.cpp or Ollama needs no key, so the header is omitted rather
+/// than sent empty. Its own function because `AgentConfig::key()` consults the
+/// environment, and a test that went through it would pass or fail depending on
+/// whether the developer happens to export `OPENAI_API_KEY`.
+fn auth_header(api_key: &str) -> Option<String> {
+    (!api_key.trim().is_empty()).then(|| format!("Bearer {}", api_key.trim()))
 }
 
 impl HttpClient {
-    pub fn new(base_url: &str, api_key: &str, model: &str, recv_body_secs: u64) -> Result<Self> {
-        if model.trim().is_empty() {
+    /// Takes the whole `AgentConfig` rather than a list of strings: every field
+    /// it needs comes from there, and four positional arguments of which two were
+    /// adjacent strings — key and model — was one transposition away from
+    /// sending the model name as the credential.
+    pub fn new(cfg: &AgentConfig) -> Result<Self> {
+        let model = cfg.model.trim();
+        if model.is_empty() {
             bail!("no model configured");
         }
+        let (base_url, api_key, recv_body_secs) =
+            (cfg.base_url.as_str(), cfg.key(), cfg.stream_timeout_secs);
         let config = ureq::Agent::config_builder()
             // No global timeout: a streamed turn can legitimately run for
             // minutes. Bound the phases that should never be slow instead, and
@@ -60,10 +80,9 @@ impl HttpClient {
             .build();
         Ok(HttpClient {
             agent: config.new_agent(),
+            reasoning_effort: cfg.reasoning_effort.trim().to_string(),
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
-            // A local llama.cpp or Ollama needs no key; only send the header
-            // when there is something to send.
-            auth: (!api_key.trim().is_empty()).then(|| format!("Bearer {api_key}")),
+            auth: auth_header(&api_key),
             model: model.to_string(),
         })
     }
@@ -82,6 +101,7 @@ impl LlmClient for HttpClient {
             messages,
             tools,
             stream: true,
+            reasoning_effort: Some(self.reasoning_effort.as_str()).filter(|e| !e.is_empty()),
         };
 
         let mut req = self.agent.post(self.url.as_str());
@@ -358,28 +378,53 @@ mod tests {
         assert!(msg.contains("base_url"), "{msg}");
     }
 
+    fn cfg(base_url: &str, model: &str) -> AgentConfig {
+        AgentConfig {
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            ..AgentConfig::default()
+        }
+    }
+
     #[test]
     fn a_model_is_required() {
-        assert!(HttpClient::new("https://api.openai.com/v1", "k", "  ", 600).is_err());
-        assert!(HttpClient::new("https://api.openai.com/v1", "k", "gpt-x", 600).is_ok());
+        assert!(HttpClient::new(&cfg("https://api.openai.com/v1", "  ")).is_err());
+        assert!(HttpClient::new(&cfg("https://api.openai.com/v1", "gpt-x")).is_ok());
     }
 
     /// A local endpoint needs no key, so the header must be omitted rather than
     /// sent empty.
     #[test]
     fn an_empty_api_key_sends_no_auth_header() {
-        let c = HttpClient::new("http://localhost:11434/v1", "", "llama3", 600).unwrap();
-        assert!(c.auth.is_none());
-        let c = HttpClient::new("http://x/v1", "sk-1", "m", 600).unwrap();
-        assert_eq!(c.auth.as_deref(), Some("Bearer sk-1"));
+        assert!(auth_header("").is_none());
+        assert!(auth_header("   ").is_none());
+        assert_eq!(auth_header("sk-1").as_deref(), Some("Bearer sk-1"));
     }
 
     #[test]
     fn the_url_is_joined_without_doubling_the_slash() {
-        let a = HttpClient::new("https://api.openai.com/v1", "k", "m", 600).unwrap();
-        let b = HttpClient::new("https://api.openai.com/v1/", "k", "m", 600).unwrap();
+        let a = HttpClient::new(&cfg("https://api.openai.com/v1", "m")).unwrap();
+        let b = HttpClient::new(&cfg("https://api.openai.com/v1/", "m")).unwrap();
         assert_eq!(a.url, "https://api.openai.com/v1/chat/completions");
         assert_eq!(b.url, a.url);
+    }
+
+    /// Empty means the field is never sent, so a backend that rejects an effort
+    /// string it does not know keeps working exactly as it did.
+    #[test]
+    fn reasoning_effort_reaches_the_client_only_when_set() {
+        let c = HttpClient::new(&cfg("http://localhost:11434/v1", "qwen3.5")).unwrap();
+        assert!(c.reasoning_effort.is_empty(), "not sent by default");
+
+        let off = AgentConfig {
+            reasoning_effort: "  none  ".to_string(),
+            ..cfg("http://localhost:11434/v1", "qwen3.5")
+        };
+        let c = HttpClient::new(&off).unwrap();
+        assert_eq!(
+            c.reasoning_effort, "none",
+            "trimmed, so a stray space is not a value"
+        );
     }
 
     #[test]

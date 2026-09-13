@@ -19,6 +19,13 @@ pub struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub tools: &'a [ToolDef],
     pub stream: bool,
+    /// How much the model may think first, when it is a model that thinks.
+    ///
+    /// `None` omits the field, which is what every backend received before this
+    /// existed — a server that rejects an effort it does not know then cannot be
+    /// broken by a default nobody asked for. The operator opts in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<&'a str>,
 }
 
 /// One message in the conversation.
@@ -319,6 +326,29 @@ mod tests {
 
     fn chunk(json: &str) -> ChatChunk {
         serde_json::from_str(json).expect("chunk should parse")
+    }
+
+    #[test]
+    fn the_request_omits_reasoning_effort_until_the_operator_sets_one() {
+        let msgs = vec![Message::user("hi")];
+        let body = |effort: Option<&str>| {
+            serde_json::to_string(&ChatRequest {
+                model: "qwen3.5",
+                messages: &msgs,
+                tools: &[],
+                stream: true,
+                reasoning_effort: effort,
+            })
+            .unwrap()
+        };
+        // Absent by default: a server that rejects an effort string it does not
+        // recognise must not start failing because of a default.
+        let plain = body(None);
+        assert!(!plain.contains("reasoning_effort"), "{plain}");
+        // And sent verbatim when it is set, because which values a backend takes
+        // is the backend's business — `none` on Ollama, `minimal` on OpenAI.
+        let off = body(Some("none"));
+        assert!(off.contains(r#""reasoning_effort":"none""#), "{off}");
     }
 
     #[test]

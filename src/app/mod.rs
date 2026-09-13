@@ -268,12 +268,7 @@ impl App {
         if self.agent.is_some() || !self.cfg.agent.configured() {
             return;
         }
-        let client = match crate::agent::client::HttpClient::new(
-            &self.cfg.agent.base_url,
-            &self.cfg.agent.key(),
-            &self.cfg.agent.model,
-            self.cfg.agent.stream_timeout_secs,
-        ) {
+        let client = match crate::agent::client::HttpClient::new(&self.cfg.agent) {
             Ok(c) => c,
             Err(e) => {
                 self.fail(format!("agent not started: {e}"));

@@ -107,7 +107,22 @@ section:
 api_key = "sk-..."                          # or set OPENAI_API_KEY instead
 base_url = "https://api.openai.com/v1"      # or http://localhost:11434/v1, ...
 model = "gpt-5"                             # empty by default; nothing is guessed
+reasoning_effort = ""                       # "none" turns thinking off on Ollama
 ```
+
+**Turning thinking off.** `reasoning_effort` is sent with each request when it is
+not empty, and omitted entirely when it is — so leaving it alone keeps whatever
+your backend did before. Ollama's OpenAI-compatible endpoint accepts `none`,
+`low`, `medium`, `high` and `max`, and **`none` disables thinking**; OpenAI's
+reasoning models take `minimal` through `high` and have no `none`. The value goes
+through verbatim, because which words a backend accepts is the backend's business.
+
+Worth setting on a local model. Thinking is generated before the answer is, so it
+is wall-clock time you spend watching a spinner — and some Ollama models return
+their thinking in a `reasoning` field and leave `content` empty, which arrives
+here as a turn that says nothing at all. Note that `think: false`, Ollama's own
+parameter, is **not** accepted on the `/v1/chat/completions` path; this is why the
+setting is spelled the OpenAI way.
 
 `OPENAI_API_KEY` overrides the file and is the better choice for anything
 shared or backed up, since the file holds a live credential in plaintext beside

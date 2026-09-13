@@ -48,6 +48,22 @@ pub struct AgentConfig {
     pub output_cap_bytes: usize,
     /// Backstop for a model stream that stalls without closing.
     pub stream_timeout_secs: u64,
+    /// How much the model may think before it answers, for models that think.
+    ///
+    /// Empty is the default and sends nothing, leaving the backend to do what it
+    /// did before this setting existed. Set it to turn thinking down or off:
+    /// Ollama takes `none`, `low`, `medium`, `high` and `max` on its
+    /// OpenAI-compatible endpoint and `none` disables thinking; OpenAI's
+    /// reasoning models take `minimal`, `low`, `medium`, `high` and have no
+    /// `none`. It is passed through verbatim, because which words a backend
+    /// accepts is the backend's business and a fixed list here would go stale.
+    ///
+    /// Worth turning off on a local model: thinking is generated before the
+    /// answer is, and that is wall-clock time the operator spends watching a
+    /// spinner. Some Ollama models also return their thinking in a `reasoning`
+    /// field and leave `content` empty, which arrives here as a turn that says
+    /// nothing at all.
+    pub reasoning_effort: String,
 }
 
 impl Default for AgentConfig {
@@ -63,6 +79,7 @@ impl Default for AgentConfig {
             command_timeout_secs: 60,
             output_cap_bytes: 16 * 1024,
             stream_timeout_secs: 600,
+            reasoning_effort: String::new(),
         }
     }
 }
@@ -183,6 +200,10 @@ mod tests {
         );
         assert!(text.contains("base_url"), "{text}");
         assert!(text.contains("readonly_commands"), "{text}");
+        // Every setting is materialized so the knobs are discoverable without
+        // reading the source — including this one, which an operator has no way
+        // to guess the spelling of.
+        assert!(text.contains("reasoning_effort"), "{text}");
         // And the operator's own setting survives untouched.
         assert!(text.contains("scrollback = 1234"), "{text}");
 
@@ -228,5 +249,7 @@ mod tests {
         assert_eq!(cfg.agent.base_url, "https://api.openai.com/v1");
         assert!(!cfg.agent.configured(), "no model is guessed");
         assert!(cfg.agent.readonly_commands.contains(&"ls".to_string()));
+        // Absent from an older file means "leave the backend alone", not "none".
+        assert!(cfg.agent.reasoning_effort.is_empty());
     }
 }
