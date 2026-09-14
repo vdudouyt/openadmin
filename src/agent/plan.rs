@@ -8,6 +8,7 @@
 //! it is a privacy error at compile time, not a rule it is asked to follow.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -18,8 +19,16 @@ pub enum StepKind {
     /// under `/tmp` on each host — the plan's schema, receipt and report all
     /// name the exact path, so a scriptlet in the same plan can use it.
     Upload { artifact: String },
-    /// An absolute path on a host, copied back into `artifacts/downloads/`.
-    Download { path: String },
+    /// An absolute path on a host, copied back into `artifacts/` — at `dest`
+    /// when one is given, else the per-plan, per-host default.
+    Download {
+        path: String,
+        /// Where inside `artifacts/` the file lands; empty means the default.
+        /// One host only: two hosts writing one dest would overwrite each
+        /// other, which `resolve` refuses.
+        #[serde(default)]
+        dest: String,
+    },
 }
 
 impl StepKind {
@@ -122,6 +131,34 @@ pub fn check_download_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Judge an explicit download destination: a path relative to `artifacts/`,
+/// where the file will be written. Syntactic only — the fs containment
+/// (symlink escape) is `Store::dest`, called where there is a datadir: at
+/// proposal time and in the executor. Same split as the upload's name check
+/// and `staged`.
+pub fn check_download_dest(dest: &str) -> Result<(), String> {
+    if dest.trim().is_empty() {
+        return Err("a download dest, when given, must not be empty".to_string());
+    }
+    if dest.contains('\\') || dest.contains('\0') {
+        return Err(format!(
+            "a download dest must be a relative path with no backslash: {dest:?}"
+        ));
+    }
+    for c in Path::new(dest).components() {
+        match c {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "a download dest must be a path relative to the artifacts directory, \
+                     with no `..` and no leading `/`: {dest:?}"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The `propose_plan` tool's argument shape.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanRequest {
@@ -158,8 +195,21 @@ pub fn resolve(id: u64, req: PlanRequest, known: &[(i64, String)]) -> Result<Pla
         {
             return Err(format!("step {} has an empty script", i + 1));
         }
-        if let StepKind::Download { path } = &s.kind {
+        if let StepKind::Download { path, dest } = &s.kind {
             check_download_path(path).map_err(|e| format!("step {}: {e}", i + 1))?;
+            if !dest.trim().is_empty() {
+                check_download_dest(dest).map_err(|e| format!("step {}: {e}", i + 1))?;
+                // One dest is one file; a second host would overwrite the
+                // first's copy without anybody choosing that. The default
+                // destination is per-host and may name many.
+                if s.hosts.len() > 1 {
+                    return Err(format!(
+                        "step {} downloads to an explicit dest, which names one host only — \
+                         the default dest keeps each host's copy apart",
+                        i + 1
+                    ));
+                }
+            }
         }
         let mut ids = Vec::with_capacity(s.hosts.len());
         for name in &s.hosts {
@@ -320,10 +370,74 @@ mod tests {
         assert_eq!(
             p.steps[0].kind,
             StepKind::Download {
-                path: "/var/log/nginx/error.log".to_string()
+                path: "/var/log/nginx/error.log".to_string(),
+                dest: String::new(),
             }
         );
         assert_eq!(p.steps[0].kind.label(), "download");
+
+        // An explicit destination inside artifacts/, one host.
+        let p = resolve(
+            1,
+            req(r#"{"steps":[{"kind":"download","path":"/var/log/nginx/error.log",
+                     "dest":"logs/db-error.log","hosts":["db-main"]}]}"#),
+            &known(),
+        )
+        .unwrap();
+        assert_eq!(
+            p.steps[0].kind,
+            StepKind::Download {
+                path: "/var/log/nginx/error.log".to_string(),
+                dest: "logs/db-error.log".to_string(),
+            }
+        );
+    }
+
+    /// One dest is one file: a second host would overwrite the first's copy
+    /// without anybody choosing that. The default dest is per-host and may
+    /// name as many hosts as it likes.
+    #[test]
+    fn an_explicit_download_dest_names_one_host_only() {
+        let e = resolve(
+            1,
+            req(r#"{"steps":[{"kind":"download","path":"/var/log/x",
+                     "dest":"x.log","hosts":["web-01","web-02"]}]}"#),
+            &known(),
+        )
+        .unwrap_err();
+        assert!(e.contains("one host only"), "{e}");
+        assert!(e.contains("default dest"), "{e}");
+
+        assert!(resolve(
+            1,
+            req(r#"{"steps":[{"kind":"download","path":"/var/log/x",
+                     "dest":"x.log","hosts":["web-01"]}]}"#),
+            &known(),
+        )
+        .is_ok());
+    }
+
+    /// A dest is a local path derived from a model string, so it is judged
+    /// like one: relative, no `..`, no backslash, no emptiness dressed as
+    /// whitespace.
+    #[test]
+    fn download_dests_are_relative_and_normalized() {
+        check_download_dest("logs/db-error.log").unwrap();
+        check_download_dest("db-error.log").unwrap();
+
+        for bad in [
+            "",
+            "  ",
+            "/abs/x.log",
+            "../keys/web-01",
+            "sub/../../x",
+            "back\\slash",
+        ] {
+            let e = check_download_dest(bad)
+                .err()
+                .unwrap_or_else(|| format!("{bad:?} was accepted"));
+            assert!(e.contains("download dest"), "{bad}: {e}");
+        }
     }
 
     /// The remote side of an scp goes through a shell and the local side

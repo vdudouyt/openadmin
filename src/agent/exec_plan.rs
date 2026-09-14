@@ -121,14 +121,15 @@ fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
     (dir, super::plan::upload_destination(plan_id, rel))
 }
 
-/// Where a downloaded file lands, as `(directory to create, full path)`.
+/// Where a downloaded file lands by default, as `(directory to create, full path)`.
 ///
 /// Inside `artifacts/`, so `list_artifacts` names it and a later plan can
 /// upload it elsewhere — the same directory a plan may upload from is the one
 /// direction a download should arrive in. The remote path keeps its shape
 /// under `downloads/<plan>/<host>/`: the same path from several hosts must not
 /// overwrite itself (why the host is in there) and two same-named files from
-/// one host must not either (why the shape is).
+/// one host must not either (why the shape is). An explicit `dest` bypasses
+/// this and goes through `Store::dest`, which containment-checks it.
 fn download_target(datadir: &Path, plan_id: u64, host: &str, remote_path: &str) -> (PathBuf, PathBuf) {
     let dest = datadir
         .join("artifacts")
@@ -286,12 +287,25 @@ fn run_one(
             }
             out
         }
-        StepKind::Download { path } => {
+        StepKind::Download { path, dest } => {
             // Re-judged here even though `resolve` checked it: the boundary
             // does not trust what the schema shaped, same as `staged` for
             // uploads. The local path below is derived from this string.
             super::plan::check_download_path(path).map_err(anyhow::Error::msg)?;
-            let (dir, dest) = download_target(datadir, plan.plan_id(), &host.name, path);
+            let (dir, dest) = if dest.trim().is_empty() {
+                download_target(datadir, plan.plan_id(), &host.name, path)
+            } else {
+                // `Store::dest` returns the containment-checked path, so what
+                // is written is exactly what was judged — symlink escapes
+                // included, which a plain join would miss.
+                super::plan::check_download_dest(dest).map_err(anyhow::Error::msg)?;
+                let target = crate::agent::store::ARTIFACTS.dest(datadir, dest)?;
+                let dir = target
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default();
+                (dir, target)
+            };
             std::fs::create_dir_all(&dir).context("create the downloads directory")?;
             let launch = ssh::scp_download_command(host, datadir, cfg, path, &dir, proxy);
             let out = run_capture(&launch, None, timeout, cap, Some(&tx));

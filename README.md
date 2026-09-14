@@ -230,13 +230,17 @@ in it is refused, and so is a path that leads out through a symlink, because the
 check is on the canonicalized path.
 
 **A plan can copy in both directions.** A `download` step fetches an absolute
-path from each host into `artifacts/downloads/plan-<id>/<host>/…`, keeping the
-remote path's shape — so the same file from several hosts lands as several
-files, and it appears in `list_artifacts`, where a later plan can pick it up and
-upload it to another host. The path must be absolute, normalized and free of
-spaces and shell characters (`._-+=@/` and alphanumerics), because scp runs the
-remote side through a shell; one cut off mid-transfer is removed rather than
-left as a half-copy that reads as complete.
+path from each host into `~/.openadmin/artifacts/` — by default under
+`downloads/plan-<id>/<host>/…`, keeping the remote path's shape, so the same
+file from several hosts lands as several files; or at an explicit `dest` you can
+name, which the step's one host writes to directly (one dest is one file, so a
+dest names exactly one host — the default is what keeps many hosts apart).
+Either way it appears in `list_artifacts`, where a later plan can pick it up and
+upload it to another host. The remote path must be absolute, normalized and free
+of spaces and shell characters (`._-+=@/` and alphanumerics), because scp runs
+the remote side through a shell; a dest is containment-checked against the
+artifacts directory, symlinks included; and one cut off mid-transfer is removed
+rather than left as a half-copy that reads as complete.
 
 Changing anything goes through a **plan** — scripts, artifact uploads and
 downloads, with the hosts for each — which you review in a dialog with a

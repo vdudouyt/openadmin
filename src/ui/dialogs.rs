@@ -487,23 +487,27 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                             None,
                         ));
                     }
-                    StepKind::Download { path } => {
-                        // The whole destination here too, with the host spelled
-                        // out as `<host>`: a download step usually names several
-                        // hosts and each gets a copy of its own, and the operator
-                        // should see where each lands before approving.
+                    StepKind::Download { path, dest } => {
+                        // The whole destination here too. An explicit dest
+                        // names one host; the default spells the host as
+                        // `<host>` because a download step usually names
+                        // several and each gets a copy of its own — the
+                        // operator should see where each lands before
+                        // approving.
+                        let to = if dest.trim().is_empty() {
+                            format!(
+                                "artifacts/downloads/plan-{}/<host>/{}",
+                                sel.plan.id,
+                                sanitize(path.trim_start_matches('/'))
+                            )
+                        } else {
+                            format!("artifacts/{}", sanitize(dest.trim()))
+                        };
                         body.push((
                             Line::from(vec![
                                 Span::styled("    │ ", theme::border_idle()),
                                 Span::styled(sanitize(path), theme::muted()),
-                                Span::styled(
-                                    format!(
-                                        " → artifacts/downloads/plan-{}/<host>/{}",
-                                        sel.plan.id,
-                                        sanitize(path.trim_start_matches('/'))
-                                    ),
-                                    theme::faint(),
-                                ),
+                                Span::styled(format!(" → {to}"), theme::faint()),
                             ]),
                             None,
                         ));

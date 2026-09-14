@@ -197,7 +197,8 @@ pub fn definitions(cfg: &Config, next_plan_id: u64) -> Vec<ToolDef> {
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload", "download"]},
                                 "script": {"type": "string", "description": format!("For kind=scriptlet: the bash to run. Uploads in this plan are on each host at /tmp/openadmin-plan-{n}/<artifact path>.", n = next_plan_id)},
                                 "artifact": {"type": "string", "description": format!("For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. This plan will be plan #{n}, and it lands at /tmp/openadmin-plan-{n}/<that path> on each host — name it there from a scriptlet in this same plan.", n = next_plan_id)},
-                                "path": {"type": "string", "description": "For kind=download: an absolute path on the host, like /var/log/nginx/error.log. Letters, digits and ._-+=@/ only — no spaces or shell characters, because scp runs the remote side through a shell. The file lands under artifacts/downloads/ and appears in list_artifacts, so a later plan can upload it to another host."},
+                                "path": {"type": "string", "description": "For kind=download: an absolute path on the host, like /var/log/nginx/error.log. Letters, digits and ._-+=@/ only — no spaces or shell characters, because scp runs the remote side through a shell. The file lands under artifacts/ and appears in list_artifacts, so a later plan can upload it to another host."},
+                                "dest": {"type": "string", "description": "For kind=download: optional. Where to put the file inside the artifacts directory, as a relative path like `logs/web-01-error.log`. Names exactly one host — two hosts writing one dest would overwrite each other; leave it out and each host gets its own copy under downloads/plan-N/<host>/…, keeping the remote path's shape."},
                                 "hosts": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -514,28 +515,43 @@ fn propose(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
     let known: Vec<(i64, String)> = ctx.hosts.iter().map(|h| (h.id, h.name.clone())).collect();
     match resolve(ctx.next_plan_id, req, &known) {
         Ok(plan) => {
-            // Every upload names a file that can actually be staged, checked
-            // here — the one moment the model can fix a wrong name without
-            // costing the operator anything. And the receipt states the exact
-            // destination of each, so a scriptlet in a follow-up plan never
+            // Every upload names a file that can actually be staged, and every
+            // explicit download dest names a path that can actually be written
+            // — checked here, the one moment the model can fix a wrong name
+            // without costing the operator anything. And the receipt states
+            // each exact destination, so a scriptlet in a follow-up plan never
             // has to infer it.
             let mut destinations = Vec::new();
             for step in &plan.steps {
-                let StepKind::Upload { artifact } = &step.kind else {
-                    continue;
-                };
-                match artifacts::staged(ctx.datadir, artifact) {
-                    Ok((_, rel)) => destinations.push(format!(
-                        "{rel} lands at {}",
-                        upload_destination(plan.id, &rel)
-                    )),
-                    Err(e) => {
-                        return ToolOutcome::Text(format!(
-                            "the plan was not accepted: step {:?} uploads {artifact:?}, \
-                             which cannot be staged: {e}",
-                            step.summary
-                        ))
+                match &step.kind {
+                    StepKind::Upload { artifact } => {
+                        match artifacts::staged(ctx.datadir, artifact) {
+                            Ok((_, rel)) => destinations.push(format!(
+                                "{rel} lands at {}",
+                                upload_destination(plan.id, &rel)
+                            )),
+                            Err(e) => {
+                                return ToolOutcome::Text(format!(
+                                    "the plan was not accepted: step {:?} uploads \
+                                     {artifact:?}, which cannot be staged: {e}",
+                                    step.summary
+                                ))
+                            }
+                        }
                     }
+                    StepKind::Download { path, dest }
+                        if !dest.trim().is_empty() =>
+                    {
+                        if let Err(e) = crate::agent::store::ARTIFACTS.dest(ctx.datadir, dest) {
+                            return ToolOutcome::Text(format!(
+                                "the plan was not accepted: step {:?} downloads {path:?} to \
+                                 {dest:?}, which cannot be a destination: {e}",
+                                step.summary
+                            ));
+                        }
+                        destinations.push(format!("{path} → artifacts/{}", dest.trim()));
+                    }
+                    _ => {}
                 }
             }
             let upload_note = if destinations.is_empty() {
@@ -981,6 +997,53 @@ mod tests {
             out.text()
         );
         assert!(out.text().contains("nope.sh"), "{}", out.text());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A download with an explicit dest names where it lands in the receipt,
+    /// and a dest that cannot be written is refused at the one moment the
+    /// model can fix it for free.
+    #[test]
+    fn the_receipt_names_an_explicit_download_dest() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let dir =
+            std::env::temp_dir().join(format!("openadmin-tools-dl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        artifacts::ensure_dir(&dir).unwrap();
+        let c = ctx(&h, &cfg, &dir, &cancel);
+
+        let out = dispatch(
+            &c,
+            PROPOSE_PLAN,
+            r#"{"steps":[{"kind":"download","path":"/var/log/pg.log",
+                     "dest":"logs/db.log","hosts":["db-main"]}]}"#,
+        );
+        match out {
+            ToolOutcome::Proposal { receipt, .. } => {
+                assert!(
+                    receipt.contains("/var/log/pg.log → artifacts/logs/db.log"),
+                    "{receipt}"
+                );
+            }
+            other => panic!("expected a proposal, got: {}", other.text()),
+        }
+
+        // A dest that escapes the artifacts directory is not a destination.
+        let out = dispatch(
+            &c,
+            PROPOSE_PLAN,
+            r#"{"steps":[{"kind":"download","path":"/var/log/pg.log",
+                     "dest":"../keys/x","hosts":["db-main"]}]}"#,
+        );
+        assert!(matches!(out, ToolOutcome::Text(_)));
+        assert!(
+            out.text().contains("the plan was not accepted"),
+            "{}",
+            out.text()
+        );
+        assert!(out.text().contains("keys"), "{}", out.text());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
