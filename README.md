@@ -130,6 +130,14 @@ an encrypted database. Every setting is written to the file at startup —
 including ones added since it was created — so the knobs are discoverable
 without reading the source.
 
+**Every conversation with the model is logged** to `agent.log` under the data
+directory: your prompts, each tool call with its arguments and full result,
+the report of what a confirmed plan did, and any HTTP error with its body.
+Set `debug = true` in `[agent]` to log every HTTP request and response body
+as well — off by default, because the bodies replay the whole conversation
+each turn and the log would grow at the rate of the context window. The
+`Authorization` header is never logged.
+
 **The model may look, but it may not touch.** Reading is unattended so the agent
 can find out what is actually true before it suggests anything, and it reads
 through one tool per question rather than one tool that takes a command line:
@@ -243,6 +251,7 @@ Everything lives under `~/.openadmin`:
 ```
 openadmin.sqlite   SQLCipher-encrypted host database
 config.toml        settings (see below)
+agent.log          every prompt, tool call and HTTP error, with bodies
 system_prompt.md   the agent's instructions — written with the default on first
                    run, and yours to edit from then on
 keys/<host>        ed25519 private keys, 0600

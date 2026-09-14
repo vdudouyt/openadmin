@@ -64,6 +64,10 @@ pub struct AgentConfig {
     /// field and leave `content` empty, which arrives here as a turn that says
     /// nothing at all.
     pub reasoning_effort: String,
+    /// Log every HTTP request and response body, not just the errors. Off by
+    /// default: the bodies are the whole conversation, replayed every turn,
+    /// so the log grows at the rate of the context window.
+    pub debug: bool,
 }
 
 impl Default for AgentConfig {
@@ -80,6 +84,7 @@ impl Default for AgentConfig {
             output_cap_bytes: 16 * 1024,
             stream_timeout_secs: 600,
             reasoning_effort: String::new(),
+            debug: false,
         }
     }
 }
@@ -204,6 +209,7 @@ mod tests {
         // reading the source — including this one, which an operator has no way
         // to guess the spelling of.
         assert!(text.contains("reasoning_effort"), "{text}");
+        assert!(text.contains("debug = false"), "{text}");
         // And the operator's own setting survives untouched.
         assert!(text.contains("scrollback = 1234"), "{text}");
 
@@ -251,5 +257,7 @@ mod tests {
         assert!(cfg.agent.readonly_commands.contains(&"ls".to_string()));
         // Absent from an older file means "leave the backend alone", not "none".
         assert!(cfg.agent.reasoning_effort.is_empty());
+        // And logging stays off until it is asked for.
+        assert!(!cfg.agent.debug);
     }
 }

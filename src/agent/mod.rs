@@ -413,6 +413,7 @@ impl Worker {
         // The report is a fresh user message, not a tool result: propose_plan
         // was already answered when the plan was recorded, and answering the
         // same tool_call_id twice is a protocol error.
+        log::info!("plan report to the model: {}", report.to_text());
         self.history.push(Message::user(report.to_text()));
         self.continue_turn(hosts)
     }
@@ -420,6 +421,7 @@ impl Worker {
     /// One user message, through however many tool round-trips it takes.
     fn turn(&mut self, text: String, hosts: &[HostRecord]) -> Result<(), String> {
         self.written_this_turn.clear();
+        log::info!("user prompt: {text}");
         self.history.push(Message::user(text));
         self.continue_turn(hosts)
     }
@@ -489,6 +491,12 @@ impl Worker {
                     name: call.function.name.clone(),
                     arg: describe_call(&call.function.name, &call.function.arguments),
                 });
+                log::info!(
+                    "tool call {} {}: {}",
+                    call.id,
+                    call.function.name,
+                    call.function.arguments
+                );
 
                 let ctx = ToolCtx {
                     hosts,
@@ -500,6 +508,10 @@ impl Worker {
                 };
                 let out = tools::dispatch(&ctx, &call.function.name, &call.function.arguments);
                 let text = out.text().to_string();
+                // The full result, beside the call that produced it: the log is
+                // how you see what the model was actually told, which is the
+                // transcript's transcription and not its abridged copy.
+                log::info!("tool result {}: {}", call.id, text);
                 // The operator's copy, which is the same thing unless the two
                 // audiences want different lengths of it — a fetched manual goes
                 // to the model whole and to the transcript as one line.

@@ -107,6 +107,19 @@ fn main() -> Result<()> {
     // only way to configure it would be to know the field name already.
     let cfg = Config::load(&datadir)?;
     cfg.save_if_changed(&datadir)?;
+
+    // The log of what the model was asked and what it said: one file under the
+    // data directory, never stdout — that is the TUI. `debug` widens it from
+    // prompts, tool calls and HTTP errors to every request and response body.
+    logsy::set_filename(Some(
+        datadir.join("agent.log").to_string_lossy().as_ref(),
+    ))
+    .context("open the agent log")?;
+    logsy::set_level(if cfg.agent.debug {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    });
     let mut db = DataBase::new(datadir.join("openadmin.sqlite"));
 
     install_panic_hook();

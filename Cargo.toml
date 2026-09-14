@@ -25,6 +25,10 @@ anyhow = "1"
 libc = "0.2"
 serde_json = "1"
 ureq = { version = "3", features = ["json"] }
+log = "0.4"
+# The log *implementation*: one file under the data directory, installed on
+# first use. Small enough to read before depending on, and by the same author.
+logsy = "1.0"
 # ring, not aws-lc-sys: no C toolchain needed. Matches /root/cfdns.
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
