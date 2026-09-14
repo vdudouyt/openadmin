@@ -488,6 +488,27 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                             None,
                         ));
                     }
+                    StepKind::Download { path } => {
+                        // The whole destination here too, with the host spelled
+                        // out as `<host>`: a download step usually names several
+                        // hosts and each gets a copy of its own, and the operator
+                        // should see where each lands before approving.
+                        body.push((
+                            Line::from(vec![
+                                Span::styled("    │ ", theme::border_idle()),
+                                Span::styled(sanitize(path), theme::muted()),
+                                Span::styled(
+                                    format!(
+                                        " → artifacts/downloads/plan-{}/<host>/{}",
+                                        sel.plan.id,
+                                        sanitize(path.trim_start_matches('/'))
+                                    ),
+                                    theme::faint(),
+                                ),
+                            ]),
+                            None,
+                        ));
+                    }
                 }
             }
             Row::Host(i, j) => {

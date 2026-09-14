@@ -16,14 +16,16 @@ pub enum StepKind {
     Scriptlet { script: String },
     /// A file from `<datadir>/artifacts/`, uploaded to a per-run directory.
     Upload { artifact: String },
+    /// An absolute path on a host, copied back into `artifacts/downloads/`.
+    Download { path: String },
 }
 
 impl StepKind {
-    #[allow(dead_code)] // used by the plan executor, next commit
     pub fn label(&self) -> &'static str {
         match self {
             StepKind::Scriptlet { .. } => "script",
             StepKind::Upload { .. } => "upload",
+            StepKind::Download { .. } => "download",
         }
     }
 }
@@ -60,6 +62,45 @@ impl Plan {
 
 // ---- what the model sends -----------------------------------------------
 
+/// Judge a remote path for a download step. Called at `resolve`, where a
+/// refusal goes back to the model as a tool result, and again in the executor
+/// — the boundary, which does not trust what the schema shaped.
+///
+/// A whitelist, not a blacklist: the remote side of an scp goes through a
+/// shell on legacy-protocol servers, and the local side derives a path inside
+/// `artifacts/` from this string, so both ends have to be safe against
+/// characters nobody has audited. Spaces are the common casualty — the error
+/// names the scriptlet-and-tar workaround rather than leaving the model to
+/// guess.
+pub fn check_download_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!(
+            "a download path must be absolute, and {path:?} is not"
+        ));
+    }
+    if !path.chars().all(|c| c.is_ascii_alphanumeric() || "._-+=@/".contains(c)) {
+        return Err(format!(
+            "a download path may contain only letters, digits and ._-+=@/ — scp runs the \
+             remote side through a shell, and anything else is a quoting question. If the \
+             path has spaces, use a scriptlet with tar instead."
+        ));
+    }
+    // The leading `/` splits to an empty first component; every one after it
+    // must be a real name, which also refuses a trailing slash and `//`.
+    for (i, part) in path.split('/').enumerate() {
+        if i == 0 {
+            continue;
+        }
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(format!(
+                "a download path must be normalized — no ., .. or empty components, and \
+                 {path:?} has one"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The `propose_plan` tool's argument shape.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanRequest {
@@ -95,6 +136,9 @@ pub fn resolve(id: u64, req: PlanRequest, known: &[(i64, String)]) -> Result<Pla
             && script.trim().is_empty()
         {
             return Err(format!("step {} has an empty script", i + 1));
+        }
+        if let StepKind::Download { path } = &s.kind {
+            check_download_path(path).map_err(|e| format!("step {}: {e}", i + 1))?;
         }
         let mut ids = Vec::with_capacity(s.hosts.len());
         for name in &s.hosts {
@@ -241,6 +285,51 @@ mod tests {
             .unwrap_err()
             .contains("empty script")
         );
+    }
+
+    #[test]
+    fn a_download_step_parses() {
+        let p = resolve(
+            1,
+            req(r#"{"steps":[{"kind":"download","path":"/var/log/nginx/error.log",
+                     "hosts":["db-main"]}]}"#),
+            &known(),
+        )
+        .unwrap();
+        assert_eq!(
+            p.steps[0].kind,
+            StepKind::Download {
+                path: "/var/log/nginx/error.log".to_string()
+            }
+        );
+        assert_eq!(p.steps[0].kind.label(), "download");
+    }
+
+    /// The remote side of an scp goes through a shell and the local side
+    /// derives a path from this string, so the character set is a whitelist
+    /// and the refusals name the rule.
+    #[test]
+    fn download_paths_are_whitelisted_and_normalized() {
+        check_download_path("/var/log/nginx/error.log").unwrap();
+        check_download_path("/tmp/dump+2026.tar.gz").unwrap();
+        check_download_path("/srv/data@host/main.cnf").unwrap();
+
+        for bad in [
+            "var/log/x",           // relative
+            "/var/log/../etc/x",   // ..
+            "/var/./log/x",        // .
+            "/var//log/x",         // empty component
+            "/var/log/",           // trailing slash
+            "/opt/My App/x",       // space
+            "/var/log/x;rm -rf /", // shell metacharacter
+            "/var/log/x'$HOME'",   // quotes
+            "/var/log/x\n",        // control
+        ] {
+            let e = check_download_path(bad)
+                .err()
+                .unwrap_or_else(|| format!("{bad:?} was accepted"));
+            assert!(e.contains("download path"), "{bad}: {e}");
+        }
     }
 
     #[test]

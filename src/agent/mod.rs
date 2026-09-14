@@ -213,9 +213,10 @@ fn render_system_prompt(section: &str) -> String {
          \n\
          2. Propose one large plan, not many small ones. When you know what needs to \
          change, put everything the task needs into a single `{plan}` call — every script, \
-         every upload, every host. Each proposal costs the operator a decision, and a plan \
-         they can read end to end is one they can actually judge; a drip of small proposals \
-         is one they will stop reading. Order the steps so they can be run top to bottom.\n\
+         every upload, every download, every host. Each proposal costs the operator a \
+         decision, and a plan they can read end to end is one they can actually judge; a \
+         drip of small proposals is one they will stop reading. Order the steps so they \
+         can be run top to bottom.\n\
          \n\
          3. You cannot execute anything yourself. This is a fact about how OpenAdmin is \
          built, not a rule you are being asked to follow: there is no tool that runs a \

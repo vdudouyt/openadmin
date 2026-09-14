@@ -18,7 +18,8 @@ use crate::config::Config;
 use crate::db::model::HostRecord;
 use crate::ssh;
 use crate::ui::widgets::sanitize;
-use std::path::Path;
+use anyhow::Context;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -123,6 +124,25 @@ fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
         None => base.clone(),
     };
     (dir, format!("{base}/{rel}"))
+}
+
+/// Where a downloaded file lands, as `(directory to create, full path)`.
+///
+/// Inside `artifacts/`, so `list_artifacts` names it and a later plan can
+/// upload it elsewhere — the same directory a plan may upload from is the one
+/// direction a download should arrive in. The remote path keeps its shape
+/// under `downloads/<plan>/<host>/`: the same path from several hosts must not
+/// overwrite itself (why the host is in there) and two same-named files from
+/// one host must not either (why the shape is).
+fn download_target(datadir: &Path, plan_id: u64, host: &str, remote_path: &str) -> (PathBuf, PathBuf) {
+    let dest = datadir
+        .join("artifacts")
+        .join("downloads")
+        .join(format!("plan-{plan_id}"))
+        .join(host)
+        .join(remote_path.trim_start_matches('/'));
+    let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+    (dir, dest)
 }
 
 /// Run the plan, one step at a time, one host at a time.
@@ -263,6 +283,29 @@ fn run_one(
             }
             out
         }
+        StepKind::Download { path } => {
+            // Re-judged here even though `resolve` checked it: the boundary
+            // does not trust what the schema shaped, same as `staged` for
+            // uploads. The local path below is derived from this string.
+            super::plan::check_download_path(path).map_err(anyhow::Error::msg)?;
+            let (dir, dest) = download_target(datadir, plan.plan_id(), &host.name, path);
+            std::fs::create_dir_all(&dir).context("create the downloads directory")?;
+            let launch = ssh::scp_download_command(host, datadir, cfg, path, &dir, proxy);
+            let out = run_capture(&launch, None, timeout, cap, Some(&tx));
+            if out.as_ref().is_ok_and(|c| c.success()) {
+                on_line(format!(
+                    "downloaded {path} from {} to {}",
+                    host.name,
+                    dest.display()
+                ));
+            } else {
+                // A partial file that reads as complete is worse than none:
+                // scp cut off mid-transfer is a failure, and the failure is
+                // reported, so nothing of value is lost by removing it.
+                let _ = std::fs::remove_file(&dest);
+            }
+            out
+        }
     };
 
     drop(tx);
@@ -369,6 +412,30 @@ mod tests {
             upload_target(3, "nginx/site.conf").1,
             upload_target(3, "apache/site.conf").1
         );
+    }
+
+    /// A download lands inside `artifacts/` — where `list_artifacts` finds it
+    /// and a later plan can upload it — and under plan and host directories,
+    /// so the same path from several hosts, or the same plan proposed twice,
+    /// cannot overwrite an earlier copy. The remote path keeps its shape.
+    #[test]
+    fn downloads_land_per_plan_and_host_inside_artifacts() {
+        let d = Path::new("/data");
+        let (dir, dest) = download_target(d, 3, "web-01", "/var/log/nginx/error.log");
+        assert_eq!(
+            dest,
+            PathBuf::from("/data/artifacts/downloads/plan-3/web-01/var/log/nginx/error.log")
+        );
+        assert_eq!(dir, PathBuf::from("/data/artifacts/downloads/plan-3/web-01/var/log/nginx"));
+
+        // The collisions this exists to prevent.
+        let (_, a) = download_target(d, 3, "web-01", "/var/log/nginx/error.log");
+        let (_, b) = download_target(d, 3, "web-02", "/var/log/nginx/error.log");
+        let (_, c) = download_target(d, 4, "web-01", "/var/log/nginx/error.log");
+        assert_ne!(a, b, "same path, different hosts");
+        assert_ne!(a, c, "same path and host, different plans");
+        let (_, e) = download_target(d, 3, "web-01", "/etc/x.conf");
+        assert_ne!(a, e, "different files, same everything else");
     }
 
     #[test]

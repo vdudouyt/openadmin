@@ -225,10 +225,20 @@ uploaded by name whether it was listed or not. Nothing escapes: a name with `..`
 in it is refused, and so is a path that leads out through a symlink, because the
 check is on the canonicalized path.
 
-Changing anything goes through a **plan** — scripts and artifact uploads, with
-the hosts for each — which you review in a dialog with a checkbox per step and
-per host. The script is shown in full, never elided: a plan you cannot read end
-to end is one you cannot judge. Confirm runs exactly what is still checked.
+**A plan can copy in both directions.** A `download` step fetches an absolute
+path from each host into `artifacts/downloads/plan-<id>/<host>/…`, keeping the
+remote path's shape — so the same file from several hosts lands as several
+files, and it appears in `list_artifacts`, where a later plan can pick it up and
+upload it to another host. The path must be absolute, normalized and free of
+spaces and shell characters (`._-+=@/` and alphanumerics), because scp runs the
+remote side through a shell; one cut off mid-transfer is removed rather than
+left as a half-copy that reads as complete.
+
+Changing anything goes through a **plan** — scripts, artifact uploads and
+downloads, with the hosts for each — which you review in a dialog with a
+checkbox per step and per host. The script is shown in full, never elided: a
+plan you cannot read end to end is one you cannot judge. Confirm runs exactly
+what is still checked.
 
 **Nothing halts on failure.** Every checked step runs on every checked host,
 and the report — each pair with its exit status — goes back to the model, which
@@ -255,7 +265,7 @@ agent.log          every prompt, tool call and HTTP error, with bodies
 system_prompt.md   the agent's instructions — written with the default on first
                    run, and yours to edit from then on
 keys/<host>        ed25519 private keys, 0600
-artifacts/         files a plan may upload
+artifacts/         files a plan may upload — and where its downloads land
 manuals/           what you have written for the agent
 ```
 

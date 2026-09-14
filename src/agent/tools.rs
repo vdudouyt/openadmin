@@ -134,7 +134,9 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             "List the files the operator has staged for upload, with their sizes. Scans \
              subdirectories, so a name may be a path like `nginx/site.conf` — use it \
              exactly as given in an upload step. Every file under the artifacts directory \
-             can be uploaded, including any this list was too long to name.",
+             can be uploaded, including any this list was too long to name. Files a \
+             confirmed plan downloaded from a host land here too, under \
+             `downloads/plan-N/host/…`, and are uploadable like any other.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
         ToolDef::function(
@@ -172,10 +174,11 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             "Propose changes for the operator to review. This does NOT run anything: it \
              shows the operator a dialog where they approve or reject each step and each \
              host. You cannot execute anything yourself and there is no tool that will. \
-             Put everything the task needs into ONE plan — uploads and scripts, every \
-             host — rather than proposing repeatedly; each proposal costs the operator a \
-             decision, and a plan they can read end to end is one they can actually judge. \
-             Scripts run non-interactively under `bash -s` and must never prompt.",
+             Put everything the task needs into ONE plan — scripts, uploads and downloads, \
+             every host — rather than proposing repeatedly; each proposal costs the \
+             operator a decision, and a plan they can read end to end is one they can \
+             actually judge. Scripts run non-interactively under `bash -s` and must never \
+             prompt.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -186,9 +189,10 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                             "type": "object",
                             "properties": {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
-                                "kind": {"type": "string", "enum": ["scriptlet", "upload"]},
+                                "kind": {"type": "string", "enum": ["scriptlet", "upload", "download"]},
                                 "script": {"type": "string", "description": "For kind=scriptlet: the bash to run."},
                                 "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory."},
+                                "path": {"type": "string", "description": "For kind=download: an absolute path on the host, like /var/log/nginx/error.log. Letters, digits and ._-+=@/ only — no spaces or shell characters, because scp runs the remote side through a shell. The file lands under artifacts/downloads/ and appears in list_artifacts, so a later plan can upload it to another host."},
                                 "hosts": {
                                     "type": "array",
                                     "items": {"type": "string"},
