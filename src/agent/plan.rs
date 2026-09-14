@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 pub enum StepKind {
     /// Non-interactive bash, piped to `bash -s` on each target.
     Scriptlet { script: String },
-    /// A file from `<datadir>/artifacts/`, uploaded to a per-run directory.
+    /// A file from `<datadir>/artifacts/`, uploaded to `/tmp/openadmin-plan/`
+    /// on each host — a fixed destination, so a scriptlet written in the same
+    /// plan can name it.
     Upload { artifact: String },
     /// An absolute path on a host, copied back into `artifacts/downloads/`.
     Download { path: String },

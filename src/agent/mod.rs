@@ -265,6 +265,10 @@ fn render_system_prompt(section: &str) -> String {
          commands, so re-running a step after a partial failure is safe. Say what a step \
          does in its summary; the operator reads that before the script.\n\
          \n\
+         An artifact uploaded by a step of this plan — or an earlier one — is on each \
+         host at `/tmp/openadmin-plan/<its list_artifacts path>`. Reference it there; \
+         never guess at another destination.\n\
+         \n\
          Be concise. The operator is reading a terminal, not a report.",
         ro = "readonly_",
         read = "readonly_read_file",
@@ -917,6 +921,11 @@ mod tests {
         );
         assert!(p.contains("bash -s"), "{p}");
         assert!(p.contains("only those hosts"), "{p}");
+        // The upload destination, named in full: a scriptlet that uses an
+        // upload is written in the same plan, before any number exists, so the
+        // path has to be stated or guessed.
+        assert!(p.contains("/tmp/openadmin-plan/"), "{p}");
+        assert!(p.contains("never guess at another destination"), "{p}");
         // The grammar itself is the probe schemas' own field types, which is
         // where it is read at the moment a call is filled in. The prompt's job
         // is to send the model there and to say the fields are the whole of it,

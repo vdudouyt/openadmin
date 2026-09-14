@@ -133,9 +133,10 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             LIST_ARTIFACTS,
             "List the files the operator has staged for upload, with their sizes. Scans \
              subdirectories, so a name may be a path like `nginx/site.conf` — use it \
-             exactly as given in an upload step. Every file under the artifacts directory \
-             can be uploaded, including any this list was too long to name. Files a \
-             confirmed plan downloaded from a host land here too, under \
+             exactly as given in an upload step, where it lands at \
+             /tmp/openadmin-plan/<that path> on each host. Every file under the artifacts \
+             directory can be uploaded, including any this list was too long to name. \
+             Files a confirmed plan downloaded from a host land here too, under \
              `downloads/plan-N/host/…`, and are uploadable like any other.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
@@ -190,8 +191,8 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                             "properties": {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload", "download"]},
-                                "script": {"type": "string", "description": "For kind=scriptlet: the bash to run."},
-                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory."},
+                                "script": {"type": "string", "description": "For kind=scriptlet: the bash to run. Uploads from the same or an earlier plan are on each host at /tmp/openadmin-plan/<artifact path>."},
+                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It lands at /tmp/openadmin-plan/<that path> on each host — name it there from a scriptlet."},
                                 "path": {"type": "string", "description": "For kind=download: an absolute path on the host, like /var/log/nginx/error.log. Letters, digits and ._-+=@/ only — no spaces or shell characters, because scp runs the remote side through a shell. The file lands under artifacts/downloads/ and appears in list_artifacts, so a later plan can upload it to another host."},
                                 "hosts": {
                                     "type": "array",
@@ -914,6 +915,18 @@ mod tests {
         assert!(plan.function.description.contains("no tool that will"));
         // And that one big plan is wanted.
         assert!(plan.function.description.contains("ONE plan"));
+        // The upload destination is knowable in advance, or a scriptlet written
+        // in the same plan has to guess it. Named in both fields a model reads
+        // while writing the plan.
+        let body = plan.function.parameters.to_string();
+        assert!(
+            body.contains("/tmp/openadmin-plan/"),
+            "the artifact field names where uploads land: {body}"
+        );
+        assert!(
+            body.contains("name it there from a scriptlet"),
+            "the script field says how to reference an upload: {body}"
+        );
 
         // One tool per read-only question, each with typed fields and no field
         // that holds a command line. This is what stopped a weak model reaching

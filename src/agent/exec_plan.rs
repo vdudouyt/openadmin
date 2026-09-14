@@ -104,11 +104,14 @@ impl ExecReport {
     }
 }
 
-/// Where uploads land: one directory per plan, so a step cannot clobber a file
-/// something else is relying on at a predictable path.
-fn upload_dir(plan_id: u64) -> String {
-    format!("/tmp/openadmin-plan-{plan_id}")
-}
+/// Where uploads land on each host. One fixed directory, not one per plan:
+/// a scriptlet that uses an upload is written in the same `propose_plan` call
+/// as the upload, before any plan number exists, so the path has to be
+/// knowable in advance or the model has to guess it. The isolation a per-plan
+/// number bought was illusory anyway — plan ids restart at 1 every session,
+/// so plan 1 already shared its directory with the previous session's plan 1.
+/// Last upload wins, which is the semantics a deploy directory usually has.
+const UPLOAD_DIR: &str = "/tmp/openadmin-plan";
 
 /// Where one staged file lands: `(directory to create, full path)`.
 ///
@@ -117,13 +120,12 @@ fn upload_dir(plan_id: u64) -> String {
 /// flattening them would have the second silently overwrite the first. It also
 /// lets a scriptlet in the same plan name an upload by the path it already knows
 /// from `list_artifacts`.
-fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
-    let base = upload_dir(plan_id);
+fn upload_target(rel: &str) -> (String, String) {
     let dir = match rel.rsplit_once('/') {
-        Some((parent, _)) => format!("{base}/{parent}"),
-        None => base.clone(),
+        Some((parent, _)) => format!("{UPLOAD_DIR}/{parent}"),
+        None => UPLOAD_DIR.to_string(),
     };
-    (dir, format!("{base}/{rel}"))
+    (dir, format!("{UPLOAD_DIR}/{rel}"))
 }
 
 /// Where a downloaded file lands, as `(directory to create, full path)`.
@@ -263,7 +265,7 @@ fn run_one(
             // `rel` comes back from the canonicalized path, so it is a clean
             // relative path whatever the model wrote.
             let (local, rel) = artifacts::staged(datadir, artifact)?;
-            let (dir, dest) = upload_target(plan.plan_id(), &rel);
+            let (dir, dest) = upload_target(&rel);
             let mkdir = ssh::exec_command(
                 host,
                 datadir,
@@ -380,9 +382,12 @@ mod tests {
         assert_eq!(report(vec![r(1, "x", Some(0))]).failures().len(), 0);
     }
 
+    /// The destination is fixed and plan-independent, so a scriptlet written in
+    /// the same `propose_plan` call as the upload can name it — before any
+    /// plan number exists.
     #[test]
-    fn uploads_land_in_a_directory_of_their_own() {
-        assert_eq!(upload_dir(7), "/tmp/openadmin-plan-7");
+    fn uploads_land_in_one_fixed_known_directory() {
+        assert_eq!(UPLOAD_DIR, "/tmp/openadmin-plan");
     }
 
     /// A staged subdirectory survives the upload, so two files of the same name
@@ -390,27 +395,27 @@ mod tests {
     #[test]
     fn a_staged_path_keeps_its_shape_on_the_far_side() {
         assert_eq!(
-            upload_target(3, "hotfix.sh"),
+            upload_target("hotfix.sh"),
             (
-                "/tmp/openadmin-plan-3".to_string(),
-                "/tmp/openadmin-plan-3/hotfix.sh".to_string()
+                "/tmp/openadmin-plan".to_string(),
+                "/tmp/openadmin-plan/hotfix.sh".to_string()
             )
         );
         assert_eq!(
-            upload_target(3, "nginx/site.conf"),
+            upload_target("nginx/site.conf"),
             (
-                "/tmp/openadmin-plan-3/nginx".to_string(),
-                "/tmp/openadmin-plan-3/nginx/site.conf".to_string()
+                "/tmp/openadmin-plan/nginx".to_string(),
+                "/tmp/openadmin-plan/nginx/site.conf".to_string()
             )
         );
         assert_eq!(
-            upload_target(3, "a/b/c/deep.conf").1,
-            "/tmp/openadmin-plan-3/a/b/c/deep.conf"
+            upload_target("a/b/c/deep.conf").1,
+            "/tmp/openadmin-plan/a/b/c/deep.conf"
         );
         // The collision this exists to prevent.
         assert_ne!(
-            upload_target(3, "nginx/site.conf").1,
-            upload_target(3, "apache/site.conf").1
+            upload_target("nginx/site.conf").1,
+            upload_target("apache/site.conf").1
         );
     }
 
