@@ -27,7 +27,8 @@ use crate::db::model::HostRecord;
 use client::LlmClient;
 use plan::Plan;
 use proto::{Message, TurnAccumulator};
-use std::path::PathBuf;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -148,8 +149,26 @@ impl ExecStream {
     }
 }
 
+/// The system prompt file, under the data directory beside `config.toml`.
+/// Written with the built-in prompt on startup if missing, so the operator can
+/// find it and edit it rather than read the source to learn what it says.
+pub const SYSTEM_PROMPT_FILE: &str = "system_prompt.md";
+
+/// The line in `system_prompt.md` that the manual index replaces. The index is
+/// built at every startup, so it cannot be baked into a file that is written
+/// once and then owned by the operator — a file frozen on the first run would
+/// never mention a manual written the week after. An operator who deletes the
+/// line keeps the rest of the file verbatim: their file is the prompt.
+const MANUALS_PLACEHOLDER: &str = "{{manuals}}";
+
 /// The instructions the model runs under.
 pub fn system_prompt(manuals: &str) -> String {
+    render_system_prompt(&manuals_section(manuals))
+}
+
+/// The prompt with `section` where the manual index belongs. Shared by the
+/// built-in path and the on-disk template, so the two cannot drift.
+fn render_system_prompt(section: &str) -> String {
     format!(
         "You are the agent inside OpenAdmin, a terminal tool an operator uses to administer \
          a fleet of remote machines over SSH. You help them diagnose and fix those machines.\n\
@@ -253,9 +272,38 @@ pub fn system_prompt(manuals: &str) -> String {
         plan = tools::PROPOSE_PLAN,
         list = tools::LIST_HOSTS,
         create = tools::CREATE_HOST,
-        manuals_section = manuals_section(manuals),
+         manuals_section = section,
         edit = tools::EDIT_HOST,
     )
+}
+
+/// Write `system_prompt.md` with the built-in prompt if it is missing. Called
+/// at startup beside the other `ensure`s, so the file is there to be found
+/// whether or not the Chat screen is ever opened.
+pub fn ensure_system_prompt(datadir: &Path) -> Result<()> {
+    let path = datadir.join(SYSTEM_PROMPT_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&path, render_system_prompt(MANUALS_PLACEHOLDER))
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// The prompt to run under: the operator's `system_prompt.md` if there is one,
+/// the built-in one if there is not — a file that cannot be read must not take
+/// the agent down with it.
+///
+/// The `{{manuals}}` line, if the file still carries it, is replaced by the
+/// manual index for this startup; a file without it is used verbatim, which is
+/// the operator saying they want no manuals section.
+fn load_system_prompt(datadir: &Path, manuals: &str) -> String {
+    match std::fs::read_to_string(datadir.join(SYSTEM_PROMPT_FILE)) {
+        Ok(text) if text.contains(MANUALS_PLACEHOLDER) => {
+            text.replace(MANUALS_PLACEHOLDER, &manuals_section(manuals))
+        }
+        Ok(text) => text,
+        Err(_) => system_prompt(manuals),
+    }
 }
 
 /// The worker: owns the conversation for the life of the session.
@@ -290,7 +338,7 @@ impl Worker {
         let index = manuals::list(&datadir)
             .map(|(m, truncated)| tools::manual_index(&m, truncated))
             .unwrap_or_default();
-        let history = vec![Message::system(system_prompt(&index))];
+        let history = vec![Message::system(load_system_prompt(&datadir, &index))];
         Worker {
             client,
             cfg,
@@ -936,6 +984,58 @@ mod tests {
         let empty = system_prompt("");
         assert!(empty.contains("has written none yet"), "{empty}");
         assert!(!empty.contains("db-failover"), "{empty}");
+    }
+
+    /// The prompt file is written once, with the placeholder the index fills,
+    /// and after that the operator's file is the prompt.
+    #[test]
+    fn a_missing_prompt_file_is_written_with_the_built_in_one() {
+        let data = scratch("prompt-write");
+        ensure_system_prompt(&data).unwrap();
+        let on_disk = std::fs::read_to_string(data.join(SYSTEM_PROMPT_FILE)).unwrap();
+        // The template, placeholder and all — not this run's index baked in,
+        // which would go stale the first time a manual is written.
+        assert!(on_disk.contains(MANUALS_PLACEHOLDER), "{on_disk}");
+        assert!(on_disk.contains("HOW YOU WORK"), "{on_disk}");
+        // And a second ensure does not overwrite what the operator may have
+        // changed in between.
+        let edited = on_disk.replace("HOW YOU WORK", "HOW I WORK");
+        std::fs::write(data.join(SYSTEM_PROMPT_FILE), &edited).unwrap();
+        ensure_system_prompt(&data).unwrap();
+        assert!(std::fs::read_to_string(data.join(SYSTEM_PROMPT_FILE))
+            .unwrap()
+            .contains("HOW I WORK"));
+    }
+
+    /// The placeholder is replaced by the manuals of *this* startup, so a file
+    /// written before a manual existed picks the manual up without being
+    /// rewritten.
+    #[test]
+    fn the_file_still_carries_the_manual_index_through_the_placeholder() {
+        let data = scratch("prompt-load");
+        ensure_system_prompt(&data).unwrap();
+        let p = load_system_prompt(&data, "db-failover.md — Promoting the standby\n");
+        assert!(p.contains("db-failover.md"), "{p}");
+        assert!(!p.contains(MANUALS_PLACEHOLDER), "{p}");
+        // And with none written, the empty case reads as its own sentence.
+        let empty = load_system_prompt(&data, "");
+        assert!(empty.contains("has written none yet"), "{empty}");
+    }
+
+    /// The operator's edit wins: a file with no placeholder is used verbatim,
+    /// which is how you say you want no manuals section — and a file nobody
+    /// can read falls back to the built-in prompt rather than no prompt.
+    #[test]
+    fn an_edited_file_without_the_placeholder_is_used_verbatim() {
+        let data = scratch("prompt-edit");
+        std::fs::write(data.join(SYSTEM_PROMPT_FILE), "Be terse.").unwrap();
+        assert_eq!(load_system_prompt(&data, "anything"), "Be terse.");
+        // A missing file (ensure not called, or removed under us) is the
+        // built-in prompt, not an error and not empty instructions.
+        let data = scratch("prompt-absent");
+        let p = load_system_prompt(&data, "");
+        assert!(p.contains("HOW YOU WORK"), "{p}");
+        assert!(p.contains("has written none yet"), "{p}");
     }
 
     #[test]

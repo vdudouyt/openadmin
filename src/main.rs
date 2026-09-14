@@ -96,6 +96,10 @@ fn main() -> Result<()> {
     // `artifacts/` had the same problem — it was never created at all.
     agent::artifacts::ensure_dir(&datadir)?;
     agent::manuals::ensure_dir(&datadir)?;
+    // The same discoverability for the prompt: a file nobody writes is a
+    // prompt nobody knows they can change, so the built-in one is materialized
+    // once and the operator owns it from then on.
+    agent::ensure_system_prompt(&datadir)?;
 
     // Materialize every setting on disk, so the knobs are discoverable without
     // reading the source — including ones added since the file was written. A

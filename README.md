@@ -243,10 +243,17 @@ Everything lives under `~/.openadmin`:
 ```
 openadmin.sqlite   SQLCipher-encrypted host database
 config.toml        settings (see below)
+system_prompt.md   the agent's instructions — written with the default on first
+                   run, and yours to edit from then on
 keys/<host>        ed25519 private keys, 0600
 artifacts/         files a plan may upload
 manuals/           what you have written for the agent
 ```
+
+The prompt file carries a `{{manuals}}` line where the manual index for this
+session goes; edit around it, or delete it to run with no manuals section
+at all. A prompt file is used verbatim, so check it after a version upgrade
+that changes what the tools do.
 
 `artifacts/` and `manuals/` are created empty on every start, so they are there
 to put something in.
