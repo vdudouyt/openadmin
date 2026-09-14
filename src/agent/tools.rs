@@ -14,7 +14,7 @@
 
 use super::exec::run_capture;
 use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
-use super::plan::{Plan, PlanRequest, resolve};
+use super::plan::{Plan, PlanRequest, StepKind, resolve, upload_destination};
 use super::proto::ToolDef;
 use super::{artifacts, manuals, probe, readonly};
 use crate::config::Config;
@@ -116,7 +116,11 @@ const NOT_SETTABLE: &str = "It cannot set an SSH key or the SOCKS-proxy flag, an
     generate a key, F6 proxy, F8 delete).";
 
 /// The schemas sent with every request.
-pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
+///
+/// Rebuilt before every model round-trip with the worker's next plan id, so
+/// `propose_plan` can state the number of the plan the model is about to
+/// write — and with it, the exact path its uploads will land at.
+pub fn definitions(cfg: &Config, next_plan_id: u64) -> Vec<ToolDef> {
     let mut defs = vec![
         ToolDef::function(
             LIST_HOSTS,
@@ -133,11 +137,11 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             LIST_ARTIFACTS,
             "List the files the operator has staged for upload, with their sizes. Scans \
              subdirectories, so a name may be a path like `nginx/site.conf` — use it \
-             exactly as given in an upload step, where it lands at \
-             /tmp/openadmin-plan/<that path> on each host. Every file under the artifacts \
-             directory can be uploaded, including any this list was too long to name. \
-             Files a confirmed plan downloaded from a host land here too, under \
-             `downloads/plan-N/host/…`, and are uploadable like any other.",
+             exactly as given in an upload step; the propose_plan schema and the \
+             receipt name the exact path it lands at on each host. Every file under \
+             the artifacts directory can be uploaded, including any this list was too \
+             long to name. Files a confirmed plan downloaded from a host land here \
+             too, under `downloads/plan-N/host/…`, and are uploadable like any other.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
         ToolDef::function(
@@ -191,8 +195,8 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                             "properties": {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload", "download"]},
-                                "script": {"type": "string", "description": "For kind=scriptlet: the bash to run. Uploads from the same or an earlier plan are on each host at /tmp/openadmin-plan/<artifact path>."},
-                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It lands at /tmp/openadmin-plan/<that path> on each host — name it there from a scriptlet."},
+                                "script": {"type": "string", "description": format!("For kind=scriptlet: the bash to run. Uploads in this plan are on each host at /tmp/openadmin-plan-{n}/<artifact path>.", n = next_plan_id)},
+                                "artifact": {"type": "string", "description": format!("For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. This plan will be plan #{n}, and it lands at /tmp/openadmin-plan-{n}/<that path> on each host — name it there from a scriptlet in this same plan.", n = next_plan_id)},
                                 "path": {"type": "string", "description": "For kind=download: an absolute path on the host, like /var/log/nginx/error.log. Letters, digits and ._-+=@/ only — no spaces or shell characters, because scp runs the remote side through a shell. The file lands under artifacts/downloads/ and appears in list_artifacts, so a later plan can upload it to another host."},
                                 "hosts": {
                                     "type": "array",
@@ -378,14 +382,14 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
         // would leave it guessing which.
         other => ToolOutcome::Text(format!(
             "there is no tool called {other:?}. Available: {}.",
-            available(ctx.cfg).join(", ")
+            available(ctx.cfg, ctx.next_plan_id).join(", ")
         )),
     }
 }
 
 /// Every tool name this configuration offers.
-fn available(cfg: &Config) -> Vec<&'static str> {
-    definitions(cfg)
+fn available(cfg: &Config, next_plan_id: u64) -> Vec<&'static str> {
+    definitions(cfg, next_plan_id)
         .into_iter()
         .map(|d| d.function.name)
         .collect()
@@ -510,10 +514,40 @@ fn propose(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
     let known: Vec<(i64, String)> = ctx.hosts.iter().map(|h| (h.id, h.name.clone())).collect();
     match resolve(ctx.next_plan_id, req, &known) {
         Ok(plan) => {
+            // Every upload names a file that can actually be staged, checked
+            // here — the one moment the model can fix a wrong name without
+            // costing the operator anything. And the receipt states the exact
+            // destination of each, so a scriptlet in a follow-up plan never
+            // has to infer it.
+            let mut destinations = Vec::new();
+            for step in &plan.steps {
+                let StepKind::Upload { artifact } = &step.kind else {
+                    continue;
+                };
+                match artifacts::staged(ctx.datadir, artifact) {
+                    Ok((_, rel)) => destinations.push(format!(
+                        "{rel} lands at {}",
+                        upload_destination(plan.id, &rel)
+                    )),
+                    Err(e) => {
+                        return ToolOutcome::Text(format!(
+                            "the plan was not accepted: step {:?} uploads {artifact:?}, \
+                             which cannot be staged: {e}",
+                            step.summary
+                        ))
+                    }
+                }
+            }
+            let upload_note = if destinations.is_empty() {
+                String::new()
+            } else {
+                format!(" {} on each host.", destinations.join("; "))
+            };
             let receipt = format!(
-                "Plan #{} recorded: {} step(s) across {} host(s). It is now waiting for the \
-                 operator to approve or reject it, step by step and host by host. Nothing \
-                 has run. Wait for the execution report before proposing anything else.",
+                "Plan #{} recorded: {} step(s) across {} host(s).{upload_note} It is now \
+                 waiting for the operator to approve or reject it, step by step and host by \
+                 host. Nothing has run. Wait for the execution report before proposing \
+                 anything else.",
                 plan.id,
                 plan.steps.len(),
                 plan.host_count()
@@ -891,10 +925,69 @@ mod tests {
         assert!(out.text().contains("unknown host"), "{}", out.text());
     }
 
+    /// The receipt names the exact destination of every upload — the model has
+    /// just committed scripts that may reference it, and a description like
+    /// "the plan's upload directory" is a thing to guess at, not a path.
+    /// An artifact that cannot be staged is refused here, at the only moment
+    /// the model can fix the name without costing the operator anything.
+    #[test]
+    fn the_receipt_names_each_uploads_exact_destination() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let dir =
+            std::env::temp_dir().join(format!("openadmin-tools-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = artifacts::ensure_dir(&dir).unwrap();
+        std::fs::write(a.join("hotfix.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir_all(a.join("nginx")).unwrap();
+        std::fs::write(a.join("nginx/site.conf"), "server {}\n").unwrap();
+        let c = ctx(&h, &cfg, &dir, &cancel);
+
+        let out = dispatch(
+            &c,
+            PROPOSE_PLAN,
+            r#"{"steps":[
+                {"kind":"upload","artifact":"hotfix.sh","hosts":["web-01"]},
+                {"kind":"upload","artifact":"nginx/site.conf","hosts":["db-main"]}]}"#,
+        );
+        match out {
+            ToolOutcome::Proposal { receipt, .. } => {
+                assert!(
+                    receipt.contains("hotfix.sh lands at /tmp/openadmin-plan-1/hotfix.sh"),
+                    "{receipt}"
+                );
+                assert!(
+                    receipt.contains(
+                        "nginx/site.conf lands at /tmp/openadmin-plan-1/nginx/site.conf"
+                    ),
+                    "{receipt}"
+                );
+            }
+            other => panic!("expected a proposal, got: {}", other.text()),
+        }
+
+        // A name that is not staged is a refusal the model can act on, not a
+        // plan that fails on the operator halfway through.
+        let out = dispatch(
+            &c,
+            PROPOSE_PLAN,
+            r#"{"steps":[{"kind":"upload","artifact":"nope.sh","hosts":["web-01"]}]}"#,
+        );
+        assert!(matches!(out, ToolOutcome::Text(_)));
+        assert!(
+            out.text().contains("the plan was not accepted"),
+            "{}",
+            out.text()
+        );
+        assert!(out.text().contains("nope.sh"), "{}", out.text());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_tool_schemas_name_the_boundary() {
         let cfg = Config::default();
-        let defs = definitions(&cfg);
+        let defs = definitions(&cfg, 1);
         // Seven tools that are not read-only probes, plus one probe per
         // read-only question. The probe count is asserted loosely on purpose:
         // adding a probe is a normal change, and a test that fails on it teaches
@@ -916,12 +1009,16 @@ mod tests {
         // And that one big plan is wanted.
         assert!(plan.function.description.contains("ONE plan"));
         // The upload destination is knowable in advance, or a scriptlet written
-        // in the same plan has to guess it. Named in both fields a model reads
-        // while writing the plan.
+        // in the same plan has to guess it. The schema carries the live plan
+        // number, so the path is concrete — not a pattern to infer from.
         let body = plan.function.parameters.to_string();
         assert!(
-            body.contains("/tmp/openadmin-plan/"),
-            "the artifact field names where uploads land: {body}"
+            body.contains("This plan will be plan #1"),
+            "the artifact field names the plan's number: {body}"
+        );
+        assert!(
+            body.contains("/tmp/openadmin-plan-1/"),
+            "and the exact destination it implies: {body}"
         );
         assert!(
             body.contains("name it there from a scriptlet"),
@@ -1001,7 +1098,7 @@ mod tests {
             },
             ..Config::default()
         };
-        let names: Vec<&str> = definitions(&narrow)
+        let names: Vec<&str> = definitions(&narrow, 1)
             .iter()
             .map(|d| d.function.name)
             .collect();
@@ -1193,10 +1290,32 @@ mod tests {
         assert!(out.text().contains("passwrod"), "{}", out.text());
     }
 
+    /// The schema states the number of the plan the model is about to write,
+    /// and the worker rebuilds the schema before every round-trip — so a
+    /// proposal made earlier in the same turn advances the number the next
+    /// request carries. This pins that the number is the caller's, not baked.
+    #[test]
+    fn the_schema_plan_number_follows_the_next_plan_id() {
+        let cfg = Config::default();
+        for n in [1u64, 2, 7] {
+            let defs = definitions(&cfg, n);
+            let plan = defs
+                .iter()
+                .find(|d| d.function.name == PROPOSE_PLAN)
+                .unwrap();
+            let body = plan.function.parameters.to_string();
+            assert!(body.contains(&format!("plan #{n}")), "n={n}: {body}");
+            assert!(
+                body.contains(&format!("/tmp/openadmin-plan-{n}/")),
+                "n={n}: {body}"
+            );
+        }
+    }
+
     #[test]
     fn the_host_tool_schemas_state_the_restriction_and_the_write_only_property() {
         let cfg = Config::default();
-        let defs = definitions(&cfg);
+        let defs = definitions(&cfg, 1);
         for name in [CREATE_HOST, EDIT_HOST] {
             let d = defs.iter().find(|d| d.function.name == name).unwrap();
             let desc = &d.function.description;

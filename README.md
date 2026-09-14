@@ -217,10 +217,13 @@ neither listed nor fetched.
 `~/.openadmin/artifacts/` recursively, so stage files the way they are organised
 — `nginx/site.conf` beside `postgres/pg_hba.conf` — rather than flattening
 everything into one directory to make them visible. A name is a path relative to
-that directory, and an upload lands at `/tmp/openadmin-plan/<that path>` on each
-host — a fixed destination, so the model can name it from a scriptlet in the
-same plan, which it writes before any plan number exists. Two files called
-`site.conf` stay two files on the far side too. A very large tree is listed
+that directory, and an upload lands at `/tmp/openadmin-plan-<plan number>/<that
+path>` on each host — one directory per plan, so nothing clobbers anything at a
+predictable path. The model always knows the number: the `propose_plan` schema
+states it ("this plan will be #N") for the plan it is about to write, and the
+receipt and the execution report name the full path, so a scriptlet in the same
+plan can reference the upload without guessing. Two files called `site.conf`
+stay two files on the far side too. A very large tree is listed
 up to a limit and says when it stopped; anything under the directory can still be
 uploaded by name whether it was listed or not. Nothing escapes: a name with `..`
 in it is refused, and so is a path that leads out through a symlink, because the

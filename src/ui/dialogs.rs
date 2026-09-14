@@ -476,7 +476,11 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                                 Span::styled("    │ ", theme::border_idle()),
                                 Span::styled(sanitize(artifact), theme::muted()),
                                 Span::styled(
-                                    format!(" → /tmp/openadmin-plan/{}", sanitize(artifact)),
+                                    format!(
+                                        " → /tmp/openadmin-plan-{}/{}",
+                                        sel.plan.id,
+                                        sanitize(artifact)
+                                    ),
                                     theme::faint(),
                                 ),
                             ]),

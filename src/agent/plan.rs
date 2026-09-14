@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 pub enum StepKind {
     /// Non-interactive bash, piped to `bash -s` on each target.
     Scriptlet { script: String },
-    /// A file from `<datadir>/artifacts/`, uploaded to `/tmp/openadmin-plan/`
-    /// on each host — a fixed destination, so a scriptlet written in the same
-    /// plan can name it.
+    /// A file from `<datadir>/artifacts/`, uploaded to a per-plan directory
+    /// under `/tmp` on each host — the plan's schema, receipt and report all
+    /// name the exact path, so a scriptlet in the same plan can use it.
     Upload { artifact: String },
     /// An absolute path on a host, copied back into `artifacts/downloads/`.
     Download { path: String },
@@ -60,6 +60,25 @@ impl Plan {
         ids.dedup();
         ids.len()
     }
+}
+
+/// Where uploads land on each host: one directory per plan, so a step cannot
+/// clobber a file something else is relying on at a predictable path.
+///
+/// The number is knowable in advance, which is what makes this compatible
+/// with scripts: the `propose_plan` schema states it — "this plan will be
+/// #N" — using the worker's next plan id, and the schema is rebuilt before
+/// every model round-trip so it stays current even mid-turn. The receipt and
+/// the execution report then name the full path again.
+pub fn upload_dir(plan_id: u64) -> String {
+    format!("/tmp/openadmin-plan-{plan_id}")
+}
+
+/// The exact destination an upload of `rel` lands at, on every host. Stated
+/// to the model in the schema, the receipt and the report, so it never has to
+/// be inferred from a description.
+pub fn upload_destination(plan_id: u64, rel: &str) -> String {
+    format!("{}/{rel}", upload_dir(plan_id))
 }
 
 // ---- what the model sends -----------------------------------------------

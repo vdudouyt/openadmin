@@ -266,7 +266,9 @@ fn render_system_prompt(section: &str) -> String {
          does in its summary; the operator reads that before the script.\n\
          \n\
          An artifact uploaded by a step of this plan — or an earlier one — is on each \
-         host at `/tmp/openadmin-plan/<its list_artifacts path>`. Reference it there; \
+         host at `/tmp/openadmin-plan-<its plan's number>/<its list_artifacts path>`. The \
+         number of the plan you are writing is stated in the `{plan}` schema itself, and \
+         the receipt and the execution report name the full path. Use exactly that path; \
          never guess at another destination.\n\
          \n\
          Be concise. The operator is reading a terminal, not a report.",
@@ -433,14 +435,17 @@ impl Worker {
 
     /// Drive the model until it stops, proposes, or runs out of steps.
     fn continue_turn(&mut self, hosts: &[HostRecord]) -> Result<(), String> {
-        let defs = tools::definitions(&self.cfg);
-
         for _ in 0..MAX_STEPS {
             if self.cancel.load(Ordering::Relaxed) {
                 let _ = self.events.send(AgentEvent::Cancelled);
                 return Ok(());
             }
 
+            // Rebuilt every round-trip, not once per turn: the propose_plan
+            // schema states the number of the plan the model is about to
+            // write, and a proposal made earlier in this same turn has
+            // already advanced the counter.
+            let defs = tools::definitions(&self.cfg, self.next_plan_id);
             let outcome = {
                 let stream = Arc::clone(&self.stream);
                 let events = self.events.clone();
@@ -922,9 +927,10 @@ mod tests {
         assert!(p.contains("bash -s"), "{p}");
         assert!(p.contains("only those hosts"), "{p}");
         // The upload destination, named in full: a scriptlet that uses an
-        // upload is written in the same plan, before any number exists, so the
-        // path has to be stated or guessed.
-        assert!(p.contains("/tmp/openadmin-plan/"), "{p}");
+        // upload is written in the same plan, so the path — and where its
+        // plan number comes from — has to be stated or guessed.
+        assert!(p.contains("/tmp/openadmin-plan-"), "{p}");
+        assert!(p.contains("stated in the"), "{p}");
         assert!(p.contains("never guess at another destination"), "{p}");
         // The grammar itself is the probe schemas' own field types, which is
         // where it is read at the moment a call is filled in. The prompt's job

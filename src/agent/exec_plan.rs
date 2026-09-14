@@ -104,28 +104,21 @@ impl ExecReport {
     }
 }
 
-/// Where uploads land on each host. One fixed directory, not one per plan:
-/// a scriptlet that uses an upload is written in the same `propose_plan` call
-/// as the upload, before any plan number exists, so the path has to be
-/// knowable in advance or the model has to guess it. The isolation a per-plan
-/// number bought was illusory anyway — plan ids restart at 1 every session,
-/// so plan 1 already shared its directory with the previous session's plan 1.
-/// Last upload wins, which is the semantics a deploy directory usually has.
-const UPLOAD_DIR: &str = "/tmp/openadmin-plan";
-
 /// Where one staged file lands: `(directory to create, full path)`.
 ///
 /// The staged path is kept rather than flattened to a basename, because
 /// `nginx/site.conf` and `apache/site.conf` are two different files and
 /// flattening them would have the second silently overwrite the first. It also
 /// lets a scriptlet in the same plan name an upload by the path it already knows
-/// from `list_artifacts`.
-fn upload_target(rel: &str) -> (String, String) {
+/// from `list_artifacts`. The destination itself is `plan::upload_destination`,
+/// stated to the model in the schema and the receipt — this computes the parent
+/// to create.
+fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
     let dir = match rel.rsplit_once('/') {
-        Some((parent, _)) => format!("{UPLOAD_DIR}/{parent}"),
-        None => UPLOAD_DIR.to_string(),
+        Some((parent, _)) => format!("{}/{parent}", super::plan::upload_dir(plan_id)),
+        None => super::plan::upload_dir(plan_id),
     };
-    (dir, format!("{UPLOAD_DIR}/{rel}"))
+    (dir, super::plan::upload_destination(plan_id, rel))
 }
 
 /// Where a downloaded file lands, as `(directory to create, full path)`.
@@ -265,7 +258,7 @@ fn run_one(
             // `rel` comes back from the canonicalized path, so it is a clean
             // relative path whatever the model wrote.
             let (local, rel) = artifacts::staged(datadir, artifact)?;
-            let (dir, dest) = upload_target(&rel);
+            let (dir, dest) = upload_target(plan.plan_id(), &rel);
             let mkdir = ssh::exec_command(
                 host,
                 datadir,
@@ -279,7 +272,15 @@ fn run_one(
                 return Ok(made);
             }
             let launch = ssh::scp_command(host, datadir, cfg, &local, &dir, proxy);
-            let out = run_capture(&launch, None, timeout, cap, Some(&tx));
+            let mut out = run_capture(&launch, None, timeout, cap, Some(&tx));
+            if let Ok(c) = out.as_mut()
+                && c.success()
+            {
+                // Into the captured stdout, so the report the model reads names
+                // the exact path it can reference from a follow-up plan. The
+                // operator's copy is the `on_line` below, same words.
+                c.stdout = format!("uploaded {artifact} to {dest}\n{}", c.stdout);
+            }
             if out.as_ref().is_ok_and(|c| c.success()) {
                 on_line(format!("uploaded {artifact} to {dest}"));
             }
@@ -382,12 +383,15 @@ mod tests {
         assert_eq!(report(vec![r(1, "x", Some(0))]).failures().len(), 0);
     }
 
-    /// The destination is fixed and plan-independent, so a scriptlet written in
-    /// the same `propose_plan` call as the upload can name it — before any
-    /// plan number exists.
+    /// The destination is one directory per plan, and the plan's schema,
+    /// receipt and report all name the exact path — so the isolation costs the
+    /// model nothing.
     #[test]
-    fn uploads_land_in_one_fixed_known_directory() {
-        assert_eq!(UPLOAD_DIR, "/tmp/openadmin-plan");
+    fn uploads_land_in_one_directory_per_plan() {
+        assert_eq!(
+            crate::agent::plan::upload_dir(7),
+            "/tmp/openadmin-plan-7"
+        );
     }
 
     /// A staged subdirectory survives the upload, so two files of the same name
@@ -395,27 +399,33 @@ mod tests {
     #[test]
     fn a_staged_path_keeps_its_shape_on_the_far_side() {
         assert_eq!(
-            upload_target("hotfix.sh"),
+            upload_target(3, "hotfix.sh"),
             (
-                "/tmp/openadmin-plan".to_string(),
-                "/tmp/openadmin-plan/hotfix.sh".to_string()
+                "/tmp/openadmin-plan-3".to_string(),
+                "/tmp/openadmin-plan-3/hotfix.sh".to_string()
             )
         );
         assert_eq!(
-            upload_target("nginx/site.conf"),
+            upload_target(3, "nginx/site.conf"),
             (
-                "/tmp/openadmin-plan/nginx".to_string(),
-                "/tmp/openadmin-plan/nginx/site.conf".to_string()
+                "/tmp/openadmin-plan-3/nginx".to_string(),
+                "/tmp/openadmin-plan-3/nginx/site.conf".to_string()
             )
         );
         assert_eq!(
-            upload_target("a/b/c/deep.conf").1,
-            "/tmp/openadmin-plan/a/b/c/deep.conf"
+            upload_target(3, "a/b/c/deep.conf").1,
+            "/tmp/openadmin-plan-3/a/b/c/deep.conf"
         );
-        // The collision this exists to prevent.
+        // The collisions this exists to prevent.
         assert_ne!(
-            upload_target("nginx/site.conf").1,
-            upload_target("apache/site.conf").1
+            upload_target(3, "nginx/site.conf").1,
+            upload_target(3, "apache/site.conf").1,
+            "same plan, different files"
+        );
+        assert_ne!(
+            upload_target(3, "nginx/site.conf").1,
+            upload_target(4, "nginx/site.conf").1,
+            "same file, different plans"
         );
     }
 
