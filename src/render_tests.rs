@@ -2288,3 +2288,42 @@ fn the_shell_cap_is_clickable() {
         app.status.text
     );
 }
+
+/// MNT is one colour in both states — the bright orange of the old `[gen]`
+/// cell — and the word carries which state it is. Checked on ordinary rows: on
+/// the cursor and marked rows every accent takes the row's ink instead, since
+/// orange on the orange cursor bar would not be read at all.
+#[test]
+fn the_mount_column_is_orange_in_both_states() {
+    use ratatui::style::Color;
+    let (mut app, _rx) = test_app("mntcolour");
+    app.hosts[0].mounted = true;
+    // The cursor on the last row, so web-01 ([yes]) and db-main ([no]) are
+    // drawn plain.
+    app.set_cursor(2);
+    // Tall enough for all three hosts: at 8 rows only two fit, and the cursor
+    // on the third scrolls web-01 away.
+    let mut terminal = Terminal::new(TestBackend::new(120, 14)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let fg_of = |needle: &str| -> Color {
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if let Some(i) = row.find(needle) {
+                // `find` is a byte offset; count the characters before it.
+                let x = row[..i].chars().count() as u16;
+                return buf[(x + 1, y)].fg;
+            }
+        }
+        panic!("{needle} not drawn");
+    };
+    assert_eq!(fg_of("[yes]"), crate::ui::theme::ORANGE_BRIGHT, "mounted");
+    assert_eq!(
+        fg_of("[no]"),
+        crate::ui::theme::ORANGE_BRIGHT,
+        "not mounted"
+    );
+}

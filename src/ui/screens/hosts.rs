@@ -209,12 +209,10 @@ fn row(h: &HostRecord, c: &Cols, cursor: bool, marked: bool, hover: bool) -> Lin
 
     // Mounted is spelled out: it is the state an operator acts on from this
     // screen, and a word reads at a glance where a filled circle has to be told
-    // apart from an empty one.
-    let (mnt_text, mnt_fg) = if h.mounted {
-        ("[yes]", theme::GREEN)
-    } else {
-        ("[no]", theme::FG_FAINT)
-    };
+    // apart from an empty one. Both states in the bright orange the old `[gen]`
+    // cell had — the word carries the state, the colour marks the column.
+    let mnt_text = if h.mounted { "[yes]" } else { "[no]" };
+    let mnt_fg = theme::ORANGE_BRIGHT;
     // Whether a key is installed, and nothing more: making one is the edit
     // form's business, so this is a status and not a button.
     let (key_text, key_fg) = if h.key_name.is_empty() {
