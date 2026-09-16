@@ -67,6 +67,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 lines.push(Line::default());
             }
+            // Every line of it, wrapped: the useful part of a backend error is
+            // rarely the first line. Sanitized, because it is text a remote
+            // server chose.
+            Turn::Error(text) => {
+                let mut first = true;
+                for raw in text.lines() {
+                    for l in wrap(&sanitize(raw), width.saturating_sub(2)) {
+                        lines.push(Line::from(vec![
+                            Span::styled(if first { "✕ " } else { "  " }, theme::err()),
+                            Span::styled(l, theme::err()),
+                        ]));
+                        first = false;
+                    }
+                }
+                lines.push(Line::default());
+            }
             Turn::Tool {
                 name,
                 arg,

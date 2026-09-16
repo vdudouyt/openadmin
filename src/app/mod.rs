@@ -492,7 +492,12 @@ impl App {
             AgentEvent::Error(e) => {
                 self.chat.finish_stream();
                 self.busy = false;
-                self.fail(e);
+                // The whole error goes in the transcript; the status line only
+                // says where to look. It has room for 48 columns — which a first
+                // draft of this very message overran — so the pointer is short.
+                self.chat.turns.push(chat::Turn::Error(e));
+                self.chat.scroll = 0;
+                self.fail("Backend error — see the chat.");
             }
         }
     }

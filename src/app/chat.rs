@@ -51,6 +51,15 @@ pub enum PlanState {
 pub enum Turn {
     User(String),
     Assistant(String),
+    /// The backend failed the turn: an HTTP error, a stream that broke, a model
+    /// name the server does not know.
+    ///
+    /// In the transcript rather than only in the status line, because the
+    /// status line gives a message 48 columns and a few seconds, and what a
+    /// backend sends back is usually a JSON body that says exactly what is wrong
+    /// somewhere past column 48. The error sits under the message that caused
+    /// it, which is where the operator is looking for an answer.
+    Error(String),
     Tool {
         name: String,
         arg: String,

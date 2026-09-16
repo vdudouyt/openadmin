@@ -1993,3 +1993,61 @@ fn the_composer_stops_growing_at_its_cap() {
     let _ = render(&mut app, 80, 24);
     assert_eq!(app.chat.draft.measure(80).preferred_rows, 3);
 }
+
+/// A backend error goes into the transcript, whole, under the message that
+/// caused it. The status line has 48 columns and a few seconds for it, and the
+/// part of a backend error that says what is wrong is rarely in the first 48
+/// columns — this one's is the model name, at the end.
+#[test]
+fn a_backend_error_is_printed_into_the_chat_in_full() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("backend-error");
+    app.screen = Screen::Chat;
+    app.chat.turns.clear();
+    app.chat.turns.push(crate::app::chat::Turn::User(
+        "what disks does web-01 have?".into(),
+    ));
+    app.busy = true;
+
+    let body = "HTTP 404 — check base_url and model\n\
+                {\"error\":{\"message\":\"model \\\"qwen3.5:9b-instruct\\\" not found, try pulling it first\"}}";
+    app.on_agent_event(AgentEvent::Error(body.to_string()));
+
+    assert!(!app.busy, "the turn is over");
+    assert!(
+        matches!(app.chat.turns.last(), Some(crate::app::chat::Turn::Error(e)) if e == body),
+        "the whole error is kept, not a truncation of it"
+    );
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("HTTP 404"), "{out}");
+    // The line that actually names the problem, past where the status line
+    // would have cut it off.
+    assert!(out.contains("not found, try pulling it first"), "{out}");
+    assert!(out.contains("qwen3.5:9b-instruct"), "{out}");
+    // Under the message that caused it.
+    let asked = out.find("what disks does web-01").unwrap();
+    let failed = out.find("HTTP 404").unwrap();
+    assert!(asked < failed, "the error follows the question: {out}");
+    // And the status line points there rather than trying to hold it.
+    assert!(out.contains("see the chat"), "{out}");
+}
+
+/// A server chose this text, so escape sequences in it must not reach the
+/// operator's terminal.
+#[test]
+fn a_backend_error_is_sanitized_before_it_is_drawn() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("backend-error-esc");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Error(
+        "bad gateway\x1b[2J\x1b]0;pwned\x07 upstream closed".into(),
+    ));
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("bad gateway"), "{out}");
+    assert!(out.contains("upstream closed"), "{out}");
+    assert!(!out.contains('\x1b'), "no escape reaches the screen");
+    assert!(
+        !out.contains("pwned"),
+        "an OSC title is dropped whole: {out}"
+    );
+}
