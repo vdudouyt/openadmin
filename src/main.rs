@@ -242,7 +242,7 @@ fn event_loop(
                 // An exiting session leaves its final screen on display; the
                 // tab is reaped below once every pane in it is gone.
                 if let TermEvent::Exit(_) = ev {
-                    app.term.reap_finished();
+                    app.reap_shells();
                 }
                 dirty = true;
             }
@@ -250,7 +250,7 @@ fn event_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        app.term.reap_finished();
+        app.reap_shells();
         if app.term.take_dirty() {
             dirty = true;
         }

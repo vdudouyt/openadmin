@@ -175,6 +175,9 @@ pub struct AgentHandle {
 
 pub struct App {
     pub screen: Screen,
+    /// The screen that was showing before the Shells screen was, so closing
+    /// the last shell can go back there. Never `Shells` itself.
+    pub prev_screen: Screen,
     pub mode: Mode,
 
     pub hosts: Vec<HostRecord>,
@@ -238,6 +241,7 @@ impl App {
     ) -> Self {
         let mut app = App {
             screen: Screen::Hosts,
+            prev_screen: Screen::Hosts,
             mode: Mode::Normal,
             hosts: Vec::new(),
             cursor: 0,
@@ -1054,7 +1058,7 @@ impl App {
         ) {
             Ok(()) => {
                 self.marked.clear();
-                self.screen = Screen::Shells;
+                self.set_screen(Screen::Shells);
                 if n > 1 {
                     self.ok(format!("Opened {n} shells in one tab."));
                 } else {
@@ -1141,7 +1145,7 @@ impl App {
             && let Some(d) = c.to_digit(10)
         {
             if (1..=3).contains(&d) {
-                self.screen = Screen::ALL[d as usize - 1];
+                self.set_screen(Screen::ALL[d as usize - 1]);
             } else {
                 self.function_key(d as u8);
             }
@@ -1275,7 +1279,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Esc {
-            self.screen = Screen::Hosts;
+            self.set_screen(Screen::Hosts);
         }
     }
 
@@ -1380,9 +1384,10 @@ impl App {
                     if !self.term.is_empty() {
                         self.term.close_active_tab();
                         self.ok("Shell closed.");
+                        self.after_shell_closed();
                     }
                 }
-                5 => self.screen = Screen::Hosts,
+                5 => self.set_screen(Screen::Hosts),
                 9 => self.cycle_screen(),
                 _ => {}
             },
@@ -1394,13 +1399,49 @@ impl App {
         }
     }
 
+    /// Every screen change goes through here, so the screen left for Shells is
+    /// always remembered — whether it was a key, a header tab, F9 or opening a
+    /// shell that got there.
+    pub fn set_screen(&mut self, to: Screen) {
+        if to == Screen::Shells && self.screen != Screen::Shells {
+            self.prev_screen = self.screen;
+        }
+        self.screen = to;
+    }
+
+    /// After a shell tab has gone: if it was the last and the Shells screen is
+    /// showing, go back to the screen that was up before it.
+    ///
+    /// An empty Shells screen is somewhere to be only on purpose. Closing the
+    /// last shell left the operator staring at "no shell open" and reaching for
+    /// Alt+← to get back to where they started — which, for the usual Enter on
+    /// a host, `exit`, is exactly where they wanted to be. Only the transition
+    /// moves anyone: visiting an empty Shells screen with Alt+2 stays put.
+    fn after_shell_closed(&mut self) {
+        if self.term.is_empty() && self.screen == Screen::Shells {
+            self.set_screen(self.prev_screen);
+        }
+    }
+
+    /// Reap sessions that have exited, and go back if that emptied the screen.
+    ///
+    /// The event loop's way of noticing a shell that ended by itself — `exit`,
+    /// a dropped connection — as opposed to one closed with F4 or its ×.
+    pub fn reap_shells(&mut self) {
+        let had_shells = !self.term.is_empty();
+        self.term.reap_finished();
+        if had_shells {
+            self.after_shell_closed();
+        }
+    }
+
     fn cycle_screen(&mut self) {
-        self.screen = Screen::ALL[(self.screen.index() + 1) % Screen::ALL.len()];
+        self.set_screen(Screen::ALL[(self.screen.index() + 1) % Screen::ALL.len()]);
     }
 
     fn prev_screen(&mut self) {
         let n = Screen::ALL.len();
-        self.screen = Screen::ALL[(self.screen.index() + n - 1) % n];
+        self.set_screen(Screen::ALL[(self.screen.index() + n - 1) % n]);
     }
 
     fn key_host_form(&mut self, key: KeyEvent) {
@@ -1652,7 +1693,7 @@ impl App {
             .find(|(r, _)| r.contains(at))
             .copied()
         {
-            self.screen = screen;
+            self.set_screen(screen);
             return;
         }
 
@@ -1710,6 +1751,7 @@ impl App {
             .copied()
         {
             self.term.close_tab(i);
+            self.after_shell_closed();
             return;
         }
         if let Some((_, i)) = self

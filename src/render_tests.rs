@@ -2694,3 +2694,129 @@ fn a_long_error_keeps_the_dismiss_button_on_screen() {
     key(&mut app, KeyCode::Enter);
     assert!(app.alert.is_none());
 }
+
+// ---- closing the last shell ----------------------------------------------
+
+/// A tab running `script`, opened without touching the screen — so each test
+/// decides where it came from.
+fn spawn_tab(app: &mut App, name: &str, script: &str) {
+    use crate::term::session::Spawn;
+    let mut spawn = Spawn::new("/bin/sh");
+    spawn.args = vec!["-c".into(), script.into()];
+    app.term
+        .open_tab(
+            vec![(name.to_string(), spawn)],
+            (24, 80),
+            50,
+            "xterm",
+            &app.term_tx,
+        )
+        .unwrap();
+}
+
+#[test]
+fn closing_the_last_shell_returns_to_the_screen_before_it() {
+    for from in [Screen::Hosts, Screen::Chat] {
+        let (mut app, _rx) = test_app(&format!("lastshell-{from:?}"));
+        app.set_screen(from);
+        spawn_tab(&mut app, "web-01", "sleep 30");
+        app.set_screen(Screen::Shells);
+        assert_eq!(app.prev_screen, from);
+
+        app.function_key(4); // Close
+        assert!(app.term.is_empty());
+        assert_eq!(app.screen, from, "back where it came from");
+    }
+}
+
+#[test]
+fn closing_a_shell_that_is_not_the_last_stays_on_shells() {
+    let (mut app, _rx) = test_app("notlast");
+    spawn_tab(&mut app, "web-01", "sleep 30");
+    spawn_tab(&mut app, "db-main", "sleep 30");
+    app.set_screen(Screen::Shells);
+    app.function_key(4);
+    assert_eq!(app.term.tab_count(), 1);
+    assert_eq!(app.screen, Screen::Shells);
+    app.function_key(4);
+    assert_eq!(app.screen, Screen::Hosts, "the last one does");
+}
+
+#[test]
+fn the_last_tabs_close_button_goes_back_too() {
+    let (mut app, _rx) = test_app("lastx");
+    app.set_screen(Screen::Chat);
+    spawn_tab(&mut app, "web-01", "sleep 30");
+    app.set_screen(Screen::Shells);
+    let _ = render(&mut app, 120, 20);
+    let (rect, _) = *app.regions.shell_closes.first().expect("a × on the tab");
+    click(&mut app, rect.x, rect.y);
+    assert!(app.term.is_empty());
+    assert_eq!(app.screen, Screen::Chat);
+}
+
+/// `exit` in the shell, or a dropped connection: nothing was clicked, and the
+/// event loop's reap is what notices.
+#[test]
+fn a_last_shell_that_ends_by_itself_goes_back() {
+    let (mut app, _rx) = test_app("lastexit");
+    spawn_tab(&mut app, "web-01", "exit 0");
+    app.set_screen(Screen::Shells);
+    for _ in 0..400 {
+        app.reap_shells();
+        if app.term.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.term.is_empty(), "the session ended and was reaped");
+    assert_eq!(app.screen, Screen::Hosts);
+}
+
+/// Only the transition moves anyone. A shell ending while the operator is on
+/// another screen changes nothing, and an empty Shells screen visited on
+/// purpose stays where it is.
+#[test]
+fn nobody_is_moved_who_was_not_on_the_last_shell() {
+    let (mut app, _rx) = test_app("nomove");
+    spawn_tab(&mut app, "web-01", "exit 0");
+    app.set_screen(Screen::Chat);
+    for _ in 0..400 {
+        app.reap_shells();
+        if app.term.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.term.is_empty());
+    assert_eq!(app.screen, Screen::Chat, "not on Shells, so not moved");
+
+    app.set_screen(Screen::Shells);
+    app.reap_shells();
+    app.function_key(4); // Close, with nothing to close
+    assert_eq!(
+        app.screen,
+        Screen::Shells,
+        "visited empty on purpose, stays"
+    );
+}
+
+/// The screen remembered is the one before Shells, never Shells itself, and
+/// every route onto Shells records it.
+#[test]
+fn every_route_onto_shells_remembers_where_it_came_from() {
+    let (mut app, _rx) = test_app("routes");
+    app.set_screen(Screen::Chat);
+    // Alt+2.
+    app.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Shells);
+    assert_eq!(app.prev_screen, Screen::Chat);
+    // Shells to Shells changes nothing.
+    app.set_screen(Screen::Shells);
+    assert_eq!(app.prev_screen, Screen::Chat);
+    // Alt+← back to Hosts, then Alt+→ onto Shells.
+    app.set_screen(Screen::Hosts);
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Shells);
+    assert_eq!(app.prev_screen, Screen::Hosts);
+}

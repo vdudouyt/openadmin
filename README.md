@@ -120,9 +120,14 @@ That means **the mouse is how you drive the app while a pane is focused**:
   tabs scrolled out of view
 * to quit, switch to Hosts (`Alt+←`) and use `F10`, or click Quit there
 
+**Closing the last shell takes you back** to the screen you were on before
+Shells — Hosts, for the usual Enter on a host and `exit` — whether you closed it
+with `F4`, clicked its `×`, or it ended by itself. Only that last close moves
+you: a shell ending while you are on another screen changes nothing.
+
 With **no shell open** there is nothing to be transparent to, so the keyboard
-comes back: the F-keys work, and `Esc` returns to Hosts. Closing your last
-shell therefore never strands you.
+comes back: the F-keys work, and `Esc` returns to Hosts. An empty Shells screen
+you reached on purpose, with `Alt+2`, stays put.
 
 ### 3 · Chat
 
