@@ -144,17 +144,20 @@ fn entries(app: &App) -> Vec<Entry> {
     match app.screen {
         Screen::Hosts => {
             let targets = app.targets();
-            // F9 toggles, so its cap carries the letter that goes the same way.
-            let (mount_cap, mount_label) = if targets.iter().any(|t| !t.mounted) {
-                ("F9/m", "Mount")
+            // F9 toggles, so its label says which way it will go. The letter
+            // twins (a, e, m, u) are in F1's help rather than on the caps: the
+            // bar is for the keys, and a pair on every cap is noise for the
+            // many who never use the letters.
+            let mount_label = if targets.iter().any(|t| !t.mounted) {
+                "Mount"
             } else {
-                ("F9/u", "Unmount")
+                "Unmount"
             };
             let nm = app.marked.len();
             vec![
                 e("F1", "Help", 1, false),
-                e("F2/a", "Add", 2, false),
-                e("F4/e", "Edit", 4, false),
+                e("F2", "Add", 2, false),
+                e("F4", "Edit", 4, false),
                 e(
                     "↵",
                     &if nm > 1 {
@@ -167,7 +170,7 @@ fn entries(app: &App) -> Vec<Entry> {
                 ),
                 e("F6", "Proxy", 6, false),
                 e("F8", "Delete", 8, true),
-                e(mount_cap, mount_label, 9, false),
+                e("F9", mount_label, 9, false),
                 e(
                     "Ins",
                     &if nm > 0 {

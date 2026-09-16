@@ -119,8 +119,15 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     // The keymap, as the bar advertises it: the letter twin beside each F-key,
     // and Shell on Enter.
     let bar = out.lines().last().unwrap();
-    for cap in ["F2/a", "F4/e", "↵", "F6", "F8", "F9/m", "F10"] {
+    for cap in ["F2", "F4", "↵", "F6", "F8", "F9", "F10"] {
         assert!(bar.contains(cap), "{cap} missing from: {bar}");
+    }
+    // Just the keys. The letter twins are in F1's help, not on the caps.
+    for pair in ["F2/a", "F4/e", "F9/m", "F9/u", "/"] {
+        assert!(
+            !bar.contains(pair),
+            "{pair} should not be on the bar: {bar}"
+        );
     }
     assert!(bar.contains("Shell") && bar.contains("Mount"), "{bar}");
     for gone in ["F3", "F5", "F7", "GenKey"] {
@@ -2219,20 +2226,21 @@ fn the_hosts_keymap() {
     assert_eq!(app.status.text, "Already mounted.", "m on a mounted host");
     app.hosts[0].mounted = false;
 
-    // F9's cap names the direction it will go, with the matching letter.
+    // F9's label names the direction it will go.
     let bar = render(&mut app, 120, 30)
         .lines()
         .last()
         .unwrap()
         .to_string();
-    assert!(bar.contains("F9/m") && bar.contains("Mount"), "{bar}");
+    assert!(bar.contains("F9") && bar.contains("Mount"), "{bar}");
+    assert!(!bar.contains("Unmount"), "{bar}");
     app.hosts[0].mounted = true;
     let bar = render(&mut app, 120, 30)
         .lines()
         .last()
         .unwrap()
         .to_string();
-    assert!(bar.contains("F9/u") && bar.contains("Unmount"), "{bar}");
+    assert!(bar.contains("F9") && bar.contains("Unmount"), "{bar}");
     app.hosts[0].mounted = false;
 
     // With nothing to act on, Enter reaches the shell path — which says so —

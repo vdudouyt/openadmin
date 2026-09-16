@@ -50,8 +50,9 @@ CRUD over the known hosts, with the mount and proxy state of each.
 | `F1` `F10` | help · quit |
 
 Every F-key has a letter twin for keyboards where the F-row is awkward, in either
-case. `F9` toggles — if any target is unmounted it mounts, otherwise it unmounts,
-and its cap in the function bar shows `F9/m` or `F9/u` for whichever it will do.
+case; the function bar shows only the F-keys, and `F1` lists the letters. `F9`
+toggles — if any target is unmounted it mounts, otherwise it unmounts, and its
+label in the function bar says Mount or Unmount for whichever it will do.
 `m` and `u` say which way outright, which is what you want on a selection where
 some hosts are mounted and some are not. Either way, a host already in the state
 asked for is left alone.
