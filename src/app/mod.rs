@@ -8,6 +8,7 @@
 pub mod approve;
 pub mod chat;
 pub mod form;
+pub mod mount_job;
 
 use crate::agent::hosts::HostWrite;
 use crate::agent::plan::Plan;
@@ -78,6 +79,8 @@ pub enum Mode {
     ConfirmDelete,
     ShowKey,
     Help,
+    /// sshfs is connecting. Modal: the only thing to do is wait or cancel.
+    Mounting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +183,8 @@ pub struct App {
 
     pub form: Option<FormState>,
     pub pending_delete: Vec<i64>,
+    /// The mount in progress, while `Mode::Mounting` shows it.
+    pub mounting: Option<mount_job::MountJob>,
     /// `(host name, public key)` for the SSH Public Key dialog.
     pub key_dialog: Option<(String, String)>,
     pub alert: Option<String>,
@@ -239,6 +244,7 @@ impl App {
             marked: HashSet::new(),
             form: None,
             pending_delete: Vec::new(),
+            mounting: None,
             key_dialog: None,
             alert: None,
             chat: ChatState::default(),
@@ -665,8 +671,14 @@ impl App {
         }
     }
 
+    /// Something is in progress that the screen should keep moving for. Not
+    /// `busy`, which means a chat turn and changes what Esc and Enter do there.
+    pub fn animating(&self) -> bool {
+        self.busy || self.mounting.is_some()
+    }
+
     pub fn tick_spinner(&mut self) {
-        if self.busy && self.last_spin.elapsed() >= SPINNER_TICK {
+        if self.animating() && self.last_spin.elapsed() >= SPINNER_TICK {
             self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
             self.last_spin = Instant::now();
         }
@@ -823,7 +835,10 @@ impl App {
             return;
         }
         let mounting = want.unwrap_or_else(|| targets.iter().any(|h| !h.mounted));
-        let todo: Vec<_> = targets.iter().filter(|h| h.mounted != mounting).collect();
+        let todo: Vec<HostRecord> = targets
+            .into_iter()
+            .filter(|h| h.mounted != mounting)
+            .collect();
         if todo.is_empty() {
             self.ok(if mounting {
                 "Already mounted."
@@ -832,14 +847,18 @@ impl App {
             });
             return;
         }
+        if mounting {
+            let (datadir, cfg) = (self.datadir.clone(), self.cfg.clone());
+            self.start_mount(todo, move |h, cancel| {
+                mount::mount(h, &datadir, &cfg, cancel)
+            });
+            return;
+        }
+        // Unmounting stays inline: `fusermount -uz` returns at once, and a dialog
+        // for it would only flash.
         let mut done = 0usize;
-        for h in todo {
-            let res = if mounting {
-                mount::mount(h, &self.datadir, &self.cfg)
-            } else {
-                mount::unmount(h)
-            };
-            match res {
+        for h in &todo {
+            match mount::unmount(h) {
                 Ok(()) => done += 1,
                 Err(e) => {
                     self.refresh_mounts();
@@ -850,10 +869,64 @@ impl App {
         }
         self.refresh_mounts();
         self.ok(format!(
-            "{} {done} host{}.",
-            if mounting { "Mounted" } else { "Unmounted" },
+            "Unmounted {done} host{}.",
             if done == 1 { "" } else { "s" }
         ));
+    }
+
+    /// Start a mount in the background and show its dialog.
+    ///
+    /// Takes the per-host mount as a function so tests can stand in for sshfs.
+    pub fn start_mount<F>(&mut self, targets: Vec<HostRecord>, mount_one: F)
+    where
+        F: Fn(&HostRecord, &AtomicBool) -> anyhow::Result<mount::Outcome> + Send + 'static,
+    {
+        self.mounting = Some(mount_job::MountJob::start(targets, mount_one));
+        self.mode = Mode::Mounting;
+    }
+
+    pub fn cancel_mount(&mut self) {
+        if let Some(job) = &self.mounting {
+            job.cancel();
+        }
+    }
+
+    /// Called by the event loop on every pass. Returns true when the mount
+    /// finished, so the loop redraws the table without the dialog.
+    pub fn poll_mount(&mut self) -> bool {
+        let Some(job) = &self.mounting else {
+            return false;
+        };
+        let Some(finish) = job.progress().finish else {
+            return false;
+        };
+        let done = job.progress().done;
+        if let Some(mut job) = self.mounting.take() {
+            job.join();
+        }
+        self.mode = Mode::Normal;
+        // Re-read the mount table rather than trusting the count: a cancel can
+        // land after sshfs has already mounted, and the table should say so.
+        self.refresh_mounts();
+        let hosts = |n: usize| format!("{n} host{}", if n == 1 { "" } else { "s" });
+        match finish {
+            mount_job::Finish::All => self.ok(format!("Mounted {}.", hosts(done))),
+            mount_job::Finish::Cancelled if done == 0 => self.ok("Mount cancelled."),
+            mount_job::Finish::Cancelled => {
+                self.ok(format!("Cancelled after mounting {}.", hosts(done)))
+            }
+            mount_job::Finish::Failed(e) => self.fail(e),
+        }
+        true
+    }
+
+    /// On quit: stop a mount in flight rather than leave sshfs connecting after
+    /// the app is gone, finishing a mount nobody is there to see.
+    pub fn abort_mount(&mut self) {
+        if let Some(mut job) = self.mounting.take() {
+            job.cancel();
+            job.join();
+        }
     }
 
     fn toggle_proxy(&mut self) {
@@ -971,6 +1044,7 @@ impl App {
     }
 
     pub fn quit(&mut self) {
+        self.abort_mount();
         if let Some(h) = self.agent.take() {
             h.cancel.store(true, Ordering::Release);
             let _ = h.tx.send(AgentCommand::Shutdown);
@@ -992,6 +1066,15 @@ impl App {
             return;
         }
         match self.mode {
+            // Cancel is the only button, so Enter presses it too; Ctrl+C means
+            // "stop that" here as it does mid-turn in the chat.
+            Mode::Mounting => {
+                let ctrl_c =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter) || ctrl_c {
+                    self.cancel_mount();
+                }
+            }
             Mode::HostForm => self.key_host_form(key),
             Mode::ConfirmPlan => self.key_confirm_plan(key),
             Mode::ConfirmDelete => self.key_confirm_delete(key),
@@ -1237,6 +1320,9 @@ impl App {
             if n == 7 {
                 self.form_key();
             }
+            return;
+        }
+        if self.mode == Mode::Mounting {
             return;
         }
         // `Esc 0` and F10 are both Quit.

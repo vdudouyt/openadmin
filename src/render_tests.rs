@@ -2336,6 +2336,201 @@ fn the_mount_column_is_orange_in_both_states() {
     );
 }
 
+// ---- mounting ------------------------------------------------------------
+
+/// Stand-in for sshfs that connects forever, until cancelled.
+fn hangs_until_cancelled()
+-> impl Fn(&HostRecord, &std::sync::atomic::AtomicBool) -> anyhow::Result<crate::mount::Outcome>
++ Send
++ 'static {
+    |_, cancel| {
+        while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(crate::mount::Outcome::Cancelled)
+    }
+}
+
+fn finish_mount(app: &mut App) {
+    for _ in 0..1000 {
+        if app.poll_mount() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the mount never finished");
+}
+
+fn targets(app: &App, names: &[&str]) -> Vec<HostRecord> {
+    names
+        .iter()
+        .map(|n| app.hosts.iter().find(|h| h.name == *n).unwrap().clone())
+        .collect()
+}
+
+#[test]
+fn a_mount_in_progress_shows_a_dialog_and_cancel_stops_it() {
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("mountdialog");
+    let t = targets(&app, &["web-01"]);
+    app.start_mount(t, hangs_until_cancelled());
+    assert_eq!(app.mode, Mode::Mounting);
+    assert!(app.animating(), "the screen keeps moving while it connects");
+
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("Mounting"), "{out}");
+    assert!(out.contains("web-01 → /net/web-01"), "{out}");
+    assert!(out.contains("connecting"), "{out}");
+    assert!(out.contains("Cancel"), "{out}");
+    assert!(out.contains('░'), "a bar: {out}");
+    // The last line of the dialog is on screen, so nothing above it — the
+    // Cancel button least of all — was clipped by too short a frame.
+    assert!(out.contains("Esc cancel"), "{out}");
+    let bar = out.lines().last().unwrap();
+    assert!(bar.contains("Esc") && bar.contains("Cancel"), "{bar}");
+
+    key(&mut app, KeyCode::Esc);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("cancelling"), "it says so until it has: {out}");
+
+    finish_mount(&mut app);
+    assert_eq!(app.mode, Mode::Normal, "the dialog closes");
+    assert!(app.mounting.is_none());
+    assert!(!app.animating());
+    assert_eq!(app.status.kind, StatusKind::Ok);
+    assert_eq!(app.status.text, "Mount cancelled.");
+}
+
+/// Enter presses the only button there is, and Ctrl+C means "stop that".
+#[test]
+fn enter_and_ctrl_c_cancel_a_mount_too() {
+    for how in ["enter", "ctrl-c"] {
+        let (mut app, _rx) = test_app(&format!("mountcancel-{how}"));
+        let t = targets(&app, &["web-01"]);
+        app.start_mount(t, hangs_until_cancelled());
+        match how {
+            "enter" => key(&mut app, KeyCode::Enter),
+            _ => app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        }
+        finish_mount(&mut app);
+        assert_eq!(app.status.text, "Mount cancelled.", "{how}");
+        assert!(!app.should_quit, "{how} cancels, it does not quit");
+    }
+}
+
+#[test]
+fn the_cancel_button_is_orange_and_clickable() {
+    use ratatui::style::Color;
+    let (mut app, _rx) = test_app("mountbutton");
+    let t = targets(&app, &["web-01"]);
+    app.start_mount(t, hangs_until_cancelled());
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let (rect, _) = *app
+        .regions
+        .clicks
+        .iter()
+        .find(|(_, c)| *c == Click::Key(KeyCode::Esc))
+        .expect("a Cancel button");
+    let buf = terminal.backend().buffer().clone();
+    let cell = &buf[(rect.x + 1, rect.y)];
+    assert_eq!(cell.bg, crate::ui::theme::ORANGE, "an orange button");
+    let label: String = (rect.x..rect.x + rect.width)
+        .map(|x| buf[(x, rect.y)].symbol().to_string())
+        .collect();
+    assert_eq!(label.trim(), "Cancel");
+    let _: Color = cell.fg;
+
+    click(&mut app, rect.x + 1, rect.y);
+    assert!(app.mounting.as_ref().unwrap().is_cancelling());
+    finish_mount(&mut app);
+    assert_eq!(app.status.text, "Mount cancelled.");
+}
+
+#[test]
+fn several_hosts_show_which_one_is_connecting() {
+    use std::sync::atomic::Ordering;
+    let (mut app, _rx) = test_app("mountmany");
+    let t = targets(&app, &["web-01", "db-main"]);
+    app.start_mount(t, |h, cancel| {
+        if h.name == "web-01" {
+            return Ok(crate::mount::Outcome::Mounted);
+        }
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(crate::mount::Outcome::Cancelled)
+    });
+    for _ in 0..1000 {
+        if app.mounting.as_ref().unwrap().progress().current == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("host 2 of 2"), "{out}");
+    assert!(out.contains("db-main → /net/db-main"), "{out}");
+
+    key(&mut app, KeyCode::Esc);
+    finish_mount(&mut app);
+    // web-01 was mounted before the cancel, and the message says so.
+    assert_eq!(app.status.text, "Cancelled after mounting 1 host.");
+}
+
+#[test]
+fn a_finished_mount_closes_the_dialog_and_says_how_many() {
+    let (mut app, _rx) = test_app("mountdone");
+    let t = targets(&app, &["web-01", "db-main"]);
+    app.start_mount(t, |_, _| Ok(crate::mount::Outcome::Mounted));
+    finish_mount(&mut app);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.text, "Mounted 2 hosts.");
+}
+
+#[test]
+fn a_failed_mount_closes_the_dialog_and_shows_the_error() {
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("mountfail");
+    let t = targets(&app, &["web-01"]);
+    app.start_mount(t, |_, _| {
+        anyhow::bail!("mounting web-01 failed: read: Connection reset by peer")
+    });
+    finish_mount(&mut app);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.kind, StatusKind::Err);
+    assert!(
+        app.status.text.contains("Connection reset"),
+        "{}",
+        app.status.text
+    );
+}
+
+/// Modal: nothing behind the dialog is reachable while sshfs connects.
+#[test]
+fn nothing_behind_the_mount_dialog_is_reachable() {
+    let (mut app, _rx) = test_app("mountmodal");
+    let t = targets(&app, &["web-01"]);
+    app.start_mount(t, hangs_until_cancelled());
+    let _ = render(&mut app, 120, 30);
+
+    for c in ['a', 'e', 'm', 'u'] {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Delete);
+    app.function_key(8);
+    app.function_key(10);
+    let row = app.regions.rows;
+    click(&mut app, row.x + 2, row.y + 1);
+    assert_eq!(app.mode, Mode::Mounting, "still just the dialog");
+    assert!(app.form.is_none() && app.pending_delete.is_empty());
+    assert!(!app.should_quit, "F10 from the bar does not quit mid-mount");
+
+    // Quitting for real stops the mount rather than leaving sshfs connecting.
+    app.quit();
+    assert!(app.mounting.is_none(), "the mount was stopped and joined");
+}
+
 /// The key dialog opened from the form returns to the form however it is
 /// closed — including a click outside it, which the first fix missed.
 #[test]

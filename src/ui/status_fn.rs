@@ -138,6 +138,7 @@ fn entries(app: &App) -> Vec<Entry> {
             return vec![e("N", "Cancel", 0xff, false), e("Y", "Delete", 0xff, true)];
         }
         Mode::ShowKey | Mode::Help => return vec![e("Esc", "Close", 0xff, false)],
+        Mode::Mounting => return vec![e("Esc", "Cancel", 0xff, false)],
         Mode::Normal => {}
     }
 

@@ -57,6 +57,16 @@ label in the function bar says Mount or Unmount for whichever it will do.
 some hosts are mounted and some are not. Either way, a host already in the state
 asked for is left alone.
 
+**Mounting runs in the background, with a way out.** A dialog shows which host
+sshfs is connecting to, with a bar of one segment per host — solid once mounted,
+a sweeping block on the one in flight, since sshfs reports nothing while it
+connects. `Esc`, `Enter`, `Ctrl+C` or the orange Cancel button stop it: the host
+in flight is killed along with the `ssh` it started, and nothing after it is
+attempted. Hosts already mounted stay mounted, and the table is re-read from the
+mount table afterwards rather than trusted. This matters most on a host that is
+not answering, which would otherwise hold the screen for the kernel's TCP
+timeout. Unmounting is immediate and needs no dialog.
+
 **SSH keys are made in the edit dialog**, not on this screen: the table's KEY
 column only shows whether a host has one (`●`) or not (`○`). `F7` in the dialog —
 or the button in its key row — generates an ed25519 key for the host and shows

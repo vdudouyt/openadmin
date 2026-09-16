@@ -216,7 +216,7 @@ fn event_loop(
 
         // Input and PTY output both arrive on the channel; the timeout only
         // services the spinner and the status auto-revert.
-        let wait = if app.busy { 80 } else { 200 };
+        let wait = if app.animating() { 80 } else { 200 };
         match rx.recv_timeout(Duration::from_millis(wait)) {
             Ok(AppEvent::Input(ev)) => {
                 match ev {
@@ -252,6 +252,10 @@ fn event_loop(
 
         app.term.reap_finished();
         if app.term.take_dirty() {
+            dirty = true;
+        }
+        // A mount finishing closes its dialog.
+        if app.poll_mount() {
             dirty = true;
         }
         let spin_before = app.spinner_frame;

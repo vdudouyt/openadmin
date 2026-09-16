@@ -72,6 +72,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::ConfirmPlan => dialogs::confirm_plan(f, app),
         Mode::ShowKey => dialogs::show_key(f, app),
         Mode::Help => dialogs::help(f, app),
+        Mode::Mounting => dialogs::mounting(f, app),
         Mode::Normal => {}
     }
 

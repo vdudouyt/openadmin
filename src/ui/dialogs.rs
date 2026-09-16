@@ -621,6 +621,89 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// sshfs connecting, with a way out.
+///
+/// The bar has one segment per host: mounted ones solid, the one in flight with
+/// a block sweeping across it, pending ones empty. sshfs says nothing while it
+/// connects, so there is no fraction to draw for the host in flight — the sweep
+/// is there so the dialog visibly has not hung, which on a host that is not
+/// answering is the whole question.
+pub fn mounting(f: &mut Frame, app: &mut App) {
+    let Some(job) = app.mounting.as_ref() else {
+        return;
+    };
+    let progress = job.progress();
+    let total = job.hosts.len();
+    let current = progress.current.min(total.saturating_sub(1));
+    let (name, point) = job.hosts.get(current).cloned().unwrap_or_default();
+    let cancelling = job.is_cancelling();
+    // Sweep by elapsed time rather than by the spinner's frame counter, which
+    // wraps after a handful of frames and would move the block in jumps.
+    let tick = (job.started.elapsed().as_millis() / 60) as usize;
+    let spinner = app.spinner_char();
+
+    // Seven lines, and `modal_block` pads a row above and below inside the
+    // border: 7 + 2 + 2. A first cut at 10 clipped the Cancel button while still
+    // registering its hitbox, so the height is pinned by a test that finds the
+    // last line on screen.
+    let area = f.area();
+    let rect = centered(area, 58, 11);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Mounting");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let bar_w = inner.width as usize;
+    let bar: Vec<Span> = crate::app::mount_job::bar(bar_w, progress.done, total, tick)
+        .into_iter()
+        .map(|lit| {
+            if lit {
+                Span::styled("█", Style::new().fg(theme::ORANGE))
+            } else {
+                Span::styled("░", theme::faint())
+            }
+        })
+        .collect();
+
+    let what = if cancelling {
+        "cancelling…".to_string()
+    } else if total > 1 {
+        format!("host {} of {total} · connecting", current + 1)
+    } else {
+        "connecting".to_string()
+    };
+
+    // No indent of its own: `modal_block` already pads, as every dialog relies on.
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(name, theme::bright().add_modifier(Modifier::BOLD)),
+            Span::styled(" → ", theme::faint()),
+            Span::styled(point, theme::muted()),
+        ]),
+        Line::default(),
+        Line::from(bar),
+        Line::from(vec![
+            Span::styled(format!("{spinner} "), theme::proxied()),
+            Span::styled(what, theme::muted()),
+        ]),
+        Line::default(),
+    ];
+    let row = button_row(
+        app,
+        inner,
+        lines.len() as u16,
+        &[(
+            " Cancel ".to_string(),
+            theme::primary_btn(),
+            Click::Key(ratatui::crossterm::event::KeyCode::Esc),
+        )],
+    );
+    lines.push(row);
+    lines.push(Line::styled("Esc cancel", theme::faint()).right_aligned());
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn confirm_delete(f: &mut Frame, app: &mut App) {
     let names: Vec<String> = app
         .pending_delete
