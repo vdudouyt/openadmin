@@ -747,6 +747,22 @@ impl App {
         ));
     }
 
+    /// Close the help or key dialog, back to whatever opened it.
+    ///
+    /// The key dialog opens from the edit form, and closing it to Normal hid the
+    /// form with its unsaved edits — the new `key_name` among them — still in
+    /// `self.form`, where the next Edit replaced them. One function for every
+    /// way of closing, because the first fix covered Esc and Enter and missed
+    /// the click outside the dialog.
+    fn close_popup(&mut self) {
+        self.mode = if self.form.is_some() {
+            Mode::HostForm
+        } else {
+            Mode::Normal
+        };
+        self.key_dialog = None;
+    }
+
     /// Show the key of the host in the form, or generate one for it.
     ///
     /// The only place a key is made: the Hosts screen has no key action of its
@@ -981,16 +997,7 @@ impl App {
             Mode::ConfirmDelete => self.key_confirm_delete(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
-                    // Back to the form when the form opened it. Closing to Normal
-                    // used to hide the form with its unsaved edits — the new
-                    // `key_name` among them — still sitting in `self.form`, where
-                    // the next Edit replaced them.
-                    self.mode = if self.form.is_some() {
-                        Mode::HostForm
-                    } else {
-                        Mode::Normal
-                    };
-                    self.key_dialog = None;
+                    self.close_popup();
                 }
             }
             Mode::Normal => match self.screen {
@@ -1506,8 +1513,7 @@ impl App {
             {
                 self.dispatch_click(click);
             } else if matches!(self.mode, Mode::Help | Mode::ShowKey) {
-                self.mode = Mode::Normal;
-                self.key_dialog = None;
+                self.close_popup();
             }
             return;
         }

@@ -2335,3 +2335,18 @@ fn the_mount_column_is_orange_in_both_states() {
         "not mounted"
     );
 }
+
+/// The key dialog opened from the form returns to the form however it is
+/// closed — including a click outside it, which the first fix missed.
+#[test]
+fn clicking_outside_the_key_dialog_returns_to_the_form() {
+    let (mut app, _rx) = test_app("keyclickout");
+    app.set_cursor(1);
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::F(7));
+    assert_eq!(app.mode, Mode::ShowKey);
+    let _ = render(&mut app, 120, 34);
+    click(&mut app, 0, 0);
+    assert_eq!(app.mode, Mode::HostForm, "back in the form");
+    assert!(app.form.as_ref().unwrap().has_key());
+}
