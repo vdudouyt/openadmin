@@ -33,6 +33,12 @@ On first run you are asked to create a database; after that, to unlock it.
 between them, wrapping; `F9` cycles forward from Shells and Chat. On Hosts, `F9`
 is Mount.
 
+**Errors open a dialog** on top of whatever is showing, and stay until you
+dismiss them — `Esc`, `Enter`, or the Dismiss button. Nothing behind the dialog
+reacts to a key or a click while it is up, and dismissing it returns you to what
+you were doing, a half-filled form included. A second error while one is showing
+is added underneath it rather than replacing it.
+
 ### 1 · Hosts
 
 CRUD over the known hosts, with the mount and proxy state of each.

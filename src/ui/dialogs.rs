@@ -922,10 +922,33 @@ pub fn help(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-pub fn alert(f: &mut Frame, msg: &str) {
+/// An error, waiting to be dismissed.
+///
+/// The message is capped to what the screen can hold with the button still on
+/// it. `centered` clamps a frame taller than the terminal, and a clamped frame
+/// clips from the bottom — which is where Dismiss is, so an error long enough
+/// would have been a dialog with no way out. What does not fit is counted.
+pub fn alert(f: &mut Frame, app: &mut App) {
+    let Some(msg) = app.alert.clone() else {
+        return;
+    };
+    const W: u16 = 64;
+    // Borders and padding, then a blank line, the button and its hint.
+    const CHROME: u16 = 2 + 2 + 3;
     let area = f.area();
-    let text = wrap(msg, 52);
-    let rect = centered(area, 58, (text.len() + 6) as u16);
+    let inner_w = W.min(area.width).saturating_sub(2 + 4) as usize;
+
+    // Sanitized line by line, keeping the lines: an error is often text a remote
+    // server or sshfs chose, and it must not drive this terminal.
+    let clean = msg.lines().map(sanitize).collect::<Vec<_>>().join("\n");
+    let mut text: Vec<String> = wrap(&clean, inner_w.saturating_sub(2));
+    let room = area.height.saturating_sub(CHROME).max(1) as usize;
+    let hidden = text.len().saturating_sub(room);
+    if hidden > 0 {
+        text.truncate(room.saturating_sub(1));
+    }
+
+    let rect = centered(area, W, text.len() as u16 + u16::from(hidden > 0) + CHROME);
     f.render_widget(Clear, rect);
     let block = modal_block("Error");
     let inner = block.inner(rect);
@@ -933,10 +956,36 @@ pub fn alert(f: &mut Frame, msg: &str) {
 
     let mut lines: Vec<Line> = text
         .into_iter()
-        .map(|l| Line::styled(l, theme::err()))
+        .enumerate()
+        .map(|(i, l)| {
+            Line::from(vec![
+                Span::styled(if i == 0 { "✕ " } else { "  " }, theme::err()),
+                Span::styled(l, theme::body()),
+            ])
+        })
         .collect();
+    if hidden > 0 {
+        lines.push(Line::styled(
+            format!(
+                "  … {hidden} more line{}",
+                if hidden == 1 { "" } else { "s" }
+            ),
+            theme::faint(),
+        ));
+    }
     lines.push(Line::default());
-    lines.push(Line::styled("any key to dismiss", theme::faint()).right_aligned());
+    let row = button_row(
+        app,
+        inner,
+        lines.len() as u16,
+        &[(
+            " Dismiss ".to_string(),
+            theme::primary_btn(),
+            Click::Dismiss,
+        )],
+    );
+    lines.push(row);
+    lines.push(Line::styled("Esc / Enter dismiss", theme::faint()).right_aligned());
     f.render_widget(Paragraph::new(lines), inner);
 }
 

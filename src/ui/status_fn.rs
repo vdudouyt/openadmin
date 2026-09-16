@@ -74,7 +74,6 @@ pub fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let style = match app.status.kind {
         StatusKind::Ok => theme::ok(),
         StatusKind::Warn => theme::warn(),
-        StatusKind::Err => theme::err(),
         StatusKind::Loading => theme::proxied(),
         StatusKind::Idle => theme::statusbar(),
     }

@@ -659,10 +659,14 @@ fn double_clicking_a_row_opens_a_shell() {
     // invoked, so assert that open_shell ran — either it opened the tab and
     // switched screens, or it reported why it could not.
     let opened = app.screen == Screen::Shells && app.term.tab_count() == 1;
+    let refused = app
+        .alert
+        .as_deref()
+        .is_some_and(|e| e.contains("Could not open a shell"));
     assert!(
-        opened || app.status.text.contains("Could not open a shell"),
-        "double-click did not reach open_shell; status was {:?}",
-        app.status.text
+        opened || refused,
+        "double-click did not reach open_shell; error was {:?}",
+        app.alert
     );
     app.quit();
 }
@@ -904,13 +908,18 @@ fn adding_a_host_through_the_form_persists_it() {
 
 #[test]
 fn an_invalid_form_keeps_the_dialog_open_and_explains_why() {
-    use crate::app::StatusKind;
     let (mut app, _rx) = test_app("invalid");
     app.open_add();
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::HostForm, "the dialog stays open");
-    assert_eq!(app.status.kind, StatusKind::Err);
-    assert!(app.status.text.contains("Host name is required"));
+    let err = app.alert.clone().expect("an error dialog");
+    assert!(err.contains("Host name is required"), "{err}");
+    // Dismissing it returns to the form, with nothing lost: the error sits over
+    // the mode rather than replacing it.
+    key(&mut app, KeyCode::Esc);
+    assert!(app.alert.is_none());
+    assert_eq!(app.mode, Mode::HostForm, "back in the form");
+    assert!(app.form.is_some());
 }
 
 #[test]
@@ -2149,8 +2158,17 @@ fn a_backend_error_is_printed_into_the_chat_in_full() {
     let asked = out.find("what disks does web-01").unwrap();
     let failed = out.find("HTTP 404").unwrap();
     assert!(asked < failed, "the error follows the question: {out}");
-    // And the status line points there rather than trying to hold it.
-    assert!(out.contains("see the chat"), "{out}");
+    // And a dialog makes sure it is seen, holding the error itself rather than
+    // a pointer to it.
+    let err = app.alert.clone().expect("an error dialog");
+    assert_eq!(err, body);
+    assert!(out.contains("Dismiss"), "{out}");
+    // The transcript keeps it after the dialog is gone.
+    key(&mut app, KeyCode::Enter);
+    assert!(app.alert.is_none());
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("not found, try pulling it first"), "{out}");
+    assert!(!out.contains("Dismiss"), "{out}");
 }
 
 /// A server chose this text, so escape sequences in it must not reach the
@@ -2491,7 +2509,6 @@ fn a_finished_mount_closes_the_dialog_and_says_how_many() {
 
 #[test]
 fn a_failed_mount_closes_the_dialog_and_shows_the_error() {
-    use crate::app::StatusKind;
     let (mut app, _rx) = test_app("mountfail");
     let t = targets(&app, &["web-01"]);
     app.start_mount(t, |_, _| {
@@ -2499,12 +2516,8 @@ fn a_failed_mount_closes_the_dialog_and_shows_the_error() {
     });
     finish_mount(&mut app);
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.status.kind, StatusKind::Err);
-    assert!(
-        app.status.text.contains("Connection reset"),
-        "{}",
-        app.status.text
-    );
+    let err = app.alert.clone().expect("an error dialog");
+    assert!(err.contains("Connection reset"), "{err}");
 }
 
 /// Modal: nothing behind the dialog is reachable while sshfs connects.
@@ -2545,4 +2558,139 @@ fn clicking_outside_the_key_dialog_returns_to_the_form() {
     click(&mut app, 0, 0);
     assert_eq!(app.mode, Mode::HostForm, "back in the form");
     assert!(app.form.as_ref().unwrap().has_key());
+}
+
+// ---- the error dialog ----------------------------------------------------
+
+#[test]
+fn an_error_is_a_dialog_with_a_dismiss_button_not_footer_text() {
+    let (mut app, _rx) = test_app("errdialog");
+    let before = app.status.text.clone();
+    app.fail("Could not save web-01: database is locked");
+    assert_eq!(app.status.text, before, "nothing in the footer");
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let out: String = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    assert!(out.contains("Error"), "{out}");
+    assert!(out.contains("database is locked"), "{out}");
+
+    let (rect, _) = *app
+        .regions
+        .clicks
+        .iter()
+        .find(|(_, c)| *c == Click::Dismiss)
+        .expect("a Dismiss button");
+    assert_eq!(
+        buf[(rect.x + 1, rect.y)].bg,
+        crate::ui::theme::ORANGE,
+        "the default button"
+    );
+    click(&mut app, rect.x + 1, rect.y);
+    assert!(app.alert.is_none(), "Dismiss dismisses");
+}
+
+/// A dialog that closes on whatever key the operator happened to be typing is
+/// an error nobody read, so only Esc and Enter press Dismiss.
+#[test]
+fn only_esc_and_enter_dismiss_an_error() {
+    let (mut app, _rx) = test_app("errkeys");
+    for dismiss in [KeyCode::Esc, KeyCode::Enter] {
+        app.fail("boom");
+        for held in [
+            KeyCode::Char('x'),
+            KeyCode::Char(' '),
+            KeyCode::Down,
+            KeyCode::F(2),
+        ] {
+            key(&mut app, held);
+            assert!(app.alert.is_some(), "{held:?} does not dismiss");
+        }
+        assert_eq!(app.mode, Mode::Normal, "and reached nothing behind it");
+        assert!(app.form.is_none(), "F2 did not open a form");
+        key(&mut app, dismiss);
+        assert!(app.alert.is_none(), "{dismiss:?} dismisses");
+    }
+}
+
+/// The old alert let clicks straight through to whatever was under it,
+/// including the buttons of a dialog drawn in the same frame.
+#[test]
+fn clicks_do_not_pass_through_an_error() {
+    let (mut app, _rx) = test_app("errclicks");
+    app.open_add();
+    let _ = render(&mut app, 120, 34);
+    let (cancel, _) = *app
+        .regions
+        .clicks
+        .iter()
+        .find(|(_, c)| *c == Click::Key(KeyCode::Esc))
+        .expect("the form's Cancel");
+
+    app.fail("boom");
+    let _ = render(&mut app, 120, 34);
+    click(&mut app, cancel.x + 1, cancel.y);
+    assert_eq!(
+        app.mode,
+        Mode::HostForm,
+        "the form's Cancel was not reached"
+    );
+    assert!(
+        app.alert.is_some(),
+        "and a click elsewhere does not dismiss"
+    );
+    let y = app.regions.fn_bar_y;
+    click(&mut app, 2, y);
+    assert!(app.alert.is_some() && app.mode == Mode::HostForm);
+
+    key(&mut app, KeyCode::Esc);
+    assert!(app.alert.is_none());
+    assert_eq!(app.mode, Mode::HostForm, "dismissing returns to the form");
+}
+
+#[test]
+fn a_second_error_is_added_under_the_first_and_a_repeat_is_not() {
+    let (mut app, _rx) = test_app("errstack");
+    app.fail("mounting web-01 failed: Connection refused");
+    app.fail("the agent worker has stopped");
+    app.fail("mounting web-01 failed: Connection refused");
+    let err = app.alert.clone().unwrap();
+    assert_eq!(
+        err,
+        "mounting web-01 failed: Connection refused\n\nthe agent worker has stopped"
+    );
+    let out = render(&mut app, 120, 30);
+    assert!(
+        out.contains("Connection refused") && out.contains("worker has stopped"),
+        "{out}"
+    );
+}
+
+/// A frame taller than the terminal is clamped and clipped from the bottom,
+/// which is where Dismiss is, so the message gives way instead.
+#[test]
+fn a_long_error_keeps_the_dismiss_button_on_screen() {
+    let (mut app, _rx) = test_app("errlong");
+    let long: String = (1..=80)
+        .map(|i| format!("line {i} of a very long sshfs error\n"))
+        .collect();
+    app.fail(long.trim_end().to_string());
+    let out = render(&mut app, 80, 20);
+    assert!(out.contains("Dismiss"), "the button survives: {out}");
+    assert!(
+        out.contains("more lines"),
+        "and what was cut is counted: {out}"
+    );
+    assert!(out.contains("line 1 of"), "{out}");
+    assert!(!out.contains("line 80 of"), "{out}");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.alert.is_none());
 }

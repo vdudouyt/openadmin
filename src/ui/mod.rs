@@ -76,8 +76,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Normal => {}
     }
 
-    // An error alert sits on top of everything.
-    if let Some(msg) = app.alert.clone() {
-        dialogs::alert(f, &msg);
+    // An error sits on top of everything, including another dialog.
+    if app.alert.is_some() {
+        dialogs::alert(f, app);
     }
 }

@@ -88,7 +88,6 @@ pub enum StatusKind {
     Idle,
     Ok,
     Warn,
-    Err,
     Loading,
 }
 
@@ -121,6 +120,8 @@ pub enum Click {
     FocusField(FormField),
     CycleType(i32),
     GenKey,
+    /// The error dialog's button.
+    Dismiss,
 }
 
 /// Clickable screen regions, recaptured every render.
@@ -502,12 +503,11 @@ impl App {
             AgentEvent::Error(e) => {
                 self.chat.finish_stream();
                 self.busy = false;
-                // The whole error goes in the transcript; the status line only
-                // says where to look. It has room for 48 columns — which a first
-                // draft of this very message overran — so the pointer is short.
-                self.chat.turns.push(chat::Turn::Error(e));
+                // In the transcript for the record, and in a dialog so it is
+                // seen: the transcript keeps it, the dialog makes sure of it.
+                self.chat.turns.push(chat::Turn::Error(e.clone()));
                 self.chat.scroll = 0;
-                self.fail("Backend error — see the chat.");
+                self.fail(e);
             }
         }
     }
@@ -654,8 +654,30 @@ impl App {
         self.flash(text, StatusKind::Ok);
     }
 
+    /// An error, as a dialog the operator dismisses.
+    ///
+    /// It used to be red text in the status line, which gives a message 48
+    /// columns and a few seconds: a failed mount's sshfs output, a database
+    /// error, a backend's JSON body were all cut off mid-sentence and then gone.
+    /// An error is the one message that must be read, so it waits to be.
+    ///
+    /// A second error while one is showing goes under it rather than replacing
+    /// it — two failures are two things to know — and one already on screen is
+    /// not repeated.
     pub fn fail(&mut self, text: impl Into<String>) {
-        self.flash(text, StatusKind::Err);
+        let text = text.into();
+        match &mut self.alert {
+            Some(shown) if shown.split("\n\n").any(|m| m == text) => {}
+            Some(shown) => {
+                shown.push_str("\n\n");
+                shown.push_str(&text);
+            }
+            None => self.alert = Some(text),
+        }
+    }
+
+    pub fn dismiss_alert(&mut self) {
+        self.alert = None;
     }
 
     pub fn maybe_revert_status(&mut self) {
@@ -1060,9 +1082,13 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        // A blocking alert swallows the next key.
+        // The error dialog is modal. Esc and Enter press Dismiss; any other key
+        // is held back rather than dismissing it, because a dialog that closes on
+        // whatever key the operator was already typing is an error nobody read.
         if self.alert.is_some() {
-            self.alert = None;
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                self.dismiss_alert();
+            }
             return;
         }
         match self.mode {
@@ -1303,9 +1329,7 @@ impl App {
 
     fn write_terminal(&mut self, bytes: &[u8]) {
         if let Err(e) = self.term.write_focused(bytes) {
-            // The Shells screen has no status line, so a silent `fail` here
-            // would be swallowed entirely; an alert cannot be missed.
-            self.alert = Some(format!("Terminal write failed: {e}"));
+            self.fail(format!("Terminal write failed: {e}"));
         }
     }
 
@@ -1499,6 +1523,22 @@ impl App {
             return;
         }
         self.hover = Some(at);
+
+        // Modal for the mouse too. The old alert let a click straight through to
+        // whatever was under it — including a dialog's buttons, which register
+        // in the same frame — so only the Dismiss button answers while it is up.
+        if self.alert.is_some() {
+            if ev.kind == MouseEventKind::Down(MouseButton::Left)
+                && self
+                    .regions
+                    .clicks
+                    .iter()
+                    .any(|(r, c)| *c == Click::Dismiss && r.contains(at))
+            {
+                self.dismiss_alert();
+            }
+            return;
+        }
 
         // A focused terminal that asked for mouse reporting gets the event.
         if self.mode == Mode::Normal
@@ -1717,6 +1757,7 @@ impl App {
                 }
             }
             Click::GenKey => self.form_key(),
+            Click::Dismiss => self.dismiss_alert(),
         }
     }
 
