@@ -344,6 +344,8 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             .clicks
             .push((Rect::new(tail.x, tail.y, tail.width, 1), Click::GenKey));
         let mut spans = vec![Span::styled("SSH key", theme::muted()), Span::raw("   ")];
+        // The only place a host's key is shown or made, so the key that does it
+        // is named beside the button rather than left to the function bar.
         if form.has_key() {
             spans.push(Span::styled("✓ ", theme::ok()));
             spans.push(Span::styled("key installed", theme::body()));
@@ -352,13 +354,17 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
                 "[ Show public key ]",
                 theme::bright().fg(theme::ORANGE_BRIGHT),
             ));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("F7", theme::faint()));
         } else {
+            spans.push(Span::styled("none", theme::faint()));
+            spans.push(Span::raw("    "));
             spans.push(Span::styled(
                 "[ Generate SSH key ]",
                 Style::new().fg(theme::ORANGE_BRIGHT),
             ));
-            spans.push(Span::raw("   "));
-            spans.push(Span::styled("prints the public key", theme::faint()));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("F7 · prints the public key", theme::faint()));
         }
         lines.push(Line::from(spans));
     }
@@ -783,17 +789,17 @@ pub fn help(f: &mut Frame, app: &App) {
         head("SCREENS"),
         k("Alt+1/2/3", "Hosts · Shells · Chat"),
         k("Alt+← →", "previous · next screen"),
-        k("F9", "cycle screen"),
+        k("F9", "cycle screen (Shells, Chat)"),
         Line::default(),
         head("HOSTS"),
         k("↑ ↓", "move cursor"),
         k("Insert", "mark / unmark host (multi-select)"),
         k("*", "invert marks    Ctrl+A select all"),
-        k("F2 / F3", "add · edit"),
-        k("F4", "mount / unmount"),
-        k("F5", "open shell (marked hosts → group tab)"),
+        k("F2 / a", "add"),
+        k("F4 / e", "edit — SSH key: F7 in the form"),
+        k("↵", "open shell (marked hosts → group tab)"),
+        k("F9 · m · u", "mount / unmount · mount · unmount"),
         k("F6", "use as proxy"),
-        k("F7", "generate SSH key"),
         k("F8", "delete"),
         Line::default(),
         head("SHELLS"),

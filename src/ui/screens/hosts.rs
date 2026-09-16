@@ -30,8 +30,8 @@ struct Cols {
     mount: usize,
     login: usize,
     pass: usize,
-    key: usize,
     mnt: usize,
+    key: usize,
     prx: usize,
 }
 
@@ -44,8 +44,10 @@ struct Cols {
 /// an empty string, so a shed column simply disappears.
 fn cols(width: usize) -> Cols {
     let mark = 2;
-    let (mut proto, port, mut gap, mut login, mut pass, mut key, mnt, mut prx) =
-        (6usize, 6, 2, 11, 11, 7, 5, 5);
+    // MNT is six wide because `[yes]` is five and a cell needs a gap after it;
+    // KEY is one glyph and keeps the five MNT used to have.
+    let (mut proto, port, mut gap, mut login, mut pass, mnt, mut key, mut prx) =
+        (6usize, 6, 2, 11, 11, 6, 5, 5);
     if width < 100 {
         pass = 0;
     }
@@ -60,7 +62,7 @@ fn cols(width: usize) -> Cols {
         key = 0;
         prx = 0;
     }
-    let fixed = mark + proto + port + gap + login + pass + key + mnt + prx;
+    let fixed = mark + proto + port + gap + login + pass + mnt + key + prx;
     let flex = width.saturating_sub(fixed);
     let name = (flex * 14 / 56).min(24);
     let addr = flex.saturating_sub(name) * 22 / 34;
@@ -75,8 +77,8 @@ fn cols(width: usize) -> Cols {
         mount,
         login,
         pass,
-        key,
         mnt,
+        key,
         prx,
     }
 }
@@ -125,8 +127,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(pad("MOUNT POINT", c.mount), h),
         Span::styled(pad("LOGIN", c.login), h),
         Span::styled(pad("PASSWORD", c.pass), h),
-        Span::styled(pad("KEY", c.key), h),
         Span::styled(pad("MNT", c.mnt), h),
+        Span::styled(pad("KEY", c.key), h),
         Span::styled(pad("PRX", c.prx), h),
     ]));
 
@@ -151,16 +153,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     app.regions.row_start = start;
     let hovered = app.hovered_row();
 
-    let key_x = inner.x
-        + (c.mark + c.name + c.proto + c.addr + c.port + c.gap + c.mount + c.login + c.pass) as u16;
-
     for (i, host) in app.hosts.iter().enumerate().skip(start).take(visible) {
-        let y = inner.y + 1 + (i - start) as u16;
-        if host.key_name.is_empty() {
-            app.regions
-                .genkeys
-                .push((Rect::new(key_x, y, c.key as u16, 1), i));
-        }
         lines.push(row(
             host,
             &c,
@@ -214,15 +207,20 @@ fn row(h: &HostRecord, c: &Cols, cursor: bool, marked: bool, hover: bool) -> Lin
         st(ink)
     };
 
-    let (key_text, key_fg) = if h.key_name.is_empty() {
-        ("[gen]", theme::ORANGE_BRIGHT)
-    } else {
-        ("✓", theme::GREEN)
-    };
+    // Mounted is spelled out: it is the state an operator acts on from this
+    // screen, and a word reads at a glance where a filled circle has to be told
+    // apart from an empty one.
     let (mnt_text, mnt_fg) = if h.mounted {
-        ("●", theme::GREEN)
+        ("[yes]", theme::GREEN)
     } else {
+        ("[no]", theme::FG_FAINT)
+    };
+    // Whether a key is installed, and nothing more: making one is the edit
+    // form's business, so this is a status and not a button.
+    let (key_text, key_fg) = if h.key_name.is_empty() {
         ("○", theme::FG_FAINT)
+    } else {
+        ("●", theme::GREEN)
     };
     let (prx_text, prx_fg) = if h.proxy {
         ("●", theme::ORANGE)
@@ -256,8 +254,8 @@ fn row(h: &HostRecord, c: &Cols, cursor: bool, marked: bool, hover: bool) -> Lin
                 theme::FG_MUTED
             }),
         ),
-        Span::styled(pad(key_text, c.key), accent(key_fg)),
         Span::styled(pad(mnt_text, c.mnt), accent(mnt_fg)),
+        Span::styled(pad(key_text, c.key), accent(key_fg)),
         Span::styled(pad(prx_text, c.prx), accent(prx_fg)),
     ])
 }
@@ -276,8 +274,8 @@ mod tests {
             + c.mount
             + c.login
             + c.pass
-            + c.key
             + c.mnt
+            + c.key
             + c.prx
     }
 
@@ -314,6 +312,9 @@ mod tests {
         assert!(c.name >= 8, "NAME stays readable: {}", c.name);
         assert!(c.addr >= 10, "ADDR stays readable: {}", c.addr);
         assert!(c.mnt > 0, "the mount indicator survives");
+
+        // `[yes]` never loses its bracket to the next column.
+        assert!(cols(120).mnt > "[yes]".chars().count());
     }
 
     #[test]

@@ -36,6 +36,13 @@ use std::time::{Duration, Instant};
 const STATUS_REVERT: Duration = Duration::from_millis(3400);
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_TICK: Duration = Duration::from_millis(80);
+/// The function-bar code for the Shell cap.
+///
+/// Shell moved from F5 to Enter, and Enter has no F-number for the bar to
+/// dispatch. Outside the range any real key produces — F-keys are 1…24 and
+/// `Alt`+digit 0…9 — so it can only ever arrive from a click on that cap.
+pub const BAR_SHELL: u8 = 0xfe;
+
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,8 +131,6 @@ pub struct Regions {
     /// Function-bar row and the `(x_start, x_end, fkey)` of each cap.
     pub fn_bar_y: u16,
     pub fkeys: Vec<(u16, u16, u8)>,
-    /// `[gen]` cells in the KEY column, by host index.
-    pub genkeys: Vec<(Rect, usize)>,
     /// Shell tab labels and their `×` buttons, by tab index.
     pub shell_tabs: Vec<(Rect, usize)>,
     pub shell_closes: Vec<(Rect, usize)>,
@@ -145,7 +150,6 @@ impl Regions {
         // cannot inherit the previous one's row.
         self.fn_bar_y = u16::MAX;
         self.fkeys.clear();
-        self.genkeys.clear();
         self.shell_tabs.clear();
         self.shell_closes.clear();
         self.panes.clear();
@@ -743,56 +747,77 @@ impl App {
         ));
     }
 
-    pub fn gen_key(&mut self, index: Option<usize>) {
-        let Some(h) = index
-            .and_then(|i| self.hosts.get(i))
-            .or_else(|| self.host())
-            .cloned()
-        else {
+    /// Show the key of the host in the form, or generate one for it.
+    ///
+    /// The only place a key is made: the Hosts screen has no key action of its
+    /// own, because generating one is a change to a host and the form is where a
+    /// host is changed. Reached by F7 and by the key row's button.
+    ///
+    /// A host that already has a key is *shown* that key, read by the name the
+    /// form holds. It used to generate against the typed name whatever the row
+    /// said — so a host renamed in the form got a brand-new key under its new
+    /// name, whose public half was installed nowhere, and Save pointed the host
+    /// at it.
+    fn form_key(&mut self) {
+        let Some(form) = self.form.as_ref() else {
             return;
         };
-        match keys::generate(&self.datadir, &h.name) {
-            Ok((key_name, public)) => {
-                let mut rec = h.clone();
-                rec.key_name = key_name;
-                if let Err(e) = self.db.save(&rec) {
-                    self.fail(format!("Key generated but not saved: {e}"));
-                    return;
+        let name = form.name.value().trim().to_string();
+        if form.has_key() {
+            let key_name = form.key_name.clone();
+            match keys::public_key(&self.datadir, &key_name) {
+                Ok(public) => {
+                    self.key_dialog = Some((name, public));
+                    self.mode = Mode::ShowKey;
                 }
-                self.reload();
-                self.key_dialog = Some((h.name.clone(), public));
+                Err(e) => self.fail(format!("Could not read the public key: {e}")),
+            }
+            return;
+        }
+        if name.is_empty() {
+            self.fail("Name the host before generating a key.");
+            return;
+        }
+        // Generation is idempotent — an existing key file is read, never
+        // replaced — so the key is safe to make before Save and is recovered
+        // rather than duplicated if the form is cancelled and opened again. The
+        // form carries `key_name` to Save, which is what persists it.
+        match keys::generate(&self.datadir, &name) {
+            Ok((key_name, public)) => {
+                if let Some(form) = self.form.as_mut() {
+                    form.key_name = key_name;
+                }
+                self.key_dialog = Some((name, public));
                 self.mode = Mode::ShowKey;
             }
             Err(e) => self.fail(format!("{e}")),
         }
     }
 
-    fn show_key(&mut self) {
-        let Some(h) = self.host().cloned() else {
-            return;
-        };
-        if h.key_name.is_empty() {
-            self.gen_key(None);
-            return;
-        }
-        match keys::public_key(&self.datadir, &h.key_name) {
-            Ok(public) => {
-                self.key_dialog = Some((h.name, public));
-                self.mode = Mode::ShowKey;
-            }
-            Err(e) => self.fail(format!("Could not read the public key: {e}")),
-        }
-    }
-
-    fn toggle_mount(&mut self) {
+    /// Mount or unmount the targets. `None` is F9's toggle, `Some` is `m`/`u`.
+    ///
+    /// The toggle keeps qhostman's rule — if any target is unmounted, the action
+    /// is Mount — but only ever touches the targets that are not already where
+    /// they are going. It used to act on all of them: mounting a host that is
+    /// already mounted fails in sshfs, the loop stopped at the first failure, and
+    /// a mixed selection ended with the hosts after it never mounted at all.
+    fn set_mount(&mut self, want: Option<bool>) {
         let targets = self.targets();
         if targets.is_empty() {
             return;
         }
-        // qhostman's rule: if any target is unmounted, the action is Mount.
-        let mounting = targets.iter().any(|h| !h.mounted);
+        let mounting = want.unwrap_or_else(|| targets.iter().any(|h| !h.mounted));
+        let todo: Vec<_> = targets.iter().filter(|h| h.mounted != mounting).collect();
+        if todo.is_empty() {
+            self.ok(if mounting {
+                "Already mounted."
+            } else {
+                "Nothing mounted."
+            });
+            return;
+        }
         let mut done = 0usize;
-        for h in &targets {
+        for h in todo {
             let res = if mounting {
                 mount::mount(h, &self.datadir, &self.cfg)
             } else {
@@ -956,7 +981,15 @@ impl App {
             Mode::ConfirmDelete => self.key_confirm_delete(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
-                    self.mode = Mode::Normal;
+                    // Back to the form when the form opened it. Closing to Normal
+                    // used to hide the form with its unsaved edits — the new
+                    // `key_name` among them — still sitting in `self.form`, where
+                    // the next Edit replaced them.
+                    self.mode = if self.form.is_some() {
+                        Mode::HostForm
+                    } else {
+                        Mode::Normal
+                    };
                     self.key_dialog = None;
                 }
             }
@@ -1019,11 +1052,20 @@ impl App {
             KeyCode::End => self.cursor = self.hosts.len().saturating_sub(1),
             KeyCode::Insert | KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('*') => self.invert_marks(),
+            // Before the plain letter below, or Ctrl+A would add a host.
             KeyCode::Char('a') if ctrl => {
                 self.marked = self.hosts.iter().map(|h| h.id).collect();
             }
+            // Letter twins of the F-keys, for keyboards and terminals where the
+            // F-row is awkward. Either case, so Caps Lock is not a trap.
+            KeyCode::Char('a' | 'A') => self.open_add(),
+            KeyCode::Char('e' | 'E') => self.open_edit(),
+            // F9 toggles; these say which way, so a mixed selection does what
+            // was asked rather than what qhostman's rule would guess.
+            KeyCode::Char('m' | 'M') => self.set_mount(Some(true)),
+            KeyCode::Char('u' | 'U') => self.set_mount(Some(false)),
             KeyCode::Esc => self.marked.clear(),
-            KeyCode::Enter => self.open_edit(),
+            KeyCode::Enter => self.open_shell(),
             KeyCode::Delete => self.open_delete(),
             _ => {}
         }
@@ -1181,6 +1223,15 @@ impl App {
     /// all three share the same behavior. On the Shells screen only the clicks
     /// reach it: a focused terminal keeps the whole keyboard.
     pub fn function_key(&mut self, n: u8) {
+        // A click on the bar reaches here in any mode, so a dialog's own keys are
+        // honoured and nothing behind it is: F10 must not quit out from under an
+        // unsaved form.
+        if self.mode == Mode::HostForm {
+            if n == 7 {
+                self.form_key();
+            }
+            return;
+        }
         // `Esc 0` and F10 are both Quit.
         if n == 0 || n == 10 {
             self.quit();
@@ -1195,15 +1246,14 @@ impl App {
             return;
         }
         match self.screen {
+            // F9 is Mount here rather than the screen cycle it is on the other two
+            // screens; Alt+←/→ and Alt+1…3 still switch from Hosts.
             Screen::Hosts => match n {
                 2 => self.open_add(),
-                3 => self.open_edit(),
-                4 => self.toggle_mount(),
-                5 => self.open_shell(),
+                4 => self.open_edit(),
                 6 => self.toggle_proxy(),
-                7 => self.show_key(),
                 8 => self.open_delete(),
-                9 => self.cycle_screen(),
+                9 => self.set_mount(None),
                 _ => {}
             },
             Screen::Shells => match n {
@@ -1245,6 +1295,11 @@ impl App {
             }
             KeyCode::Enter => {
                 self.save_form();
+                return;
+            }
+            // Key generation lives here now, on the F-key it always had.
+            KeyCode::F(7) => {
+                self.form_key();
                 return;
             }
             _ => {}
@@ -1477,7 +1532,11 @@ impl App {
                 .iter()
                 .find(|(x0, x1, _)| at.x >= *x0 && at.x < *x1)
         {
-            self.function_key(fk);
+            if fk == BAR_SHELL {
+                self.open_shell();
+            } else {
+                self.function_key(fk);
+            }
             return;
         }
 
@@ -1497,18 +1556,6 @@ impl App {
     }
 
     fn click_hosts(&mut self, at: Position) {
-        // The `[gen]` cell is a button inside the row.
-        if let Some((_, idx)) = self
-            .regions
-            .genkeys
-            .iter()
-            .find(|(r, _)| r.contains(at))
-            .copied()
-        {
-            self.set_cursor(idx);
-            self.gen_key(Some(idx));
-            return;
-        }
         if self.regions.rows.contains(at) {
             let offset = (at.y - self.regions.rows.y) as usize;
             let idx = self.regions.row_start + offset;
@@ -1577,28 +1624,7 @@ impl App {
                     sel.toggle_host(i as usize, j as usize);
                 }
             }
-            Click::GenKey => {
-                // From inside the form: generate against the typed name.
-                let name = self
-                    .form
-                    .as_ref()
-                    .map(|f| f.name.value().to_string())
-                    .unwrap_or_default();
-                if name.trim().is_empty() {
-                    self.fail("Name the host before generating a key.");
-                    return;
-                }
-                match keys::generate(&self.datadir, &name) {
-                    Ok((key_name, public)) => {
-                        if let Some(form) = self.form.as_mut() {
-                            form.key_name = key_name;
-                        }
-                        self.key_dialog = Some((name, public));
-                        self.mode = Mode::ShowKey;
-                    }
-                    Err(e) => self.fail(format!("{e}")),
-                }
-            }
+            Click::GenKey => self.form_key(),
         }
     }
 

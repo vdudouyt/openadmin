@@ -116,14 +116,37 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     assert!(out.contains("Known Hosts"));
     assert!(out.contains("NAME") && out.contains("MOUNT POINT") && out.contains("PRX"));
     assert!(out.contains("web-01") && out.contains("db-main"));
-    assert!(out.contains("F5") && out.contains("Shell"));
+    // The keymap, as the bar advertises it: the letter twin beside each F-key,
+    // and Shell on Enter.
+    let bar = out.lines().last().unwrap();
+    for cap in ["F2/a", "F4/e", "↵", "F6", "F8", "F9/m", "F10"] {
+        assert!(bar.contains(cap), "{cap} missing from: {bar}");
+    }
+    assert!(bar.contains("Shell") && bar.contains("Mount"), "{bar}");
+    for gone in ["F3", "F5", "F7", "GenKey"] {
+        assert!(!bar.contains(gone), "{gone} should be gone: {bar}");
+    }
     // Passwords are masked; an empty one shows a dash.
     assert!(!out.contains("hunter2"));
     assert!(out.contains("•"));
-    assert!(
-        out.contains("[gen]"),
-        "hosts without a key offer to generate one"
+    // MNT, then KEY, then PRX.
+    let header = out.lines().find(|l| l.contains("NAME")).unwrap();
+    let (m, k, p) = (
+        header.find("MNT").unwrap(),
+        header.find("KEY").unwrap(),
+        header.find("PRX").unwrap(),
     );
+    assert!(m < k && k < p, "column order: {header}");
+    // MNT spells it out; KEY is a status circle, not a button — making a key is
+    // the edit form's business.
+    let web = out.lines().find(|l| l.contains("web-01")).unwrap();
+    assert!(web.contains("[no]"), "{web}");
+    assert!(!out.contains("[gen]"), "{out}");
+    // The last four cells are MNT, KEY, PRX and the panel border.
+    let cells: Vec<&str> = web.split_whitespace().collect();
+    let tail = &cells[cells.len() - 4..];
+    assert_eq!(tail[0], "[no]", "MNT: {web}");
+    assert!(tail[1] == "○" || tail[1] == "●", "KEY is a circle: {web}");
 }
 
 #[test]
@@ -592,8 +615,13 @@ fn an_empty_host_list_still_renders() {
     assert!(out.contains("0 hosts"), "{out}");
     // Actions on an empty list are no-ops, not panics.
     key(&mut app, KeyCode::Down);
-    app.function_key(3);
+    app.function_key(4);
     app.function_key(8);
+    app.function_key(9);
+    for c in ['e', 'm', 'u'] {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Normal);
 }
 
@@ -705,20 +733,101 @@ fn scrolling_moves_the_cursor() {
 }
 
 #[test]
-fn clicking_the_gen_cell_generates_a_key_for_that_row() {
-    let (mut app, _rx) = test_app("genclick");
-    let _ = render(&mut app, 120, 30);
-    let (rect, idx) = *app.regions.genkeys.get(1).expect("a [gen] cell for row 1");
-    assert_eq!(idx, 1);
-    click(&mut app, rect.x + 1, rect.y);
+fn f7_in_the_edit_form_generates_a_key_and_comes_back_to_the_form() {
+    let (mut app, _rx) = test_app("formkey");
+    app.set_cursor(1); // db-main, which has no key
+    assert!(app.hosts[1].key_name.is_empty());
+    key(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.mode, Mode::HostForm);
+
+    // An unsaved edit, to prove it survives the trip through the key dialog.
+    key(&mut app, KeyCode::End);
+    for c in "-2".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+
+    key(&mut app, KeyCode::F(7));
     assert_eq!(app.mode, Mode::ShowKey);
     let (host, public) = app.key_dialog.clone().unwrap();
-    assert_eq!(host, "db-main");
+    assert_eq!(host, "db-main-2", "made against the name in the form");
     assert!(public.starts_with("ssh-ed25519 "));
-    // The row now reports an installed key.
-    assert!(!app.hosts[1].key_name.is_empty());
     let out = render(&mut app, 120, 34);
     assert!(out.contains("authorized_keys"), "{out}");
+
+    // Closing the key returns to the form, with the edit still in it. It used
+    // to close to the host list, hiding the form and everything typed into it.
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::HostForm, "back in the form");
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.name.value(), "db-main-2", "the edit survived");
+    assert!(form.has_key(), "and the form carries the new key to Save");
+
+    // Save is what persists it.
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    let saved = app.hosts.iter().find(|h| h.name == "db-main-2").unwrap();
+    assert!(!saved.key_name.is_empty(), "Save persisted the key");
+}
+
+/// A host that already has a key is *shown* it. The button used to generate
+/// against the typed name regardless, so renaming a host in the form and
+/// clicking "Show public key" silently made a new key — installed nowhere —
+/// and Save pointed the host at it.
+#[test]
+fn showing_a_renamed_hosts_key_does_not_make_a_new_one() {
+    let (mut app, _rx) = test_app("renamekey");
+    app.set_cursor(1);
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::F(7));
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Enter); // save db-main with its key
+    let original = app.hosts[1].key_name.clone();
+    assert!(!original.is_empty());
+    let (_, original_public) = {
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::F(7));
+        let k = app.key_dialog.clone().unwrap();
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        k
+    };
+
+    // Rename, then ask for the key.
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::End);
+    for c in "-renamed".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::F(7));
+    let (_, shown) = app.key_dialog.clone().unwrap();
+    assert_eq!(shown, original_public, "the host's own key, not a new one");
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.form.as_ref().unwrap().key_name,
+        original,
+        "still pointing at the key that is installed"
+    );
+    let stray = app.datadir.join("keys").join("db-main-renamed");
+    assert!(!stray.exists(), "no second key was generated");
+}
+
+/// The button in the form's key row goes the same way as F7.
+#[test]
+fn the_forms_key_button_is_clickable() {
+    let (mut app, _rx) = test_app("formkeyclick");
+    app.set_cursor(1);
+    app.open_edit();
+    let _ = render(&mut app, 120, 34);
+    let (rect, _) = *app
+        .regions
+        .clicks
+        .iter()
+        .find(|(_, c)| *c == Click::GenKey)
+        .expect("a key button in the form");
+    click(&mut app, rect.x + 1, rect.y);
+    assert_eq!(app.mode, Mode::ShowKey);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::HostForm);
 }
 
 #[test]
@@ -819,7 +928,7 @@ fn marking_hosts_then_deleting_removes_all_of_them() {
 #[test]
 fn editing_a_host_round_trips_through_the_database() {
     let (mut app, _rx) = test_app("edit");
-    app.function_key(3); // F3 Edit on web-01
+    app.function_key(4); // F4 Edit on web-01
     assert_eq!(app.mode, Mode::HostForm);
     // Move to Port and retype it.
     key(&mut app, KeyCode::Tab);
@@ -1137,11 +1246,15 @@ fn regions_are_rebuilt_every_frame() {
         "regions must not accumulate across frames"
     );
 
-    // Switching screens replaces the hitboxes rather than adding to them.
+    // Switching screens replaces the hitboxes rather than adding to them: the
+    // Hosts screen's Shell cap must not survive onto the Chat bar.
     app.screen = Screen::Chat;
     let _ = render(&mut app, 120, 30);
     assert!(
-        app.regions.genkeys.is_empty(),
+        !app.regions
+            .fkeys
+            .iter()
+            .any(|(_, _, k)| *k == crate::app::BAR_SHELL),
         "stale host hitboxes must be gone"
     );
 }
@@ -2049,5 +2162,129 @@ fn a_backend_error_is_sanitized_before_it_is_drawn() {
     assert!(
         !out.contains("pwned"),
         "an OSC title is dropped whole: {out}"
+    );
+}
+
+/// The Hosts keymap: letter twins, Enter for a shell, F9 for mount, and the
+/// old F3/F5/F7 unbound. Every assertion goes through a path that cannot
+/// reach sshfs or ssh, so nothing here opens a connection.
+#[test]
+fn the_hosts_keymap() {
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("keymap");
+
+    // a / A add, e / E edit — a new host has id 0, an existing one does not.
+    for c in ['a', 'A'] {
+        key(&mut app, KeyCode::Char(c));
+        assert_eq!(app.mode, Mode::HostForm, "{c}");
+        assert!(!app.form.as_ref().unwrap().is_edit(), "{c} adds");
+        key(&mut app, KeyCode::Esc);
+    }
+    for c in ['e', 'E'] {
+        key(&mut app, KeyCode::Char(c));
+        assert_eq!(app.mode, Mode::HostForm, "{c}");
+        assert!(app.form.as_ref().unwrap().is_edit(), "{c} edits");
+        key(&mut app, KeyCode::Esc);
+    }
+    app.function_key(2);
+    assert!(!app.form.as_ref().unwrap().is_edit(), "F2 adds");
+    key(&mut app, KeyCode::Esc);
+    app.function_key(4);
+    assert!(app.form.as_ref().unwrap().is_edit(), "F4 edits");
+    key(&mut app, KeyCode::Esc);
+
+    // Ctrl+A still selects all rather than adding a host.
+    app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(app.mode, Mode::Normal, "Ctrl+A is not a");
+    assert_eq!(app.marked.len(), app.hosts.len());
+    key(&mut app, KeyCode::Esc);
+
+    // The old keys do nothing now.
+    app.function_key(3);
+    assert_eq!(app.mode, Mode::Normal, "F3 is unbound");
+    app.function_key(5);
+    assert!(app.term.is_empty(), "F5 opens no shell");
+    app.function_key(7);
+    assert_eq!(app.mode, Mode::Normal, "F7 is the form's now");
+
+    // m and u go the way they say, and only touch hosts not already there.
+    assert!(!app.hosts[0].mounted);
+    key(&mut app, KeyCode::Char('u'));
+    assert_eq!(
+        app.status.text, "Nothing mounted.",
+        "u on an unmounted host"
+    );
+    app.hosts[0].mounted = true;
+    key(&mut app, KeyCode::Char('m'));
+    assert_eq!(app.status.text, "Already mounted.", "m on a mounted host");
+    app.hosts[0].mounted = false;
+
+    // F9's cap names the direction it will go, with the matching letter.
+    let bar = render(&mut app, 120, 30)
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(bar.contains("F9/m") && bar.contains("Mount"), "{bar}");
+    app.hosts[0].mounted = true;
+    let bar = render(&mut app, 120, 30)
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(bar.contains("F9/u") && bar.contains("Unmount"), "{bar}");
+    app.hosts[0].mounted = false;
+
+    // With nothing to act on, Enter reaches the shell path — which says so —
+    // rather than the edit form it used to open, and F9 no longer leaves the
+    // screen.
+    for id in app.hosts.iter().map(|h| h.id).collect::<Vec<_>>() {
+        app.db.remove(id).unwrap();
+    }
+    app.reload();
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal, "Enter no longer edits");
+    assert_eq!(app.status.kind, StatusKind::Warn);
+    assert!(
+        app.status.text.contains("No host selected"),
+        "{}",
+        app.status.text
+    );
+    app.function_key(9);
+    assert_eq!(
+        app.screen,
+        Screen::Hosts,
+        "F9 is Mount here, not the screen cycle"
+    );
+    // Everywhere else it still cycles.
+    app.screen = Screen::Chat;
+    app.function_key(9);
+    assert_ne!(app.screen, Screen::Chat, "F9 still cycles from Chat");
+}
+
+/// The Shell cap has no F-number to dispatch, so it carries its own code — and
+/// a click on it has to reach the shell path, not fall through.
+#[test]
+fn the_shell_cap_is_clickable() {
+    use crate::app::StatusKind;
+    let (mut app, _rx) = test_app("shellcap");
+    for id in app.hosts.iter().map(|h| h.id).collect::<Vec<_>>() {
+        app.db.remove(id).unwrap();
+    }
+    app.reload();
+    let _ = render(&mut app, 120, 30);
+    let (x0, _, _) = *app
+        .regions
+        .fkeys
+        .iter()
+        .find(|(_, _, k)| *k == crate::app::BAR_SHELL)
+        .expect("a clickable Shell cap");
+    let y = app.regions.fn_bar_y;
+    click(&mut app, x0 + 1, y);
+    assert_eq!(app.status.kind, StatusKind::Warn);
+    assert!(
+        app.status.text.contains("No host selected"),
+        "{}",
+        app.status.text
     );
 }

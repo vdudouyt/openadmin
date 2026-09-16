@@ -30,7 +30,8 @@ On first run you are asked to create a database; after that, to unlock it.
 ## The three screens
 
 `Alt+1` / `Alt+2` / `Alt+3` jump to a screen; `Alt+←` / `Alt+→` walk
-between them, wrapping; `F9` cycles forward.
+between them, wrapping; `F9` cycles forward from Shells and Chat. On Hosts, `F9`
+is Mount.
 
 ### 1 · Hosts
 
@@ -40,16 +41,31 @@ CRUD over the known hosts, with the mount and proxy state of each.
 |---|---|
 | `↑ ↓` `Home` `End` | move the cursor |
 | `Insert` / `Space` | mark a host; `*` inverts, `Ctrl+A` selects all, `Esc` clears |
-| `F2` / `F3` / `F8` | add · edit · delete |
-| `F4` | mount / unmount over sshfs |
-| `F5` | open a shell — several marked hosts open one grouped tab |
+| `Enter` | open a shell — several marked hosts open one grouped tab |
+| `F2` / `a` | add |
+| `F4` / `e` | edit |
+| `F9` · `m` · `u` | mount / unmount over sshfs · mount · unmount |
 | `F6` | use this host as a SOCKS proxy for the others |
-| `F7` | generate an ed25519 key and show its public half |
+| `F8` | delete |
 | `F1` `F10` | help · quit |
+
+Every F-key has a letter twin for keyboards where the F-row is awkward, in either
+case. `F9` toggles — if any target is unmounted it mounts, otherwise it unmounts,
+and its cap in the function bar shows `F9/m` or `F9/u` for whichever it will do.
+`m` and `u` say which way outright, which is what you want on a selection where
+some hosts are mounted and some are not. Either way, a host already in the state
+asked for is left alone.
+
+**SSH keys are made in the edit dialog**, not on this screen: the table's KEY
+column only shows whether a host has one (`●`) or not (`○`). `F7` in the dialog —
+or the button in its key row — generates an ed25519 key for the host and shows
+its public half, or, if the host already has one, shows that. A key generated in
+the form is saved with the host when you save the form; closing the key dialog
+returns you to the form with your edits still in it.
 
 The mouse works throughout: hovering a row highlights it and explains it in the
 status bar, a click moves the cursor, a double-click opens a shell, and the
-`[gen]` cell, function-bar caps and screen tabs are all clickable.
+function-bar caps and screen tabs are all clickable.
 
 **Mount points follow the host name** (`/net/<name>`) until you type in the
 mount field yourself; empty it to hand control back.
@@ -270,7 +286,7 @@ therefore the only thing protecting them: anyone who learns it gets every stored
 password. The database and key files are created `0600` and the data directory
 `0700`, but that is defence in depth, not the boundary.
 
-Prefer keys (`F7`) over stored passwords where you can.
+Prefer keys (`F7` in the edit dialog) over stored passwords where you can.
 
 The schema is qhostman's, so an existing `~/.qhostman/qhostman.sqlite` opens
 as-is; a `proxy` column is added on first open, and unlike qhostman, editing a
