@@ -220,20 +220,29 @@ impl PlanSelection {
                 .unwrap_or(false)
     }
 
-    /// `(steps, host-runs)` that Confirm would start.
+    /// `(steps, distinct hosts)` that Confirm would start.
+    ///
+    /// Hosts, not step×host runs: seven steps on the same two machines is two
+    /// hosts, which is what the operator ticked and what the card says.
     pub fn counts(&self) -> (usize, usize) {
         let mut steps = 0;
-        let mut runs = 0;
+        let mut hosts: Vec<i64> = Vec::new();
         for (i, step) in self.plan.steps.iter().enumerate() {
-            let n = (0..step.hosts.len())
-                .filter(|j| self.host_active(i, *j))
-                .count();
-            if n > 0 {
+            let before = hosts.len();
+            hosts.extend(
+                step.hosts
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| self.host_active(i, *j))
+                    .map(|(_, id)| *id),
+            );
+            if hosts.len() > before {
                 steps += 1;
-                runs += n;
             }
         }
-        (steps, runs)
+        hosts.sort_unstable();
+        hosts.dedup();
+        (steps, hosts.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -252,14 +261,14 @@ impl crate::app::App {
             self.flash("Nothing selected.", super::StatusKind::Warn);
             return;
         };
-        let (steps, runs) = sel.counts();
+        let (steps, hosts) = sel.counts();
         self.mode = super::Mode::Normal;
         self.pending_plan = None;
         self.chat
             .set_plan_state(approved.plan_id(), super::chat::PlanState::Ran);
         self.start_execution(approved);
         self.flash(
-            format!("Running {steps} step(s) across {runs} host(s)…"),
+            format!("Running {steps} step(s) across {hosts} host(s)…"),
             super::StatusKind::Loading,
         );
     }
@@ -373,7 +382,7 @@ mod tests {
     #[test]
     fn everything_starts_checked() {
         let sel = PlanSelection::new(plan());
-        assert_eq!(sel.counts(), (2, 4));
+        assert_eq!(sel.counts(), (2, 3));
         let c = ConfirmedPlan::from_selection(&sel).unwrap();
         assert_eq!(c.plan_id(), 4);
         assert_eq!(c.steps().len(), 2);
@@ -401,10 +410,21 @@ mod tests {
     fn unchecking_a_host_excludes_exactly_that_host() {
         let mut sel = PlanSelection::new(plan());
         sel.toggle_host(0, 1);
-        assert_eq!(sel.counts(), (2, 3));
+        assert_eq!(sel.counts(), (2, 2));
         let c = ConfirmedPlan::from_selection(&sel).unwrap();
         assert_eq!(c.steps()[0].hosts, vec![1, 3], "host 2 is gone entirely");
         assert_eq!(c.steps()[1].hosts, vec![1]);
+    }
+
+    /// Host 1 is in both steps: it is one machine, not two runs' worth.
+    #[test]
+    fn a_host_in_several_steps_is_counted_once() {
+        let mut sel = PlanSelection::new(plan());
+        assert_eq!(sel.counts().1, 3, "hosts 1, 2 and 3");
+        sel.toggle_host(0, 0);
+        assert_eq!(sel.counts().1, 3, "host 1 still runs in the second step");
+        sel.toggle_host(1, 0);
+        assert_eq!(sel.counts(), (1, 2), "now it runs nowhere");
     }
 
     #[test]

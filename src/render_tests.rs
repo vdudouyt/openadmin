@@ -1685,8 +1685,8 @@ fn a_long_plan_scrolls_and_keeps_the_cursor_visible() {
         out.contains("step number 11"),
         "the cursor stays visible: {out}"
     );
-    // 12 steps across 2 hosts is 24 host-runs, and the button says so.
-    assert!(out.contains("Run 12 step(s) on 24 host(s)"), "{out}");
+    // 12 steps on the same 2 hosts is 2 hosts, not 24 step×host runs.
+    assert!(out.contains("Run 12 step(s) on 2 host(s)"), "{out}");
 }
 
 /// The dialog takes the transcript's place exactly, and no more: a centred

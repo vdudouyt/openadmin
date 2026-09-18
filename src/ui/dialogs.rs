@@ -425,7 +425,7 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let (steps_on, runs) = sel.counts();
+    let (steps_on, hosts_on) = sel.counts();
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(
@@ -652,12 +652,12 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
 
     // A dead button registers no hitbox, which is the cleanest way to make it
     // dead — there is nothing to click.
-    let run_label = if runs == 0 {
+    let run_label = if hosts_on == 0 {
         " Nothing selected ".to_string()
     } else {
-        format!(" Run {steps_on} step(s) on {runs} host(s) ")
+        format!(" Run {steps_on} step(s) on {hosts_on} host(s) ")
     };
-    let buttons: Vec<(String, ratatui::style::Style, Click)> = if runs == 0 {
+    let buttons: Vec<(String, ratatui::style::Style, Click)> = if hosts_on == 0 {
         vec![(
             "[ Reject ]".to_string(),
             theme::body(),
@@ -677,7 +677,7 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
             ),
         ]
     };
-    if runs == 0 {
+    if hosts_on == 0 {
         lines.push(Line::styled(run_label, theme::faint()).right_aligned());
     }
     let row = button_row(app, inner, lines.len() as u16, &buttons);
