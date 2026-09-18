@@ -16,7 +16,7 @@ use super::exec::run_capture;
 use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
 use super::plan::{Plan, PlanRequest, resolve};
 use super::proto::ToolDef;
-use super::{archive, artifacts, manuals, probe, readonly};
+use super::{artifacts, manuals, probe, readonly};
 use crate::config::Config;
 // Note `HostRecord` is never serialised: it carries `pass` and `key_value`,
 // and a `derive(Serialize)` on it would put both on the wire the first time
@@ -96,7 +96,6 @@ impl ToolOutcome {
 
 pub const LIST_HOSTS: &str = "list_hosts";
 pub const LIST_ARTIFACTS: &str = "list_artifacts";
-pub const LIST_ARCHIVE: &str = "list_archive";
 pub const LIST_MANUALS: &str = "list_manuals";
 pub const FETCH_MANUAL: &str = "fetch_manual";
 pub const PROPOSE_PLAN: &str = "propose_plan";
@@ -135,31 +134,8 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
             "List the files the operator has staged for upload, with their sizes. Scans \
              subdirectories, so a name may be a path like `nginx/site.conf` — use it \
              exactly as given in an upload step. Every file under the artifacts directory \
-             can be uploaded, including any this list was too long to name. For a .tar.gz, \
-             .tgz or .zip, list_archive shows what is inside it.",
+             can be uploaded, including any this list was too long to name.",
             serde_json::json!({"type": "object", "properties": {}}),
-        ),
-        ToolDef::function(
-            LIST_ARCHIVE,
-            "List everything inside an archive among the artifacts — a .tar.gz, .tgz or \
-             .zip — at every depth: each entry's type, permissions, size and path, and a \
-             symlink's target. It reads the archive without unpacking anything, locally, \
-             so it costs no SSH connection. Look before proposing a plan that unpacks an \
-             archive, so the script names paths that are really in it — the top \
-             directory, the installer, whether that installer is executable — rather than \
-             guessing at them. Entries that would be written outside the directory the \
-             archive is extracted into are flagged at the top.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "artifact": {
-                        "type": "string",
-                        "description": "The archive's name exactly as list_artifacts gives it, which may be a path like `releases/app-1.2.3.tar.gz`."
-                    }
-                },
-                "required": ["artifact"],
-                "additionalProperties": false,
-            }),
         ),
         ToolDef::function(
             LIST_MANUALS,
@@ -212,7 +188,7 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload"]},
                                 "script": {"type": "string", "description": "For kind=scriptlet: the bash to run."},
-                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory. For a .tar.gz, .tgz or .zip, list_archive shows what is inside, so a script that unpacks it can name real paths."},
+                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory."},
                                 "hosts": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -388,7 +364,6 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
             Err(e) => ToolOutcome::Text(format!("could not list manuals: {e}")),
         },
         FETCH_MANUAL => fetch_manual(ctx, arguments),
-        LIST_ARCHIVE => list_archive(ctx, arguments),
         PROPOSE_PLAN => propose(ctx, arguments),
         CREATE_HOST => create_host(ctx, arguments),
         EDIT_HOST => edit_host(ctx, arguments),
@@ -499,39 +474,6 @@ pub fn manual_index(list: &[manuals::Manual], truncated: bool) -> String {
         out.push_str("  … and more not named here; list_manuals shows what it can.\n");
     }
     out
-}
-
-/// An archive's tree for the model; one line for the transcript.
-///
-/// `Loaded`, as a fetched manual is: the transcript keeps every line of a tool
-/// result, and a thousand-entry listing would bury the conversation in it.
-fn list_archive(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
-    let value: serde_json::Value = match serde_json::from_str(arguments) {
-        Ok(v) => v,
-        Err(e) => return ToolOutcome::Text(format!("could not read the arguments: {e}")),
-    };
-    let Some(name) = value.get("artifact").and_then(|a| a.as_str()) else {
-        return ToolOutcome::Text(
-            "refused: list_archive needs artifact, a name from list_artifacts.".to_string(),
-        );
-    };
-    match archive::list(ctx.datadir, name, archive::MAX_ENTRIES, archive::BUDGET) {
-        Ok(listing) => {
-            let text = archive::render(name, &listing, ctx.cfg.agent.output_cap_bytes);
-            let count = match listing.total {
-                Some(n) => format!("{n} entries"),
-                None => format!("at least {} entries", listing.entries.len()),
-            };
-            let escapes = listing.entries.iter().filter(|e| e.escapes()).count();
-            let receipt = if escapes > 0 {
-                format!("listed {name}: {count}, {escapes} outside its directory")
-            } else {
-                format!("listed {name}: {count}")
-            };
-            ToolOutcome::Loaded { text, receipt }
-        }
-        Err(e) => ToolOutcome::Text(format!("refused: {e:#}")),
-    }
 }
 
 fn fetch_manual(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
@@ -907,78 +849,6 @@ mod tests {
         assert_eq!(index.lines().count(), 3, "{index}");
     }
 
-    /// The listing goes to the model and one line to the transcript, and the
-    /// two places a model decides about an archive both point at the tool.
-    #[test]
-    fn list_archive_shows_the_model_what_is_inside_an_artifact() {
-        let h = hosts();
-        let cfg = Config::default();
-        let cancel = AtomicBool::new(false);
-        let dir = std::env::temp_dir().join(format!("openadmin-tools-arch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let a = artifacts::ensure_dir(&dir).unwrap();
-        std::fs::create_dir_all(a.join("releases")).unwrap();
-        std::fs::write(
-            a.join("releases/app-1.2.3.tar.gz"),
-            include_bytes!("testdata/sample.tar.gz"),
-        )
-        .unwrap();
-        let c = ctx(&h, &cfg, &dir, &cancel);
-
-        let out = dispatch(
-            &c,
-            LIST_ARCHIVE,
-            r#"{"artifact":"releases/app-1.2.3.tar.gz"}"#,
-        );
-        assert!(matches!(out, ToolOutcome::Loaded { .. }), "{}", out.text());
-        assert!(
-            out.text()
-                .contains("f rwxr-xr-x       44 B app-1.2.3/install.sh"),
-            "{}",
-            out.text()
-        );
-        assert!(
-            out.text().contains("! 2 entries would be written outside"),
-            "{}",
-            out.text()
-        );
-        // The operator gets a line, which still says the thing worth knowing.
-        assert_eq!(
-            out.transcript(),
-            "listed releases/app-1.2.3.tar.gz: 12 entries, 2 outside its directory"
-        );
-
-        // Refusals are spelled so the UI colours them one.
-        let out = dispatch(&c, LIST_ARCHIVE, r#"{"artifact":"nope.zip"}"#);
-        assert!(out.text().starts_with("refused:"), "{}", out.text());
-        let out = dispatch(&c, LIST_ARCHIVE, r#"{"name":"x.zip"}"#);
-        assert!(out.text().contains("needs artifact"), "{}", out.text());
-
-        let defs = definitions(&cfg);
-        let def = |n: &str| defs.iter().find(|d| d.function.name == n).unwrap().clone();
-        let la = def(LIST_ARCHIVE);
-        assert_eq!(
-            la.function.parameters["additionalProperties"],
-            serde_json::json!(false)
-        );
-        assert_eq!(
-            la.function.parameters["required"],
-            serde_json::json!(["artifact"])
-        );
-        assert!(la.function.description.contains("rather than"));
-        assert!(
-            def(LIST_ARTIFACTS)
-                .function
-                .description
-                .contains(LIST_ARCHIVE)
-        );
-        let upload = &def(PROPOSE_PLAN).function.parameters["properties"]["steps"]["items"]["properties"]
-            ["artifact"]["description"];
-        assert!(upload.as_str().unwrap().contains(LIST_ARCHIVE), "{upload}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn a_proposal_is_recorded_and_nothing_runs() {
         let h = hosts();
@@ -1020,7 +890,7 @@ mod tests {
     fn the_tool_schemas_name_the_boundary() {
         let cfg = Config::default();
         let defs = definitions(&cfg);
-        // Eight tools that are not read-only probes, plus one probe per
+        // Seven tools that are not read-only probes, plus one probe per
         // read-only question. The probe count is asserted loosely on purpose:
         // adding a probe is a normal change, and a test that fails on it teaches
         // nothing.
@@ -1028,7 +898,7 @@ mod tests {
             defs.iter()
                 .filter(|d| !d.function.name.starts_with("readonly_"))
                 .count(),
-            8
+            7
         );
         assert!(defs.len() > 15, "the probes are there too: {}", defs.len());
         let plan = defs

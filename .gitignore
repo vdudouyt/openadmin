@@ -1,5 +1,3 @@
 /target
 /dist
 *.tar.gz
-# Except the archive fixtures the tests read, which are tar.gz on purpose.
-!/src/agent/testdata/*.tar.gz

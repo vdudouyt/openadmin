@@ -177,7 +177,6 @@ through one tool per question rather than one tool that takes a command line:
 | `readonly_*` | nineteen read-only questions — logs, services, network, disks, files, processes |
 | `list_hosts` | the known SSH machines, by name — never an address, login or password |
 | `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included |
-| `list_archive` | everything inside a staged `.tar.gz`, `.tgz` or `.zip`, without unpacking it |
 | `list_manuals` · `fetch_manual` | what the operator has written about *this* fleet |
 | `propose_plan` | proposes changes; **executes nothing** |
 | `create_host` · `edit_host` | write the host database, and only on request |
@@ -255,20 +254,6 @@ up to a limit and says when it stopped; anything under the directory can still b
 uploaded by name whether it was listed or not. Nothing escapes: a name with `..`
 in it is refused, and so is a path that leads out through a symlink, because the
 check is on the canonicalized path.
-
-**The agent can look inside an archive before it plans around one.**
-`list_archive` lists a staged `.tar.gz`, `.tgz` or `.zip` at every depth — each
-entry's type, permissions, size and path, and a symlink's target — so the script
-that unpacks it names the directory and the installer that are really there, and
-knows whether that installer is executable, instead of guessing and failing on
-your hosts. Nothing is extracted. Entries that would be written outside the
-directory the archive is unpacked into — an absolute path, a `..` — are named at
-the top of the listing. Permissions a zip written on Windows never recorded show as
-unknown rather than as a guess. A zip is read from its central directory, so size
-does not matter; a tar.gz has no index and is read through — every gzip member of
-it, as `cat` or a parallel compressor leaves several — stopping after 1000 entries
-or five seconds and saying so. Both formats are read in pure Rust, and zip is
-built with no compression codecs at all, since listing never decompresses.
 
 Changing anything goes through a **plan** — scripts and artifact uploads, with
 the hosts for each — which you review in a dialog with a checkbox per step and

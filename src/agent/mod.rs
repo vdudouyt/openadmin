@@ -9,7 +9,6 @@
 //! reach a validated read-only command and the artifacts directory, and nothing
 //! else; a plan it proposes is data that goes to the UI and waits for a person.
 
-pub mod archive;
 pub mod artifacts;
 pub mod client;
 pub mod exec;
@@ -578,11 +577,6 @@ fn describe_call(name: &str, arguments: &str) -> String {
             .trim_end()
             .to_string()
         }
-        tools::LIST_ARCHIVE => v
-            .get("artifact")
-            .and_then(|a| a.as_str())
-            .unwrap_or("?")
-            .to_string(),
         tools::FETCH_MANUAL => v
             .get("filename")
             .and_then(|f| f.as_str())
@@ -975,10 +969,6 @@ mod tests {
         assert_eq!(
             describe_call(tools::PROPOSE_PLAN, r#"{"title":"restore env"}"#),
             "restore env"
-        );
-        assert_eq!(
-            describe_call(tools::LIST_ARCHIVE, r#"{"artifact":"releases/app.tar.gz"}"#),
-            "releases/app.tar.gz"
         );
         // Malformed arguments must not panic the transcript.
         assert_eq!(describe_call("readonly_logs", "{"), "? · logs");

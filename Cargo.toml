@@ -33,9 +33,6 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 tui-input = "0.15"
 tui-textarea-2 = "0.13"
-zip = { version = "8", default-features = false }
-tar = { version = "0.4", default-features = false }
-flate2 = "1"
 
 [profile.release]
 strip = true
