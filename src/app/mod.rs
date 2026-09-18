@@ -142,6 +142,9 @@ pub struct Regions {
     pub panes: Vec<(Rect, usize)>,
     /// The pending plan's card in the transcript, while it is on screen.
     pub plan_card: Option<Rect>,
+    /// The transcript's frame — the Agent box, composer excluded. The plan
+    /// dialog covers exactly this, so the draft stays in sight beneath it.
+    pub chat_log: Option<Rect>,
     /// Dialog controls, captured per render.
     pub clicks: Vec<(Rect, Click)>,
 }
@@ -158,6 +161,7 @@ impl Regions {
         self.shell_closes.clear();
         self.panes.clear();
         self.plan_card = None;
+        self.chat_log = None;
         self.clicks.clear();
     }
 }
@@ -1522,6 +1526,28 @@ impl App {
                     sel.move_cursor(1);
                 }
             }
+            // Pages move the view rather than the cursor: a script longer than
+            // the dialog has lines no row sits on, and ↑/↓ would skip them.
+            KeyCode::PageUp => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.scroll_by(-(sel.page as isize));
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.scroll_by(sel.page as isize);
+                }
+            }
+            KeyCode::Home => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.move_cursor(isize::MIN / 2);
+                }
+            }
+            KeyCode::End => {
+                if let Some(sel) = self.plan.as_mut() {
+                    sel.move_cursor(isize::MAX / 2);
+                }
+            }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if let Some(sel) = self.plan.as_mut() {
                     sel.set_all(true);
@@ -1660,6 +1686,12 @@ impl App {
     }
 
     fn on_scroll(&mut self, delta: isize) {
+        if self.mode == Mode::ConfirmPlan {
+            if let Some(sel) = self.plan.as_mut() {
+                sel.scroll_by(delta);
+            }
+            return;
+        }
         match self.screen {
             Screen::Hosts if self.mode == Mode::Normal => self.move_cursor(delta),
             // Up the screen is back in time, so the sign is inverted.

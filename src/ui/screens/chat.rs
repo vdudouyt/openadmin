@@ -17,6 +17,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let wanted = app.chat.draft.measure(area.width).preferred_rows;
     let [body, composer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(wanted)]).areas(area);
+    // Recorded before any early return: the plan dialog is drawn over it.
+    app.regions.chat_log = Some(body);
 
     // Say plainly when there is no model rather than rendering an empty label.
     let right = if app.cfg.agent.configured() {

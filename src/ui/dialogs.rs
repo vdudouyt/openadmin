@@ -13,8 +13,11 @@ use crate::ui::widgets::{centered, sanitize, wrap};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::symbols::scrollbar;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use tui_input::Input;
 
 fn modal_block(title: &str) -> Block<'static> {
@@ -406,12 +409,13 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
 /// The script body is rendered in full and wrapped, never elided. A plan the
 /// operator cannot read end to end is one they cannot judge, and that would
 /// turn the whole confirmation into theatre.
+///
+/// It covers the transcript exactly, composer excluded: a centred box capped
+/// at 78×34 left most of a large terminal to the transcript it was hiding
+/// anyway, and made a long script a long scroll through a small window.
 pub fn confirm_plan(f: &mut Frame, app: &mut App) {
     let Some(sel) = app.plan.clone() else { return };
-    let area = f.area();
-    let width = 78u16.min(area.width);
-    let height = (area.height as i32 - 4).clamp(12, 34) as u16;
-    let rect = centered(area, width, height);
+    let rect = app.regions.chat_log.unwrap_or(f.area());
     f.render_widget(Clear, rect);
     // Double-line frame: this is the destructive confirmation.
     let block = danger_block("Confirm Plan");
@@ -439,14 +443,12 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
     // `(line, row index)` so the window can be anchored on the cursor's row.
     let mut body: Vec<(Line, Option<usize>)> = Vec::new();
     for (r, row) in rows.iter().enumerate() {
-        let focused = r == sel.cursor;
         match *row {
             Row::Step(i) => {
                 let step = &sel.plan.steps[i];
                 let on = sel.step_on[i];
                 body.push((
                     Line::from(vec![
-                        Span::styled(if focused { "▸" } else { " " }, theme::proxied()),
                         Span::styled(
                             if on { "[x] " } else { "[ ] " },
                             if on { theme::ok() } else { theme::faint() },
@@ -508,7 +510,6 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                 let active = sel.host_active(i, j);
                 body.push((
                     Line::from(vec![
-                        Span::styled(if focused { "▸" } else { " " }, theme::proxied()),
                         Span::styled("    ", theme::faint()),
                         Span::styled(
                             if on { "[x] " } else { "[ ] " },
@@ -530,7 +531,14 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
     }
 
     // A plan the operator cannot read end to end is one they cannot judge, so
-    // the body scrolls rather than truncating. The window follows the cursor.
+    // the body scrolls rather than truncating.
+    //
+    // The view and the cursor each lead in turn. A cursor that moved pulls the
+    // window onto its row. A window that was scrolled keeps its place and
+    // brings the cursor along to the nearest row in sight, so ▸ and Space stay
+    // on something visible and ↑/↓ carry on from where the operator is
+    // reading. Inside a script longer than the window no row is in sight, and
+    // the cursor waits where it was.
     let header = lines.len();
     let footer = 3; // blank + hint + buttons
     let view = (inner.height as usize)
@@ -542,13 +550,29 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
         .unwrap_or(0);
     let max_scroll = body.len().saturating_sub(view);
     let mut scroll = sel.scroll.min(max_scroll);
-    if cursor_line < scroll {
-        scroll = cursor_line;
-    } else if cursor_line >= scroll + view {
-        scroll = cursor_line + 1 - view;
+    let mut cursor = sel.cursor;
+    if sel.follow {
+        if cursor_line < scroll {
+            scroll = cursor_line;
+        } else if cursor_line >= scroll + view {
+            scroll = cursor_line + 1 - view;
+        }
+    } else if !(scroll..scroll + view).contains(&cursor_line) {
+        let mut in_sight = body.iter().skip(scroll).take(view).filter_map(|(_, r)| *r);
+        let nearest = if cursor_line < scroll {
+            in_sight.next()
+        } else {
+            in_sight.next_back()
+        };
+        if let Some(r) = nearest {
+            cursor = r;
+        }
     }
     if let Some(s) = app.plan.as_mut() {
         s.scroll = scroll;
+        s.cursor = cursor;
+        s.max_scroll = max_scroll;
+        s.page = view.saturating_sub(1).max(1);
     }
     let shown = body.len().saturating_sub(scroll).min(view);
     for (k, (line, row)) in body.iter().skip(scroll).take(view).enumerate() {
@@ -567,9 +591,45 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                 )),
             }
         }
-        lines.push(line.clone());
+        // The marker goes on here rather than when the body was built, because
+        // only now is it settled which row the cursor is on.
+        let mut line = line.clone();
+        if let Some(r) = row {
+            line.spans.insert(
+                0,
+                Span::styled(if *r == cursor { "▸" } else { " " }, theme::proxied()),
+            );
+        }
+        lines.push(line);
     }
     let hidden = body.len() - scroll - shown;
+
+    // Where the window is, on the frame itself: the right border over the body
+    // band becomes the track. `DOUBLE_VERTICAL`'s track is the frame's own `║`,
+    // so only the thumb stands out.
+    if max_scroll > 0 {
+        let band = Rect::new(
+            rect.x + rect.width.saturating_sub(1),
+            inner.y + header as u16,
+            1,
+            view as u16,
+        );
+        // One more position than the last scroll offset, so that at the end
+        // the thumb sits flush against the bottom of the band.
+        let mut state = ScrollbarState::new(max_scroll + 1)
+            .position(scroll)
+            .viewport_content_length(view);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .symbols(scrollbar::DOUBLE_VERTICAL)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(Style::new().fg(theme::ORANGE_DIM))
+                .thumb_style(Style::new().fg(theme::ORANGE)),
+            band,
+            &mut state,
+        );
+    }
 
     lines.push(Line::default());
     // Kept short enough to fit the dialog: a clipped hint helps nobody.
@@ -580,8 +640,13 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
     } else {
         "↑↓ move · Space toggle · a/x · ↵ twice to run · F2 hide · Esc reject".to_string()
     };
+    // Named with the key that reaches it: ↑/↓ walk the rows, and would step
+    // over every line of a script. No word after the count, so the armed hint
+    // still fits an 80-column terminal.
     if hidden > 0 {
-        hint.push_str(&format!(" · ↓{hidden} more"));
+        hint.push_str(&format!(" · PgDn ↓{hidden}"));
+    } else if scroll > 0 {
+        hint.push_str(&format!(" · PgUp ↑{scroll}"));
     }
     lines.push(Line::styled(hint, theme::faint()));
 

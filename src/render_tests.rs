@@ -97,6 +97,19 @@ fn click(app: &mut App, x: u16, y: u16) {
     });
 }
 
+fn wheel(app: &mut App, down: bool) {
+    app.on_mouse(MouseEvent {
+        kind: if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        },
+        column: 10,
+        row: 10,
+        modifiers: KeyModifiers::empty(),
+    });
+}
+
 fn moved(app: &mut App, x: u16, y: u16) {
     app.on_mouse(MouseEvent {
         kind: MouseEventKind::Moved,
@@ -1660,7 +1673,7 @@ fn a_long_plan_scrolls_and_keeps_the_cursor_visible() {
     app.function_key(2);
 
     let out = render(&mut app, 120, 24);
-    assert!(out.contains("more"), "the hint says there is more: {out}");
+    assert!(out.contains("PgDn ↓"), "the hint says there is more: {out}");
     assert!(out.contains("step number 0"), "{out}");
 
     // Walk to the bottom; the last step must come into view.
@@ -1674,6 +1687,160 @@ fn a_long_plan_scrolls_and_keeps_the_cursor_visible() {
     );
     // 12 steps across 2 hosts is 24 host-runs, and the button says so.
     assert!(out.contains("Run 12 step(s) on 24 host(s)"), "{out}");
+}
+
+/// The dialog takes the transcript's place exactly, and no more: a centred
+/// box capped at 78×34 wasted a large terminal on the transcript it was hiding
+/// anyway, while the composer below stays the operator's.
+#[test]
+fn the_plan_dialog_covers_the_transcript_not_the_composer() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("plancover");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1]))));
+    app.function_key(2);
+
+    let buf = render_buf(&mut app, 160, 60);
+    let log = app.regions.chat_log.expect("the chat screen records it");
+    assert_eq!(
+        buf[(log.x, log.y)].symbol(),
+        "╔",
+        "top-left on the transcript's"
+    );
+    assert_eq!(
+        buf[(log.right() - 1, log.bottom() - 1)].symbol(),
+        "╝",
+        "bottom-right on the transcript's"
+    );
+    assert_eq!(log.width, 160, "the full width");
+    assert!(log.height > 34, "and past the old cap: {log:?}");
+    assert_eq!(
+        buf[(log.x, log.bottom())].symbol(),
+        "┌",
+        "the composer is still drawn right below it"
+    );
+}
+
+/// A plan whose one step is a 200-line script: no row sits between the step
+/// and its host, so ↑/↓ alone could never show the middle of it.
+fn a_long_script_plan() -> Plan {
+    let script: String = (0..200).map(|i| format!("echo {i:03}\n")).collect();
+    a_plan(&script, vec![1])
+}
+
+/// Every line of a script longer than the dialog can be brought into view,
+/// and stays there: the cursor, left above on the step, must not drag the
+/// window back on the next frame.
+#[test]
+fn a_long_script_can_be_read_to_the_end() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("longscript");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_long_script_plan())));
+    app.function_key(2);
+
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("echo 000"), "{out}");
+    assert!(!out.contains("echo 199"), "{out}");
+    assert!(
+        out.contains("PgDn"),
+        "the hint names the key that scrolls: {out}"
+    );
+
+    key(&mut app, KeyCode::PageDown);
+    let out = render(&mut app, 120, 30);
+    assert!(
+        !out.contains("echo 000") && !out.contains("echo 199"),
+        "the middle of the script is on screen: {out}"
+    );
+
+    for _ in 0..40 {
+        key(&mut app, KeyCode::PageDown);
+        let _ = render(&mut app, 120, 30);
+    }
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("echo 199"), "the end is reachable: {out}");
+    assert!(out.contains("web-01"), "and the host under it: {out}");
+    assert!(out.contains("PgUp"), "the hint says what is above: {out}");
+    // The step row went out of sight, so the cursor came along to the one row
+    // that is in it — and Space acts on something the operator can see.
+    assert_eq!(app.plan.as_ref().unwrap().cursor, 1);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(!app.plan.as_ref().unwrap().host_on[0][0]);
+    let out = render(&mut app, 120, 30);
+    assert!(
+        out.contains("echo 199"),
+        "toggling in view does not jump: {out}"
+    );
+
+    for _ in 0..40 {
+        key(&mut app, KeyCode::PageUp);
+        let _ = render(&mut app, 120, 30);
+    }
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("echo 000"), "and back to the top: {out}");
+    assert_eq!(app.plan.as_ref().unwrap().cursor, 0, "cursor on the step");
+
+    key(&mut app, KeyCode::End);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("web-01") && !out.contains("echo 000"), "{out}");
+    key(&mut app, KeyCode::Home);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("echo 000"), "{out}");
+}
+
+/// The wheel scrolls the dialog, not the transcript under it.
+#[test]
+fn the_wheel_scrolls_the_plan_dialog() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("planwheel");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_long_script_plan())));
+    app.function_key(2);
+    let _ = render(&mut app, 120, 30);
+
+    wheel(&mut app, true);
+    wheel(&mut app, true);
+    assert_eq!(app.plan.as_ref().unwrap().scroll, 6);
+    let out = render(&mut app, 120, 30);
+    assert!(!out.contains("echo 000"), "{out}");
+
+    wheel(&mut app, false);
+    wheel(&mut app, false);
+    assert_eq!(app.plan.as_ref().unwrap().scroll, 0);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("echo 000"), "{out}");
+}
+
+/// The right border over the body is the scrollbar, and its thumb spans the
+/// band exactly: flush with the top at the start, the bottom at the end.
+#[test]
+fn the_plan_scrollbar_thumb_runs_the_length_of_the_body() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("planbar");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_long_script_plan())));
+    app.function_key(2);
+
+    let buf = render_buf(&mut app, 120, 30);
+    let log = app.regions.chat_log.unwrap();
+    let x = log.right() - 1;
+    // Border and padding, then the title, "Nothing has run yet" and a blank
+    // above the body; a blank, the hint and the buttons below it.
+    let top = log.y + 1 + 1 + 3;
+    let bottom = log.bottom() - 1 - 1 - 3;
+    assert_eq!(buf[(x, top)].symbol(), "█", "thumb at the top");
+    assert_ne!(buf[(x, bottom - 1)].symbol(), "█");
+    assert_eq!(buf[(x, top - 1)].symbol(), "║", "the frame above the band");
+
+    for _ in 0..40 {
+        key(&mut app, KeyCode::PageDown);
+        let _ = render(&mut app, 120, 30);
+    }
+    let buf = render_buf(&mut app, 120, 30);
+    assert_eq!(buf[(x, bottom - 1)].symbol(), "█", "thumb at the bottom");
+    assert_ne!(buf[(x, top)].symbol(), "█");
+    assert_eq!(buf[(x, bottom)].symbol(), "║", "the frame below the band");
 }
 
 /// Drive the loop's invariant the way `event_loop` does, once.

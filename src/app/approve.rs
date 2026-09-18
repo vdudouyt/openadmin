@@ -86,7 +86,18 @@ pub struct PlanSelection {
     pub step_on: Vec<bool>,
     pub host_on: Vec<Vec<bool>>,
     pub cursor: usize,
+    /// First body line in view. Free to leave the cursor behind: a script
+    /// taller than the dialog has lines no row sits on, and the operator has
+    /// to be able to read them.
     pub scroll: usize,
+    /// Whether the view tracks the cursor (it last moved) or the cursor
+    /// tracks the view (it was last scrolled). Only the renderer knows the
+    /// layout, so it is the one that reconciles the two.
+    pub follow: bool,
+    /// Written back by the renderer, which is the only thing that knows how
+    /// tall the body is and how much of it fits.
+    pub max_scroll: usize,
+    pub page: usize,
     /// Whether `↵` runs. A dialog the operator opened is armed; one that
     /// opened itself is not, until they touch it. See
     /// `App::maybe_auto_open_plan`.
@@ -108,6 +119,9 @@ impl PlanSelection {
             host_on,
             cursor: 0,
             scroll: 0,
+            follow: true,
+            max_scroll: 0,
+            page: 1,
             armed: true,
         }
     }
@@ -141,10 +155,21 @@ impl PlanSelection {
             return;
         }
         self.cursor = (self.cursor as isize + delta).clamp(0, n as isize - 1) as usize;
+        self.follow = true;
     }
 
-    /// Toggle whatever the cursor is on.
+    /// Move the view, not the cursor; the renderer brings the cursor along
+    /// if a row is in sight.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let next = self.scroll as isize + delta;
+        self.scroll = next.clamp(0, self.max_scroll as isize) as usize;
+        self.follow = false;
+    }
+
+    /// Toggle whatever the cursor is on — and show it, so a row toggled while
+    /// scrolled out of view is not changed unseen.
     pub fn toggle_cursor(&mut self) {
+        self.follow = true;
         match self.rows().get(self.cursor).copied() {
             Some(Row::Step(i)) => self.toggle_step(i),
             Some(Row::Host(i, j)) => self.toggle_host(i, j),
@@ -429,6 +454,19 @@ mod tests {
         assert_eq!(sel.cursor, 5);
         sel.toggle_cursor();
         assert!(!sel.host_on[1][0]);
+    }
+
+    #[test]
+    fn scrolling_is_clamped_and_lets_go_of_the_cursor() {
+        let mut sel = PlanSelection::new(plan());
+        sel.max_scroll = 7;
+        sel.scroll_by(-3);
+        assert_eq!(sel.scroll, 0, "not above the top");
+        sel.scroll_by(99);
+        assert_eq!(sel.scroll, 7, "nor past the end");
+        assert!(!sel.follow, "the view moved, so the cursor follows it");
+        sel.move_cursor(1);
+        assert!(sel.follow, "and moving the cursor takes the view back");
     }
 
     #[test]
