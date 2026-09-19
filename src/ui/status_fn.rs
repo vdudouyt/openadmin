@@ -5,6 +5,7 @@
 //! there belongs to the terminal, so a key-cap bar would advertise nothing
 //! while costing a row of somebody's shell.
 
+use crate::app::bulk::BulkStep;
 use crate::app::{App, Mode, Screen, StatusKind};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -138,6 +139,20 @@ fn entries(app: &App) -> Vec<Entry> {
         }
         Mode::ShowKey | Mode::Help => return vec![e("Esc", "Close", 0xff, false)],
         Mode::Mounting => return vec![e("Esc", "Cancel", 0xff, false)],
+        Mode::Actions => return vec![e("Esc", "Close", 0xff, false), e("↵", "Open", 0xff, false)],
+        Mode::BulkImport => {
+            return match app.bulk.as_ref().map(|b| b.step) {
+                Some(BulkStep::Review) => vec![
+                    e("Esc", "Cancel", 0xff, false),
+                    e("⇧↹", "Back", 0xff, false),
+                    e("↵", "Import", 0xff, false),
+                ],
+                _ => vec![
+                    e("Esc", "Cancel", 0xff, false),
+                    e("↹", "Review", 0xff, false),
+                ],
+            };
+        }
         Mode::Normal => {}
     }
 
@@ -182,6 +197,9 @@ fn entries(app: &App) -> Vec<Entry> {
                     false,
                 ),
                 e("F10", "Quit", 10, false),
+                // After Quit, so on a narrow bar it is the one that falls off
+                // rather than pushing an older cap out.
+                e("F12", "Actions", 12, false),
             ]
         }
         // A focused pane owns the whole keyboard, so these are click-only and

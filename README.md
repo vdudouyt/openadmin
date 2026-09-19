@@ -53,6 +53,7 @@ CRUD over the known hosts, with the mount and proxy state of each.
 | `F9` · `m` · `u` | mount / unmount over sshfs · mount · unmount |
 | `F6` | use this host as a SOCKS proxy for the others |
 | `F8` | delete |
+| `F12` / `i` | actions — bulk import |
 | `F1` `F10` | help · quit |
 
 Every F-key has a letter twin for keyboards where the F-row is awkward, in either
@@ -86,6 +87,37 @@ function-bar caps and screen tabs are all clickable.
 
 **Mount points follow the host name** (`/net/<name>`) until you type in the
 mount field yourself; empty it to hand control back.
+
+**Bulk import** (`F12`, then `i`) takes a host list in qhostman's format and
+adds every host in it at once. Each host is four lines, with a blank line
+between hosts:
+
+```
+mydomain-s5000
+1.2.3.4
+root
+123123
+
+mydomain-s5001
+2.3.4.5
+root
+123123
+```
+
+Paste it into the box, then `Tab` to review what it will do before anything is
+written. Each host becomes an SSH host on port 22 with the usual mount point,
+and the review masks the passwords. A name that is already in the table is
+skipped rather than changed, so pasting the same list again after adding to it
+adds only the new hosts. A block that is not four lines is reported by the line
+it starts on, and it stops the whole import: a list that is out of shape in one
+place may be out of step from there on, so nothing is written until it is
+fixed. The import is one transaction. The hosts it adds come back marked, so
+whatever you do next — mount them, open shells on them, or delete them if it
+was the wrong list — applies to exactly those.
+
+`F12` rather than `F11`, which GNOME Terminal, Konsole and Windows Terminal
+keep for fullscreen; `i` is there for drop-down terminals such as Guake and
+Yakuake, which keep `F12` in the same way.
 
 ### 2 · Shells
 

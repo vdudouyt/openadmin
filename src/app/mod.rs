@@ -6,6 +6,7 @@
 //! mouse reuses the keyboard handlers verbatim.
 
 pub mod approve;
+pub mod bulk;
 pub mod chat;
 pub mod form;
 pub mod mount_job;
@@ -20,6 +21,7 @@ use crate::term::manager::TerminalManager;
 use crate::term::session::{Spawn, TermEvent};
 use crate::{keys, mount, mtab, ssh};
 use approve::{ConfirmedPlan, PlanSelection};
+use bulk::{BulkImport, BulkStep};
 use chat::{ChatState, PlanState};
 use form::{FormField, FormState};
 use ratatui::crossterm::event::{
@@ -81,6 +83,40 @@ pub enum Mode {
     Help,
     /// sshfs is connecting. Modal: the only thing to do is wait or cancel.
     Mounting,
+    /// The F12 menu.
+    Actions,
+    /// Pasting a qhostman host list, then reviewing what it would add.
+    BulkImport,
+}
+
+/// What the Actions menu offers: things done to the host list as a whole,
+/// rather than to the host under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    BulkImport,
+}
+
+impl Action {
+    pub const ALL: [Action; 1] = [Action::BulkImport];
+
+    /// The letter that runs it from the menu.
+    pub fn key(self) -> char {
+        match self {
+            Action::BulkImport => 'i',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Action::BulkImport => "Bulk import",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            Action::BulkImport => "add hosts from a qhostman list",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +232,10 @@ pub struct App {
     /// `(host name, public key)` for the SSH Public Key dialog.
     pub key_dialog: Option<(String, String)>,
     pub alert: Option<String>,
+    /// The Actions menu's highlighted row, an index into `Action::ALL`.
+    pub actions_cursor: usize,
+    /// The bulk import in progress, while `Mode::BulkImport` shows it.
+    pub bulk: Option<BulkImport>,
 
     pub chat: ChatState,
     /// `None` until a model is configured.
@@ -256,6 +296,8 @@ impl App {
             mounting: None,
             key_dialog: None,
             alert: None,
+            actions_cursor: 0,
+            bulk: None,
             chat: ChatState::default(),
             agent: None,
             agent_events,
@@ -789,6 +831,75 @@ impl App {
         ));
     }
 
+    /// F12, or `i` — F11 would be the natural key, but GNOME Terminal, Konsole
+    /// and Windows Terminal keep it for fullscreen and it never arrives.
+    pub fn open_actions(&mut self) {
+        self.actions_cursor = 0;
+        self.mode = Mode::Actions;
+    }
+
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::BulkImport => {
+                self.bulk = Some(BulkImport::new());
+                self.mode = Mode::BulkImport;
+            }
+        }
+    }
+
+    fn close_bulk(&mut self) {
+        self.bulk = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Add every new host in the paste, in one transaction.
+    ///
+    /// The review is recomputed here rather than taken from the last frame, so
+    /// what is written is judged against the hosts as they are now. A problem
+    /// anywhere stops the whole import: a list with one block out of shape may
+    /// be out of step from there on, and half an import is harder to clean up
+    /// than a second paste.
+    fn import_bulk(&mut self) {
+        let Some(b) = self.bulk.as_ref() else {
+            return;
+        };
+        let rows = bulk::review(&b.joined(), &self.hosts, &self.cfg.mount_prefix);
+        let counts = bulk::counts(&rows);
+        if counts.problems > 0 {
+            self.flash(
+                format!(
+                    "Fix {} first — Shift+Tab goes back to the text.",
+                    bulk::count(counts.problems, "problem")
+                ),
+                StatusKind::Warn,
+            );
+            return;
+        }
+        let recs = bulk::records(&rows);
+        if recs.is_empty() {
+            self.flash("Nothing to import.", StatusKind::Warn);
+            return;
+        }
+        match self.db.insert_all(&recs) {
+            Ok(ids) => {
+                self.close_bulk();
+                self.reload();
+                // Marked, so whatever comes next — mount them, open shells on
+                // them, or delete them if the list was the wrong one — applies
+                // to exactly what was imported.
+                self.marked = ids.iter().copied().collect();
+                if let Some(i) = self.hosts.iter().position(|h| Some(&h.id) == ids.first()) {
+                    self.cursor = i;
+                }
+                self.ok(format!(
+                    "Imported {} — marked; Esc clears.",
+                    bulk::count(ids.len(), "host")
+                ));
+            }
+            Err(e) => self.fail(format!("Could not import: {e}. Nothing was added.")),
+        }
+    }
+
     /// Close the help or key dialog, back to whatever opened it.
     ///
     /// The key dialog opens from the edit form, and closing it to Normal hid the
@@ -1112,6 +1223,8 @@ impl App {
             Mode::HostForm => self.key_host_form(key),
             Mode::ConfirmPlan => self.key_confirm_plan(key),
             Mode::ConfirmDelete => self.key_confirm_delete(key),
+            Mode::Actions => self.key_actions(key),
+            Mode::BulkImport => self.key_bulk(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
                     self.close_popup();
@@ -1188,6 +1301,7 @@ impl App {
             // was asked rather than what qhostman's rule would guess.
             KeyCode::Char('m' | 'M') => self.set_mount(Some(true)),
             KeyCode::Char('u' | 'U') => self.set_mount(Some(false)),
+            KeyCode::Char('i' | 'I') => self.open_actions(),
             KeyCode::Esc => self.marked.clear(),
             KeyCode::Enter => self.open_shell(),
             KeyCode::Delete => self.open_delete(),
@@ -1319,8 +1433,8 @@ impl App {
                     .draft
                     .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
             }
-            _ => {
-                if self.mode == Mode::HostForm {
+            _ => match self.mode {
+                Mode::HostForm => {
                     let prefix = self.cfg.mount_prefix.clone();
                     if let Some(form) = self.form.as_mut() {
                         for c in text.chars().filter(|c| !c.is_control()) {
@@ -1331,7 +1445,19 @@ impl App {
                         }
                     }
                 }
-            }
+                // What the dialog is for. The same line-ending repair as the
+                // composer's, for the same reason: the text area breaks lines
+                // on LF only, and a terminal sends CR.
+                Mode::BulkImport => {
+                    if let Some(b) = self.bulk.as_mut()
+                        && b.step == BulkStep::Paste
+                    {
+                        b.text
+                            .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
@@ -1354,7 +1480,8 @@ impl App {
             }
             return;
         }
-        if self.mode == Mode::Mounting {
+        // Nor may a click on the bar quit out from under a paste.
+        if matches!(self.mode, Mode::Mounting | Mode::BulkImport) {
             return;
         }
         // `Esc 0` and F10 are both Quit.
@@ -1379,6 +1506,7 @@ impl App {
                 6 => self.toggle_proxy(),
                 8 => self.open_delete(),
                 9 => self.set_mount(None),
+                12 => self.open_actions(),
                 _ => {}
             },
             Screen::Shells => match n {
@@ -1562,6 +1690,66 @@ impl App {
         }
     }
 
+    fn key_actions(&mut self, key: KeyEvent) {
+        let last = Action::ALL.len() - 1;
+        match key.code {
+            KeyCode::Esc | KeyCode::F(12) => self.mode = Mode::Normal,
+            KeyCode::Up => self.actions_cursor = self.actions_cursor.saturating_sub(1),
+            KeyCode::Down => self.actions_cursor = (self.actions_cursor + 1).min(last),
+            KeyCode::Enter => {
+                if let Some(&a) = Action::ALL.get(self.actions_cursor) {
+                    self.run_action(a);
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(&a) = Action::ALL
+                    .iter()
+                    .find(|a| a.key().eq_ignore_ascii_case(&c))
+                {
+                    self.run_action(a);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn key_bulk(&mut self, key: KeyEvent) {
+        let Some(b) = self.bulk.as_mut() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        if key.code == KeyCode::Esc {
+            self.close_bulk();
+            return;
+        }
+        match b.step {
+            // Enter is a newline here, not a submit: the list is lines, and in
+            // a terminal without bracketed paste a paste arrives as keys with
+            // an Enter between each line. Tab is the one key a list of names,
+            // addresses and passwords never contains.
+            BulkStep::Paste => match key.code {
+                KeyCode::Tab => {
+                    b.step = BulkStep::Review;
+                    b.scroll = 0;
+                }
+                _ => {
+                    b.text.input(key);
+                }
+            },
+            BulkStep::Review => match key.code {
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Backspace => b.step = BulkStep::Paste,
+                KeyCode::Up => b.scroll_by(-1),
+                KeyCode::Down => b.scroll_by(1),
+                KeyCode::PageUp => b.scroll_by(-(b.page as isize)),
+                KeyCode::PageDown => b.scroll_by(b.page as isize),
+                KeyCode::Home => b.scroll = 0,
+                KeyCode::End => b.scroll = b.max_scroll,
+                KeyCode::Enter => self.import_bulk(),
+                _ => {}
+            },
+        }
+    }
+
     fn key_confirm_delete(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -1686,6 +1874,14 @@ impl App {
     }
 
     fn on_scroll(&mut self, delta: isize) {
+        if self.mode == Mode::BulkImport {
+            if let Some(b) = self.bulk.as_mut()
+                && b.step == BulkStep::Review
+            {
+                b.scroll_by(delta);
+            }
+            return;
+        }
         if self.mode == Mode::ConfirmPlan {
             if let Some(sel) = self.plan.as_mut() {
                 sel.scroll_by(delta);
@@ -1713,6 +1909,10 @@ impl App {
                 self.dispatch_click(click);
             } else if matches!(self.mode, Mode::Help | Mode::ShowKey) {
                 self.close_popup();
+            } else if self.mode == Mode::Actions {
+                // A menu is dismissed by looking away from it. Bulk import is
+                // not: a stray click must not throw away a paste.
+                self.mode = Mode::Normal;
             }
             return;
         }

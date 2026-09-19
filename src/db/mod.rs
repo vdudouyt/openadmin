@@ -166,6 +166,23 @@ impl DataBase {
         }
     }
 
+    /// Insert every record or none of them, returning the new ids in order.
+    ///
+    /// A bulk import that failed halfway would leave the operator to work out
+    /// which half, so it is one transaction: an error rolls back on drop.
+    pub fn insert_all(&self, recs: &[HostRecord]) -> Result<Vec<i64>> {
+        let tx = self.conn()?.unchecked_transaction()?;
+        let ids = recs
+            .iter()
+            .map(|rec| {
+                debug_assert_eq!(rec.id, 0, "insert_all never updates");
+                self.save(rec)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        tx.commit()?;
+        Ok(ids)
+    }
+
     pub fn remove(&self, id: i64) -> Result<()> {
         self.conn()?.execute("DELETE FROM hosts WHERE id=?", [id])?;
         Ok(())
@@ -333,6 +350,29 @@ mod tests {
         let mut again = DataBase::new(&path);
         assert!(again.open("legacy").unwrap());
         assert_eq!(again.search("").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn insert_all_writes_every_record_and_returns_their_ids() {
+        let path = tmp("insert-all");
+        let mut db = DataBase::new(&path);
+        db.create("pw123456").unwrap();
+        let recs: Vec<HostRecord> = ["s5000", "s5001"]
+            .iter()
+            .map(|n| HostRecord {
+                name: n.to_string(),
+                proto: "ssh".into(),
+                addr: "10.0.0.1".into(),
+                port: 22,
+                ..Default::default()
+            })
+            .collect();
+        let ids = db.insert_all(&recs).unwrap();
+        let rows = db.search("").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(ids, rows.iter().map(|r| r.id).collect::<Vec<_>>());
+        assert_eq!(rows[1].name, "s5001");
+        assert!(db.insert_all(&[]).unwrap().is_empty());
     }
 
     #[test]

@@ -6,11 +6,13 @@
 
 use crate::agent::plan::StepKind;
 use crate::app::approve::Row;
+use crate::app::bulk::{self, BulkStep};
 use crate::app::form::FormField;
-use crate::app::{App, Click};
+use crate::app::{Action, App, Click};
 use crate::ui::theme;
-use crate::ui::widgets::{centered, sanitize, wrap};
+use crate::ui::widgets::{centered, pad, sanitize, wrap};
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::symbols::scrollbar;
@@ -853,6 +855,333 @@ pub fn confirm_delete(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The F12 menu: a row per `Action`, each one the button for its own letter.
+pub fn actions(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    // Borders and padding, a row per action, a blank and the hint.
+    let rect = centered(area, 56, 4 + Action::ALL.len() as u16 + 2);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Actions");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, a) in Action::ALL.iter().enumerate() {
+        let y = inner.y + lines.len() as u16;
+        let row = Rect::new(inner.x, y, inner.width, 1);
+        if y < inner.y + inner.height {
+            app.regions
+                .clicks
+                .push((row, Click::Key(KeyCode::Char(a.key()))));
+        }
+        let lit = i == app.actions_cursor || app.is_hovered(row);
+        lines.push(Line::from(vec![
+            Span::styled(
+                if i == app.actions_cursor {
+                    "▸ "
+                } else {
+                    "  "
+                },
+                theme::proxied(),
+            ),
+            Span::styled(
+                format!("{}  ", a.key()),
+                Style::new().fg(theme::ORANGE_BRIGHT),
+            ),
+            Span::styled(
+                pad(a.label(), 14),
+                if lit {
+                    theme::bright().add_modifier(Modifier::BOLD)
+                } else {
+                    theme::body()
+                },
+            ),
+            Span::styled(a.detail(), theme::muted()),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("↑↓ move · ↵ open · Esc close", theme::faint()));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Bulk import: paste a qhostman list, then review what it would add.
+///
+/// Both steps derive their rows from the text on every frame, against the
+/// hosts as they are now; nothing is stored between them but the text.
+pub fn bulk_import(f: &mut Frame, app: &mut App) {
+    let Some(b) = app.bulk.as_ref() else { return };
+    let step = b.step;
+    let rows = bulk::review(&b.joined(), &app.hosts, &app.cfg.mount_prefix);
+    match step {
+        BulkStep::Paste => bulk_paste(f, app, &rows),
+        BulkStep::Review => bulk_review(f, app, &rows),
+    }
+}
+
+/// What the paste amounts to, in one line.
+fn bulk_summary(c: &bulk::Counts) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{} to add", c.new),
+        if c.new > 0 {
+            theme::ok()
+        } else {
+            theme::muted()
+        },
+    )];
+    if c.skipped > 0 {
+        spans.push(Span::styled(
+            format!(" · {} already here, skipped", c.skipped),
+            theme::muted(),
+        ));
+    }
+    if c.problems > 0 {
+        let at = c
+            .first_problem
+            .map(|l| format!(", first at line {l}"))
+            .unwrap_or_default();
+        spans.push(Span::styled(
+            format!(" · {}{at}", bulk::count(c.problems, "problem")),
+            theme::err(),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn bulk_paste(f: &mut Frame, app: &mut App, rows: &[bulk::Block]) {
+    let area = f.area();
+    let rect = centered(area, 76, 28);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Bulk Import · 1 of 2 — Paste");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    // The format and a blank above the box; the summary, a blank, the hint and
+    // the buttons below it. The box gets the rest, and needs three rows to be
+    // a box at all.
+    const HEAD: u16 = 3;
+    const FOOT: u16 = 4;
+    if inner.height < HEAD + 3 + FOOT || inner.width < 24 {
+        return;
+    }
+
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Four lines per host: ", theme::muted()),
+                Span::styled(bulk::FIELDS, theme::body()),
+                Span::styled(".", theme::muted()),
+            ]),
+            Line::styled(
+                "A blank line between hosts. Names already here are skipped.",
+                theme::muted(),
+            ),
+        ]),
+        Rect::new(inner.x, inner.y, inner.width, HEAD),
+    );
+
+    let boxed = Rect::new(
+        inner.x,
+        inner.y + HEAD,
+        inner.width,
+        inner.height - HEAD - FOOT,
+    );
+    if let Some(b) = app.bulk.as_mut() {
+        let t = &mut b.text;
+        t.set_block(input_block("Hosts", true));
+        t.set_style(theme::body());
+        t.set_cursor_style(Style::new().bg(theme::ORANGE_BRIGHT).fg(theme::ORANGE_INK));
+        t.set_cursor_line_style(Style::default());
+        // Numbered, because a problem is reported by the line it starts on.
+        t.set_line_number_style(theme::faint());
+        t.set_styled_placeholder(
+            ["web-01", "10.0.4.11", "root", "password", "", "web-02", "…"]
+                .into_iter()
+                .map(|l| Line::styled(l, theme::faint()))
+                .collect::<Vec<_>>(),
+        );
+        f.render_widget(&*t, boxed);
+    }
+
+    let foot = Rect::new(inner.x, boxed.y + boxed.height, inner.width, FOOT);
+    let mut lines = vec![
+        if rows.is_empty() {
+            Line::styled("Nothing pasted yet.", theme::faint())
+        } else {
+            bulk_summary(&bulk::counts(rows))
+        },
+        Line::default(),
+        Line::styled("Tab review · ↵ new line · Esc cancel", theme::faint()),
+    ];
+    let row = button_row(
+        app,
+        foot,
+        lines.len() as u16,
+        &[
+            (
+                " Review ▸ ".to_string(),
+                theme::primary_btn(),
+                Click::Key(KeyCode::Tab),
+            ),
+            (
+                "[ Cancel ]".to_string(),
+                theme::body(),
+                Click::Key(KeyCode::Esc),
+            ),
+        ],
+    );
+    lines.push(row);
+    f.render_widget(Paragraph::new(lines), foot);
+}
+
+fn bulk_review(f: &mut Frame, app: &mut App, rows: &[bulk::Block]) {
+    let counts = bulk::counts(rows);
+    let blocked = counts.problems > 0 || counts.new == 0;
+    // The summary and a blank; a blank, the hint and the buttons — and, when
+    // there is nothing it may do, a line saying why the Import button is gone.
+    let header = 2usize;
+    let footer = 3 + usize::from(blocked);
+    let want = 4 + header + rows.len().max(1) + footer;
+
+    let area = f.area();
+    let rect = centered(area, 76, want.min(28) as u16);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Bulk Import · 2 of 2 — Review");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 4 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = vec![
+        if rows.is_empty() {
+            Line::styled("Nothing pasted.", theme::muted())
+        } else {
+            bulk_summary(&counts)
+        },
+        Line::default(),
+    ];
+
+    // Pasted text is shown, so it is sanitized: it came off a clipboard, and a
+    // control sequence in it must not drive this terminal.
+    let body: Vec<Line> = rows
+        .iter()
+        .map(|(line, row)| match row {
+            bulk::Row::New(r) => Line::from(vec![
+                Span::styled("+ ", theme::ok()),
+                Span::styled(pad(&sanitize(&r.name), 24), theme::bright()),
+                Span::styled(
+                    pad(&sanitize(&format!("{}@{}", r.login, r.addr)), 30),
+                    theme::body(),
+                ),
+                Span::styled(
+                    crate::ui::screens::hosts::mask_pass(&r.pass),
+                    theme::faint(),
+                ),
+            ]),
+            bulk::Row::Exists(name) => Line::from(vec![
+                Span::styled("= ", theme::faint()),
+                Span::styled(pad(&sanitize(name), 24), theme::muted()),
+                Span::styled("already here — skipped", theme::faint()),
+            ]),
+            bulk::Row::Repeated { name, first_line } => Line::from(vec![
+                Span::styled("= ", theme::faint()),
+                Span::styled(pad(&sanitize(name), 24), theme::muted()),
+                Span::styled(
+                    format!("repeated — line {first_line} adds it"),
+                    theme::faint(),
+                ),
+            ]),
+            bulk::Row::Invalid(msg) => Line::from(vec![
+                Span::styled("✕ ", theme::err()),
+                Span::styled(pad(&format!("line {line}"), 10), theme::err()),
+                Span::styled(msg.clone(), theme::body()),
+            ]),
+        })
+        .collect();
+
+    let view = (inner.height as usize)
+        .saturating_sub(header + footer)
+        .max(1);
+    let max_scroll = body.len().saturating_sub(view);
+    let scroll = app.bulk.as_ref().map_or(0, |b| b.scroll).min(max_scroll);
+    if let Some(b) = app.bulk.as_mut() {
+        b.scroll = scroll;
+        b.max_scroll = max_scroll;
+        b.page = view.saturating_sub(1).max(1);
+    }
+    let shown = body.len().saturating_sub(scroll).min(view);
+    lines.extend(body.iter().skip(scroll).take(view).cloned());
+    let hidden = body.len() - scroll - shown;
+
+    if max_scroll > 0 {
+        let band = Rect::new(
+            rect.x + rect.width.saturating_sub(1),
+            inner.y + header as u16,
+            1,
+            view as u16,
+        );
+        let mut state = ScrollbarState::new(max_scroll + 1)
+            .position(scroll)
+            .viewport_content_length(view);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .symbols(scrollbar::VERTICAL)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::border_focused())
+                .thumb_style(Style::new().fg(theme::ORANGE)),
+            band,
+            &mut state,
+        );
+    }
+
+    lines.push(Line::default());
+    let mut hint = "↑↓ scroll · ↵ import · ⇧Tab back · Esc cancel".to_string();
+    if hidden > 0 {
+        hint.push_str(&format!(" · PgDn ↓{hidden}"));
+    } else if scroll > 0 {
+        hint.push_str(&format!(" · PgUp ↑{scroll}"));
+    }
+    lines.push(Line::styled(hint, theme::faint()));
+
+    let back = (
+        "[ ◂ Back ]".to_string(),
+        theme::body(),
+        Click::Key(KeyCode::BackTab),
+    );
+    let cancel = (
+        "[ Cancel ]".to_string(),
+        theme::body(),
+        Click::Key(KeyCode::Esc),
+    );
+    // A dead button registers no hitbox, as in the plan dialog: there is
+    // nothing to click, and the line says why.
+    let buttons = if blocked {
+        let why = if counts.problems > 0 {
+            format!(
+                " Fix {} before importing ",
+                bulk::count(counts.problems, "problem")
+            )
+        } else {
+            " Nothing to import ".to_string()
+        };
+        lines.push(Line::styled(why, theme::faint()).right_aligned());
+        vec![back, cancel]
+    } else {
+        vec![
+            back,
+            (
+                format!(" Import {} ", bulk::count(counts.new, "host")),
+                theme::primary_btn(),
+                Click::Key(KeyCode::Enter),
+            ),
+            cancel,
+        ]
+    };
+    let row = button_row(app, inner, lines.len() as u16, &buttons);
+    lines.push(row);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn show_key(f: &mut Frame, app: &mut App) {
     let Some((host, public)) = app.key_dialog.clone() else {
         return;
@@ -916,7 +1245,7 @@ pub fn show_key(f: &mut Frame, app: &mut App) {
 
 pub fn help(f: &mut Frame, app: &App) {
     let area = f.area();
-    let rect = centered(area, 66, 26);
+    let rect = centered(area, 66, 27);
     f.render_widget(Clear, rect);
     let block = modal_block("Help · Key Bindings");
     let inner = block.inner(rect);
@@ -949,6 +1278,7 @@ pub fn help(f: &mut Frame, app: &App) {
         k("F9 · m · u", "mount / unmount · mount · unmount"),
         k("F6", "use as proxy"),
         k("F8", "delete"),
+        k("F12 / i", "actions — bulk import"),
         Line::default(),
         head("SHELLS"),
     ];

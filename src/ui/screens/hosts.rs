@@ -83,7 +83,7 @@ fn cols(width: usize) -> Cols {
     }
 }
 
-fn mask_pass(p: &str) -> String {
+pub(crate) fn mask_pass(p: &str) -> String {
     if p.is_empty() {
         "—".to_string()
     } else {

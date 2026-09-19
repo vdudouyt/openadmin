@@ -132,7 +132,7 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     // The keymap, as the bar advertises it: the letter twin beside each F-key,
     // and Shell on Enter.
     let bar = out.lines().last().unwrap();
-    for cap in ["F2", "F4", "↵", "F6", "F8", "F9", "F10"] {
+    for cap in ["F2", "F4", "↵", "F6", "F8", "F9", "F10", "F12"] {
         assert!(bar.contains(cap), "{cap} missing from: {bar}");
     }
     // Just the keys. The letter twins are in F1's help, not on the caps.
@@ -177,11 +177,18 @@ fn every_dialog_renders() {
         (Mode::Help, "Key Bindings"),
         (Mode::HostForm, "Add Host"),
         (Mode::ConfirmDelete, "Confirm Delete"),
+        (Mode::Actions, "Bulk import"),
+        (Mode::BulkImport, "Bulk Import · 1 of 2"),
     ] {
         let a = &mut app;
         a.mode = Mode::Normal;
         match mode {
             Mode::HostForm => a.open_add(),
+            Mode::Actions => a.open_actions(),
+            Mode::BulkImport => {
+                a.open_actions();
+                key(a, KeyCode::Char('i'));
+            }
             Mode::ConfirmDelete => {
                 a.pending_delete = vec![a.hosts[0].id];
                 a.mode = Mode::ConfirmDelete;
@@ -2986,4 +2993,283 @@ fn every_route_onto_shells_remembers_where_it_came_from() {
     app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
     assert_eq!(app.screen, Screen::Shells);
     assert_eq!(app.prev_screen, Screen::Hosts);
+}
+
+// ---- bulk import -----------------------------------------------------------
+
+/// qhostman's format, as a terminal delivers it inside a bracketed paste: CR
+/// line endings.
+const QHOSTMAN: &str =
+    "mydomain-s5000\r1.2.3.4\rroot\r123123\r\rmydomain-s5001\r2.3.4.5\rroot\r123123\r";
+
+fn open_bulk(app: &mut App) {
+    key(app, KeyCode::F(12));
+    key(app, KeyCode::Char('i'));
+    assert_eq!(app.mode, Mode::BulkImport);
+}
+
+fn button(app: &App, want: Click) -> ratatui::layout::Rect {
+    app.regions
+        .clicks
+        .iter()
+        .find(|(_, c)| *c == want)
+        .map(|(r, _)| *r)
+        .unwrap_or_else(|| panic!("no {want:?} button"))
+}
+
+#[test]
+fn f12_and_i_open_the_actions_menu() {
+    let (mut app, _rx) = test_app("actions");
+    key(&mut app, KeyCode::F(12));
+    assert_eq!(app.mode, Mode::Actions);
+    let out = render(&mut app, 120, 34);
+    assert!(
+        out.contains("Actions") && out.contains("Bulk import"),
+        "{out}"
+    );
+    key(&mut app, KeyCode::F(12));
+    assert_eq!(app.mode, Mode::Normal, "F12 closes what it opened");
+
+    // The letter twin, for terminals that keep F12 for themselves.
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.mode, Mode::Actions);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+
+    // ↵ runs the highlighted row, and so does its letter.
+    key(&mut app, KeyCode::Char('i'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::BulkImport);
+}
+
+#[test]
+fn the_actions_menu_is_clickable_and_a_click_outside_closes_it() {
+    let (mut app, _rx) = test_app("actions-click");
+    app.function_key(12);
+    let _ = render(&mut app, 120, 34);
+    let row = button(&app, Click::Key(KeyCode::Char('i')));
+    click(&mut app, row.x + 4, row.y);
+    assert_eq!(app.mode, Mode::BulkImport);
+
+    let (mut app, _rx) = test_app("actions-away");
+    app.function_key(12);
+    let _ = render(&mut app, 120, 34);
+    click(&mut app, 1, 1);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn a_pasted_list_is_reviewed_then_imported_and_marked() {
+    let (mut app, _rx) = test_app("bulk");
+    let before = app.hosts.len();
+    open_bulk(&mut app);
+    app.on_paste(QHOSTMAN);
+    let paste = render(&mut app, 120, 34);
+    assert!(paste.contains("Bulk Import · 1 of 2"), "{paste}");
+    assert!(paste.contains("2 to add"), "a live summary: {paste}");
+
+    key(&mut app, KeyCode::Tab);
+    let review = render(&mut app, 120, 34);
+    assert!(review.contains("Bulk Import · 2 of 2"), "{review}");
+    assert!(review.contains("mydomain-s5000") && review.contains("root@2.3.4.5"));
+    assert!(!review.contains("123123"), "passwords are masked: {review}");
+    assert!(review.contains("Import 2 hosts"), "{review}");
+    assert_eq!(app.hosts.len(), before, "nothing is written by reviewing");
+
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.bulk.is_none());
+    assert_eq!(app.hosts.len(), before + 2);
+    let s5000 = app
+        .hosts
+        .iter()
+        .find(|h| h.name == "mydomain-s5000")
+        .unwrap();
+    assert_eq!(
+        (
+            s5000.proto.as_str(),
+            s5000.addr.as_str(),
+            s5000.port,
+            s5000.login.as_str(),
+            s5000.pass.as_str(),
+            s5000.mount_point.as_str()
+        ),
+        (
+            "ssh",
+            "1.2.3.4",
+            22,
+            "root",
+            "123123",
+            "/net/mydomain-s5000"
+        )
+    );
+    let imported: std::collections::HashSet<i64> = app
+        .hosts
+        .iter()
+        .filter(|h| h.name.starts_with("mydomain-"))
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(
+        app.marked, imported,
+        "exactly the imported hosts are marked"
+    );
+    assert_eq!(
+        app.host().unwrap().id,
+        s5000.id,
+        "the cursor is on the first"
+    );
+    assert!(
+        app.status.text.contains("Imported 2 hosts"),
+        "{}",
+        app.status.text
+    );
+}
+
+#[test]
+fn pasting_the_same_list_again_adds_nothing() {
+    let (mut app, _rx) = test_app("bulk-again");
+    open_bulk(&mut app);
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    let after = app.hosts.len();
+
+    open_bulk(&mut app);
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Tab);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("already here — skipped"), "{out}");
+    assert!(out.contains("Nothing to import"), "{out}");
+    assert!(
+        !app.regions
+            .clicks
+            .iter()
+            .any(|(_, c)| *c == Click::Key(KeyCode::Enter)),
+        "a dead Import button has no hitbox"
+    );
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::BulkImport, "nothing to do, so it stays");
+    assert_eq!(app.hosts.len(), after);
+    assert!(app.status.text.contains("Nothing to import"));
+}
+
+#[test]
+fn a_malformed_block_stops_the_whole_import() {
+    let (mut app, _rx) = test_app("bulk-bad");
+    let before = app.hosts.len();
+    open_bulk(&mut app);
+    app.on_paste(&QHOSTMAN.replace("2.3.4.5\r", "2.3.4.5\r2222\r"));
+    key(&mut app, KeyCode::Tab);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("line 6"), "{out}");
+    assert!(out.contains("5 lines — expected 4"), "{out}");
+    assert!(out.contains("Fix 1 problem before importing"), "{out}");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.hosts.len(), before, "not even the good block");
+    assert!(
+        app.status.text.contains("Fix 1 problem"),
+        "{}",
+        app.status.text
+    );
+
+    // Back to the text, which is where the fix goes, with the text intact.
+    key(&mut app, KeyCode::BackTab);
+    let b = app.bulk.as_ref().unwrap();
+    assert_eq!(b.step, crate::app::bulk::BulkStep::Paste);
+    assert!(b.joined().contains("mydomain-s5000"));
+}
+
+#[test]
+fn esc_from_either_step_writes_nothing() {
+    let (mut app, _rx) = test_app("bulk-esc");
+    let before = app.hosts.len();
+    for tabs in [0, 1] {
+        open_bulk(&mut app);
+        app.on_paste(QHOSTMAN);
+        for _ in 0..tabs {
+            key(&mut app, KeyCode::Tab);
+        }
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.bulk.is_none());
+        assert_eq!(app.hosts.len(), before);
+    }
+}
+
+/// Without bracketed paste a paste arrives as keys, with an Enter for every
+/// line break — so in this dialog Enter is a newline and never a submit.
+#[test]
+fn a_list_arriving_as_keystrokes_is_a_list_too() {
+    let (mut app, _rx) = test_app("bulk-keys");
+    open_bulk(&mut app);
+    for line in ["mydomain-s5000", "1.2.3.4", "root", "123123"] {
+        for c in line.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+    }
+    assert_eq!(app.mode, Mode::BulkImport);
+    assert_eq!(
+        app.bulk.as_ref().unwrap().step,
+        crate::app::bulk::BulkStep::Paste
+    );
+    key(&mut app, KeyCode::Tab);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("Import 1 host "), "{out}");
+}
+
+#[test]
+fn the_bulk_buttons_are_clickable() {
+    let (mut app, _rx) = test_app("bulk-click");
+    let before = app.hosts.len();
+    open_bulk(&mut app);
+    app.on_paste(QHOSTMAN);
+    let _ = render(&mut app, 120, 34);
+    let next = button(&app, Click::Key(KeyCode::Tab));
+    click(&mut app, next.x + 1, next.y);
+    assert_eq!(
+        app.bulk.as_ref().unwrap().step,
+        crate::app::bulk::BulkStep::Review
+    );
+
+    let _ = render(&mut app, 120, 34);
+    let back = button(&app, Click::Key(KeyCode::BackTab));
+    click(&mut app, back.x + 1, back.y);
+    assert_eq!(
+        app.bulk.as_ref().unwrap().step,
+        crate::app::bulk::BulkStep::Paste
+    );
+
+    key(&mut app, KeyCode::Tab);
+    let _ = render(&mut app, 120, 34);
+    let import = button(&app, Click::Key(KeyCode::Enter));
+    click(&mut app, import.x + 1, import.y);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.hosts.len(), before + 2);
+}
+
+#[test]
+fn a_long_review_scrolls() {
+    let (mut app, _rx) = test_app("bulk-long");
+    open_bulk(&mut app);
+    let list: String = (0..60)
+        .map(|i| format!("bulk-{i:02}\n10.1.0.{i}\nroot\npw\n\n"))
+        .collect();
+    app.on_paste(&list);
+    key(&mut app, KeyCode::Tab);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("bulk-00") && !out.contains("bulk-59"), "{out}");
+    assert!(out.contains("PgDn ↓"), "the hint says there is more: {out}");
+    assert!(out.contains("Import 60 hosts"), "{out}");
+
+    key(&mut app, KeyCode::End);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("bulk-59") && !out.contains("bulk-00"), "{out}");
+    wheel(&mut app, false);
+    assert!(app.bulk.as_ref().unwrap().scroll < app.bulk.as_ref().unwrap().max_scroll);
+
+    // Small terminals keep the buttons on screen.
+    for (w, h) in [(80, 24), (60, 16), (30, 8)] {
+        let _ = render(&mut app, w, h);
+    }
 }
