@@ -18,7 +18,7 @@ use crate::config::Config;
 use crate::db::DataBase;
 use crate::db::model::{HostRecord, mount_for};
 use crate::term::manager::TerminalManager;
-use crate::term::session::{Spawn, TermEvent};
+use crate::term::session::{SessionId, Spawn, TermEvent};
 use crate::{keys, mount, mtab, ssh};
 use approve::{ConfirmedPlan, PlanSelection};
 use bulk::{BulkImport, BulkStep};
@@ -1779,30 +1779,43 @@ impl App {
         }
 
         match ev.kind {
-            MouseEventKind::ScrollDown => self.on_scroll(3),
-            MouseEventKind::ScrollUp => self.on_scroll(-3),
+            MouseEventKind::ScrollDown => self.on_scroll(3, at),
+            MouseEventKind::ScrollUp => self.on_scroll(-3, at),
             MouseEventKind::Down(MouseButton::Left) => self.on_left_click(at),
             _ => {}
         }
     }
 
-    /// Returns true when the event belonged to a terminal pane.
-    fn forward_mouse_to_terminal(&mut self, ev: &MouseEvent, at: Position) -> bool {
-        let Some((rect, pane)) = self
+    /// The pane under the pointer: its whole rect, title and scrollbar
+    /// included, its index in the tab, and its session.
+    fn pane_at(&self, at: Position) -> Option<(Rect, usize, SessionId)> {
+        let (rect, pane) = self
             .regions
             .panes
             .iter()
             .find(|(r, _)| r.contains(at))
-            .copied()
-        else {
+            .copied()?;
+        let id = self.term.active_tab()?.panes.get(pane).copied()?;
+        Some((rect, pane, id))
+    }
+
+    /// Returns true when the event belonged to a terminal pane.
+    fn forward_mouse_to_terminal(&mut self, ev: &MouseEvent, at: Position) -> bool {
+        let Some((rect, pane, id)) = self.pane_at(at) else {
             return false;
         };
-        let Some(tab) = self.term.active_tab() else {
+        // Pane-local coordinates, measured from the area the program actually
+        // draws on. A single-pane tab draws no title rule, so the offset must
+        // come from the same accessor the renderer used — hard-coding 1 here
+        // would swallow the pane's first row and land every forwarded click one
+        // line high. The title row and the scrollbar column are ours: a report
+        // there would name a cell the program does not have.
+        let term = TerminalManager::pane_areas(rect, self.term.pane_chrome_rows()).term;
+        if !term.contains(at) {
             return false;
-        };
-        let Some(id) = tab.panes.get(pane).copied() else {
-            return false;
-        };
+        }
+        let col = at.x - term.x;
+        let row = at.y - term.y;
 
         let (mode, encoding, ok) = match self.term.session(id) {
             Some(s) => match s.parser().lock() {
@@ -1822,17 +1835,6 @@ impl App {
             return false;
         }
 
-        // Pane-local coordinates. A single-pane tab draws no title rule, so
-        // the offset must come from the same accessor the renderer used —
-        // hard-coding 1 here would swallow the pane's first row and land every
-        // forwarded click one line high.
-        let chrome = self.term.pane_chrome_rows();
-        if at.y < rect.y + chrome {
-            return false;
-        }
-        let col = at.x.saturating_sub(rect.x);
-        let row = at.y.saturating_sub(rect.y + chrome);
-
         match crate::term::keys::encode_mouse(ev, col, row, mode, encoding) {
             Some(bytes) => {
                 // Clicking also moves focus, so typing follows the mouse.
@@ -1848,7 +1850,7 @@ impl App {
         }
     }
 
-    fn on_scroll(&mut self, delta: isize) {
+    fn on_scroll(&mut self, delta: isize, at: Position) {
         if self.mode == Mode::BulkImport {
             if let Some(b) = self.bulk.as_mut()
                 && b.step == BulkStep::Review
@@ -1867,6 +1869,18 @@ impl App {
             Screen::Hosts if self.mode == Mode::Normal => self.move_cursor(delta),
             // Up the screen is back in time, so the sign is inverted.
             Screen::Chat if self.mode == Mode::Normal => self.chat.scroll_by(-delta),
+            // A wheel the program did not ask for scrolls the pane under the
+            // pointer back through its history — focused or not, as a forwarded
+            // wheel would be. Whether it may is `scrollback::scroll`'s call:
+            // not on the alternate screen, and not where the program owns the
+            // mouse. Up is back in time here too.
+            Screen::Shells if self.mode == Mode::Normal => {
+                if let Some((_, _, id)) = self.pane_at(at)
+                    && let Some(s) = self.term.session(id)
+                {
+                    s.scroll_history(-delta);
+                }
+            }
             _ => {}
         }
     }

@@ -1241,13 +1241,6 @@ pub fn show_key(f: &mut Frame, app: &mut App) {
 }
 
 pub fn help(f: &mut Frame, app: &App) {
-    let area = f.area();
-    let rect = centered(area, 66, 27);
-    f.render_widget(Clear, rect);
-    let block = modal_block("Help · Key Bindings");
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-
     let k = |key: &str, desc: &str| {
         Line::from(vec![
             Span::styled(
@@ -1296,6 +1289,7 @@ pub fn help(f: &mut Frame, app: &App) {
     lines.push(Line::default());
     lines.push(k("click", "the 1/2/3 tabs switch screens — the way out"));
     lines.push(k("click", "a shell tab selects it, its × closes it"));
+    lines.push(k("wheel", "scroll back; typing returns — not in mc, vim"));
     lines.push(k("quit", "switch to Hosts, then F10"));
     lines.push(Line::styled(
         "With no shell open the F-keys work here again.",
@@ -1305,6 +1299,15 @@ pub fn help(f: &mut Frame, app: &App) {
     lines.push(head("MOUSE"));
     lines.push(k("hover", "row highlights, hint in the status bar"));
     lines.push(k("click", "move cursor   double-click opens a shell"));
+
+    // Sized from what it says: a fixed height had fallen eight lines short,
+    // and the MOUSE section was never on screen. Four is the border and the
+    // padding. A terminal too short for all of it still truncates.
+    let rect = centered(f.area(), 66, lines.len() as u16 + 4);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Help · Key Bindings");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
 
     let _ = app;
     let h = inner.height as usize;

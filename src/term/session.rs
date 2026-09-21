@@ -180,6 +180,22 @@ impl TerminalSession {
         Ok(())
     }
 
+    /// Move this pane's view `lines` back through its history, or toward the
+    /// live screen when negative — unless the program owns the wheel; see
+    /// `scrollback::scroll`.
+    pub fn scroll_history(&self, lines: isize) {
+        if let Ok(mut p) = self.parser.lock() {
+            super::scrollback::scroll(p.screen_mut(), lines);
+        }
+    }
+
+    /// Back to the live screen.
+    pub fn scroll_to_live(&self) {
+        if let Ok(mut p) = self.parser.lock() {
+            p.screen_mut().set_scrollback(0);
+        }
+    }
+
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() || self.has_exited() {
             return Ok(());

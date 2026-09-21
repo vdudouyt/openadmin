@@ -286,9 +286,17 @@ fn the_help_dialog_explains_the_shells_keyboard() {
         out.contains("mc, GNU Screen and vim"),
         "the why is stated: {out}"
     );
+    // Asked of the help itself, not "switch screens" alone, which the Hosts
+    // status bar also says — that is how a help cut off eight lines short
+    // passed this test.
     assert!(
-        out.contains("switch screens"),
+        out.contains("the 1/2/3 tabs switch screens"),
         "the mouse way out is documented: {out}"
+    );
+    assert!(out.contains("scroll back"), "and the wheel: {out}");
+    assert!(
+        out.contains("double-click opens a shell"),
+        "down to the last line: {out}"
     );
     assert!(!out.contains("Esc then"), "stale chord docs: {out}");
 }
@@ -321,7 +329,11 @@ fn the_shells_screen_reaches_the_bottom_row() {
     // header(1) is the whole budget: no tab strip, no title rule.
     assert_eq!(app.term.pane_chrome_rows(), 0);
     let id = app.term.focused_session().unwrap();
-    assert_eq!(app.term.session(id).unwrap().size(), (H - 1, 100));
+    // The width, less the scrollbar's own column.
+    assert_eq!(
+        app.term.session(id).unwrap().size(),
+        (H - 1, 100 - crate::term::manager::PANE_SCROLLBAR_COLS)
+    );
 
     // For contrast, Hosts keeps its status line and function bar.
     app.screen = Screen::Hosts;
@@ -1443,6 +1455,343 @@ fn mouse_events_reach_a_child_that_enabled_reporting() {
     assert!(
         seen.contains("^[[<0;"),
         "no SGR press reached the child; saw:\n{seen}"
+    );
+    app.term.shutdown();
+}
+
+// ---- scrolling a shell back -----------------------------------------------
+
+use crate::term::session::SessionId;
+
+fn wheel_at(app: &mut App, x: u16, y: u16, down: bool) {
+    app.on_mouse(MouseEvent {
+        kind: if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        },
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::empty(),
+    });
+}
+
+/// One tab running `script` in a pane per name, with room for history, drawn
+/// once at 100×30 so every parser already has its final size.
+fn shells_tab(app: &mut App, names: &[&str], script: &str) -> Vec<SessionId> {
+    use crate::term::session::Spawn;
+    let entries = names
+        .iter()
+        .map(|n| {
+            let mut spawn = Spawn::new("/bin/sh");
+            spawn.args = vec!["-c".into(), script.into()];
+            ((*n).to_string(), spawn)
+        })
+        .collect();
+    app.term
+        .open_tab(entries, (24, 80), 1000, "xterm", &app.term_tx)
+        .unwrap();
+    app.screen = Screen::Shells;
+    let _ = render(app, 100, 30);
+    app.term.active_tab().unwrap().panes.clone()
+}
+
+/// Straight into the emulator, as if the program had printed it — so a test
+/// knows exactly what is in the history, with no child to race.
+fn feed(app: &App, id: SessionId, bytes: &[u8]) {
+    let s = app.term.session(id).unwrap();
+    s.parser().lock().unwrap().process(bytes);
+}
+
+/// `line 001` to `line {n}`. In a 29-row pane that puts `n - 28` of them in the
+/// history: 100 lines leave `line 001`..`line 072` scrolled off.
+fn feed_lines(app: &App, id: SessionId, n: usize) {
+    let text: String = (1..=n).map(|i| format!("line {i:03}\r\n")).collect();
+    feed(app, id, text.as_bytes());
+}
+
+fn offset(app: &App, id: SessionId) -> usize {
+    let s = app.term.session(id).unwrap();
+    s.parser().lock().unwrap().screen().scrollback()
+}
+
+fn top_line(app: &App, id: SessionId) -> String {
+    let s = app.term.session(id).unwrap();
+    let contents = s.parser().lock().unwrap().screen().contents();
+    contents.lines().next().unwrap_or("").to_string()
+}
+
+/// A point on the pane's terminal area, clear of its title and scrollbar.
+fn inside(app: &App, pane: usize) -> (u16, u16) {
+    let (rect, _) = app.regions.panes[pane];
+    let term =
+        crate::term::manager::TerminalManager::pane_areas(rect, app.term.pane_chrome_rows()).term;
+    (term.x + 4, term.y + 3)
+}
+
+/// Wait for a child's output to reach the emulator: it arrives through a PTY
+/// and a reader thread, never synchronously.
+fn wait_for_screen(
+    app: &App,
+    rx: &Receiver<TermEvent>,
+    id: SessionId,
+    done: impl Fn(&vt100::Screen) -> bool,
+) -> bool {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let ready = app
+            .term
+            .session(id)
+            .and_then(|s| s.parser().lock().ok().map(|p| done(p.screen())))
+            .unwrap_or(false);
+        if ready {
+            return true;
+        }
+        let _ = rx.recv_timeout(Duration::from_millis(100));
+    }
+    false
+}
+
+/// A child that turns on SGR mouse reports and echoes what it receives.
+const MOUSE_ECHO: &str = "printf '\\033[?1000h\\033[?1006h'; cat -v";
+
+/// The complaint itself: the wheel over a shell did nothing, with its history
+/// kept but unreachable.
+#[test]
+fn the_wheel_scrolls_back_through_a_shells_history() {
+    let (mut app, _rx) = test_app("wheelback");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+    let (x, y) = inside(&app, 0);
+
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(offset(&app, id), 3, "one notch is three lines");
+    assert_eq!(top_line(&app, id), "line 070");
+    let out = render(&mut app, 100, 30);
+    assert!(
+        out.lines().nth(1).unwrap().contains("line 070"),
+        "and that is what is drawn: {out}"
+    );
+
+    wheel_at(&mut app, x, y, true);
+    assert_eq!(offset(&app, id), 0, "down comes back to the live screen");
+    app.term.shutdown();
+}
+
+/// The boundary the operator drew: mc, vim, less and their like run on the
+/// alternate screen, and are not scrolled.
+#[test]
+fn the_wheel_does_not_scroll_a_full_screen_program() {
+    let (mut app, _rx) = test_app("wheelalt");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+    feed(&app, id, b"\x1b[?1049hA FULL-SCREEN PROGRAM");
+    let before = render(&mut app, 100, 30);
+    let (x, y) = inside(&app, 0);
+
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(render(&mut app, 100, 30), before, "nothing moved");
+
+    // Nor was the shell underneath scrolled while it was covered.
+    feed(&app, id, b"\x1b[?1049l");
+    assert_eq!(offset(&app, id), 0);
+    app.term.shutdown();
+}
+
+/// A program that asked for the mouse — mc does — scrolls itself: it is sent
+/// the wheel, and the history stays where it is.
+#[test]
+fn the_wheel_goes_to_a_program_that_asked_for_the_mouse() {
+    let (mut app, rx) = test_app("wheelmouse");
+    let id = shells_tab(&mut app, &["local"], MOUSE_ECHO)[0];
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| {
+            s.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        }),
+        "the child never enabled mouse reporting"
+    );
+    let (x, y) = inside(&app, 0);
+
+    wheel_at(&mut app, x, y, false);
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| s.contents().contains("^[[<64;")),
+        "no SGR wheel-up reached the child"
+    );
+    assert_eq!(offset(&app, id), 0);
+    app.term.shutdown();
+}
+
+/// Typing into a scrolled-back shell means the prompt, as in any terminal —
+/// and a paste is typing.
+#[test]
+fn typing_or_pasting_returns_a_shell_to_the_live_screen() {
+    let (mut app, _rx) = test_app("wheeltype");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+    let (x, y) = inside(&app, 0);
+
+    wheel_at(&mut app, x, y, false);
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(offset(&app, id), 6);
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(offset(&app, id), 0, "a keystroke");
+
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(offset(&app, id), 3);
+    app.on_paste("y");
+    assert_eq!(offset(&app, id), 0, "a paste");
+    app.term.shutdown();
+}
+
+/// A click sent to a program is not typing: the view stays where it is.
+#[test]
+fn a_forwarded_click_leaves_the_view_where_it_is() {
+    let (mut app, _rx) = test_app("wheelclick");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+    let (x, y) = inside(&app, 0);
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(offset(&app, id), 3);
+
+    // Mouse reports on, still on the main screen: the click is forwarded.
+    feed(&app, id, b"\x1b[?1000h");
+    click(&mut app, x, y);
+    assert_eq!(offset(&app, id), 3);
+    app.term.shutdown();
+}
+
+/// The bar's own column, rightmost in the pane, alongside the terminal rows.
+fn bar_column(app: &mut App) -> Vec<String> {
+    let (rect, _) = app.regions.panes[0];
+    let buf = render_buf(app, 100, 30);
+    let x = rect.x + rect.width - 1;
+    (rect.y..rect.y + rect.height)
+        .map(|y| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
+/// A scrollbar counts down from the top and vt100 counts back from the live
+/// screen; the conversion is where an upside-down bar would come from.
+#[test]
+fn the_scrollbar_thumb_is_at_the_bottom_when_live_and_the_top_at_the_oldest_line() {
+    let (mut app, _rx) = test_app("wheelbar");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+
+    let live = bar_column(&mut app);
+    assert_eq!(
+        live.last().unwrap(),
+        "█",
+        "live: thumb at the bottom {live:?}"
+    );
+    assert_eq!(live.first().unwrap(), "│", "{live:?}");
+
+    let (x, y) = inside(&app, 0);
+    for _ in 0..30 {
+        wheel_at(&mut app, x, y, false);
+    }
+    assert_eq!(offset(&app, id), 72, "at the oldest line");
+    let oldest = bar_column(&mut app);
+    assert_eq!(
+        oldest.first().unwrap(),
+        "█",
+        "oldest: thumb at the top {oldest:?}"
+    );
+    assert_eq!(oldest.last().unwrap(), "│", "{oldest:?}");
+    app.term.shutdown();
+}
+
+/// No history, or a full-screen program: nothing to scroll, so nothing drawn.
+#[test]
+fn the_scrollbar_column_is_blank_with_no_history_or_on_the_alternate_screen() {
+    let (mut app, _rx) = test_app("wheelblank");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    let blank = |col: &[String]| col.iter().all(|c| c == " ");
+
+    let fresh = bar_column(&mut app);
+    assert!(blank(&fresh), "no history yet: {fresh:?}");
+
+    feed_lines(&app, id, 100);
+    assert!(!blank(&bar_column(&mut app)), "history: a bar");
+    feed(&app, id, b"\x1b[?1049h");
+    let covered = bar_column(&mut app);
+    assert!(blank(&covered), "alternate screen: {covered:?}");
+    app.term.shutdown();
+}
+
+/// What is drawn and what the program believes cannot disagree: every pane's
+/// PTY and emulator are the drawn width less the bar's column.
+#[test]
+fn a_pane_reports_one_column_less_than_it_is_wide() {
+    let (mut app, _rx) = test_app("wheelwidth");
+    let ids = shells_tab(&mut app, &["a", "b"], "sleep 30");
+    let _ = render(&mut app, 100, 30);
+    for (i, id) in ids.iter().enumerate() {
+        let (rect, _) = app.regions.panes[i];
+        let s = app.term.session(*id).unwrap();
+        let (_, cols) = s.size();
+        assert_eq!(cols, rect.width - 1, "pane {i}");
+        assert_eq!(s.parser().lock().unwrap().screen().size(), s.size());
+    }
+    app.term.shutdown();
+}
+
+/// Like a forwarded wheel, the pane under the pointer is the one that scrolls
+/// — including over its title row and its bar, and whichever pane has focus.
+#[test]
+fn the_wheel_over_a_title_row_or_scrollbar_scrolls_that_pane() {
+    let (mut app, _rx) = test_app("wheeledges");
+    let ids = shells_tab(&mut app, &["a", "b"], "sleep 30");
+    for id in &ids {
+        feed_lines(&app, *id, 100);
+    }
+    let (r0, _) = app.regions.panes[0];
+    let (r1, _) = app.regions.panes[1];
+    assert_eq!(app.term.active_tab().unwrap().focus, 0);
+
+    wheel_at(&mut app, r1.x + 3, r1.y, false); // pane 1's title row
+    assert_eq!((offset(&app, ids[0]), offset(&app, ids[1])), (0, 3));
+
+    wheel_at(&mut app, r0.x + r0.width - 1, r0.y + 3, false); // pane 0's bar
+    assert_eq!((offset(&app, ids[0]), offset(&app, ids[1])), (3, 3));
+    app.term.shutdown();
+}
+
+/// The bar's column is not the program's: a report there would name a cell it
+/// does not have. The PTY is ordered, so once a later click has arrived, an
+/// earlier one would have too.
+#[test]
+fn mouse_reports_never_land_on_the_scrollbar_column() {
+    let (mut app, rx) = test_app("wheelbarclick");
+    let id = shells_tab(&mut app, &["local"], MOUSE_ECHO)[0];
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| {
+            s.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        }),
+        "the child never enabled mouse reporting"
+    );
+    let (rect, _) = app.regions.panes[0];
+
+    click(&mut app, rect.x + rect.width - 1, rect.y + 3); // the bar
+    click(&mut app, rect.x + 4, rect.y + 3); // a sentinel, column 5
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| s.contents().contains("^[[<0;5;4M")),
+        "the sentinel click never arrived"
+    );
+    let seen = app
+        .term
+        .session(id)
+        .unwrap()
+        .parser()
+        .lock()
+        .unwrap()
+        .screen()
+        .contents();
+    assert_eq!(
+        seen.matches("^[[<0;").count(),
+        1,
+        "only the sentinel: {seen}"
     );
     app.term.shutdown();
 }

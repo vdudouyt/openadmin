@@ -152,6 +152,15 @@ That means **the mouse is how you drive the app while a pane is focused**:
   tabs scrolled out of view
 * to quit, switch to Hosts (`Alt+←`) and use `F10`, or click Quit there
 
+**The wheel scrolls a pane back** through what it has printed — up to
+`scrollback` lines each, 5000 by default — with a scrollbar in the pane's
+right-hand column showing where you are. Output arriving meanwhile does not move
+what you are reading; typing or pasting returns you to the live prompt.
+Full-screen programs are left alone: mc, htop and anything else that asked for
+the mouse get the wheel themselves, and vim, less and their like draw on the
+alternate screen, which has no history to scroll. The scrollbar has a column of
+its own, so a pane tells its program it is one column narrower than it looks.
+
 **Closing the last shell takes you back** to the screen you were on before
 Shells — Hosts, for the usual Enter on a host and `exit` — whether you closed it
 with `F4`, clicked its `×`, or it ended by itself. Only that last close moves
@@ -331,7 +340,7 @@ to put something in.
 | | default | |
 |---|---|---|
 | `term` | `xterm-256color` | `TERM` for spawned sessions |
-| `scrollback` | `5000` | lines retained per session |
+| `scrollback` | `5000` | lines retained per pane — how far back the wheel scrolls |
 | `sshfs_options` | `[]` | extra options for every mount |
 | `mount_prefix` | `/net` | where derived mount points live |
 | `proxy_port` | `10000` | local SOCKS port for the proxy host |

@@ -5,18 +5,21 @@
 //! single pane draws no title rule at all — the header tab already names the
 //! host. What is left is one row of chrome.
 //!
-//! Pane rects come from `TerminalManager::pane_rects`, the same function that
-//! drives `sync_sizes`, so what is drawn and what the PTY believes can never
-//! disagree.
+//! Pane rects come from `TerminalManager::pane_rects`, and each pane is cut into
+//! title, terminal and scrollbar by `TerminalManager::pane_areas` — the same
+//! functions that drive `sync_sizes`, so what is drawn and what the PTY believes
+//! can never disagree.
 
 use crate::app::App;
 use crate::term::manager::TerminalManager;
+use crate::term::scrollback::{self, History};
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::symbols::scrollbar;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
@@ -37,43 +40,77 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     app.term.sync_sizes(&rects);
     // One source of truth for whether a title row exists — the same value the
     // resizer and the mouse mapping use.
-    let show_title = app.term.pane_chrome_rows() > 0;
+    let chrome = app.term.pane_chrome_rows();
 
     app.regions.panes.clear();
     for (i, (id, rect)) in panes.iter().zip(&rects).enumerate() {
+        // The whole pane, title and scrollbar included: the wheel over either
+        // still means this pane.
         app.regions.panes.push((*rect, i));
         let focused = single || focus == i;
-        render_pane(f, *rect, app, *id, focused, show_title);
+        render_pane(f, *rect, app, *id, focused, chrome);
     }
 }
 
-fn render_pane(f: &mut Frame, rect: Rect, app: &App, id: u64, focused: bool, show_title: bool) {
+fn render_pane(f: &mut Frame, rect: Rect, app: &App, id: u64, focused: bool, chrome: u16) {
     let Some(session) = app.term.session(id) else {
         return;
     };
 
-    let term_a = if show_title {
-        let [title_a, term_a] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(rect);
-        render_pane_title(f, title_a, session, focused, rect.width);
-        term_a
-    } else {
-        rect
-    };
+    let areas = TerminalManager::pane_areas(rect, chrome);
+    if chrome > 0 {
+        render_pane_title(f, areas.title, session, focused, rect.width);
+    }
 
-    let Ok(parser) = session.parser().lock() else {
+    let Ok(mut parser) = session.parser().lock() else {
         return;
     };
+    // Read under the lock the terminal is drawn with, so the bar and the text
+    // describe the same moment.
+    let history = scrollback::history(parser.screen_mut());
     let mut cursor = Cursor::default().style(theme::proxied());
     // Only the focused pane shows a cursor, and never once the child is gone.
+    // Scrolled back, tui-term moves it down with the text, off the bottom.
     if !focused || session.has_exited() || parser.screen().hide_cursor() {
         cursor.hide();
     }
+    // Drawn into the terminal's own area: the widget clears what it is given,
+    // and the scrollbar column is not part of it.
     f.render_widget(
         PseudoTerminal::new(parser.screen())
             .cursor(cursor)
             .style(Style::new().bg(theme::BG_BASE)),
-        term_a,
+        areas.term,
+    );
+    if let Some(h) = history {
+        render_scrollbar(f, areas.bar, h, focused);
+    }
+}
+
+/// Where the view is in a pane's history. Nothing is drawn with no history, or
+/// on the alternate screen, which has none — the column stays blank.
+fn render_scrollbar(f: &mut Frame, area: Rect, h: History, focused: bool) {
+    // vt100 counts back from the live screen and a scrollbar counts down from
+    // the top, so the live screen is the last position. `lines + 1` positions
+    // put the thumb flush against each end, as in the dialogs.
+    let mut state = ScrollbarState::new(h.lines + 1)
+        .position(h.lines - h.offset)
+        .viewport_content_length(area.height as usize);
+    // The title rule's convention: orange on the pane that has the keyboard.
+    let thumb = if focused {
+        theme::ORANGE
+    } else {
+        theme::LINE_STRONG
+    };
+    f.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .symbols(scrollbar::VERTICAL)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(theme::border_idle())
+            .thumb_style(Style::new().fg(thumb)),
+        area,
+        &mut state,
     );
 }
 

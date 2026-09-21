@@ -13,6 +13,22 @@ use std::sync::mpsc::Sender;
 /// Rows of chrome each pane spends on its title border.
 pub const PANE_CHROME_ROWS: u16 = 1;
 
+/// Columns each pane keeps for its scrollbar, as a GUI terminal does: the
+/// program in the pane is told it is this much narrower, so the bar never
+/// covers its text.
+pub const PANE_SCROLLBAR_COLS: u16 = 1;
+
+/// One pane, cut into what is drawn where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneAreas {
+    /// The title rule, full width; zero rows high when there is none.
+    pub title: Rect,
+    /// What the program in the pane draws on — and so the size its PTY is.
+    pub term: Rect,
+    /// The scrollbar column, beside `term`.
+    pub bar: Rect,
+}
+
 pub struct Tab {
     pub title: String,
     pub group: bool,
@@ -198,11 +214,23 @@ impl TerminalManager {
         }
     }
 
-    /// Write to whichever pane has focus.
+    /// Write to whichever pane has focus, returning its view to the live
+    /// screen first — typing into a shell that is scrolled back means the
+    /// prompt, as in any terminal.
+    ///
+    /// Keys and pastes come through here; forwarded mouse reports do not, so a
+    /// click in a program leaves the view where it is. Nothing is written to a
+    /// pane whose program has gone, so nothing moves its view either: reading
+    /// back a dead shell's last output is what it is left open for.
     pub fn write_focused(&mut self, bytes: &[u8]) -> Result<()> {
         match self.focused_session() {
             Some(id) => match self.sessions.get_mut(&id) {
-                Some(s) => s.write(bytes),
+                Some(s) => {
+                    if !bytes.is_empty() && !s.has_exited() {
+                        s.scroll_to_live();
+                    }
+                    s.write(bytes)
+                }
                 None => Ok(()),
             },
             None => Ok(()),
@@ -216,6 +244,35 @@ impl TerminalManager {
             dirty |= s.take_dirty();
         }
         dirty
+    }
+
+    /// Cut one pane into its title, terminal and scrollbar. The renderer, the
+    /// PTY sizing and the mouse mapping all go through this, so what is drawn
+    /// and what the program believes its size is cannot disagree.
+    ///
+    /// A pane one column wide keeps that column for the terminal and has no
+    /// bar: a program with no width at all is worse than a missing scrollbar.
+    pub fn pane_areas(pane: Rect, chrome: u16) -> PaneAreas {
+        let title_h = chrome.min(pane.height);
+        let bar_w = if pane.width > PANE_SCROLLBAR_COLS {
+            PANE_SCROLLBAR_COLS
+        } else {
+            0
+        };
+        let term = Rect::new(
+            pane.x,
+            pane.y + title_h,
+            pane.width - bar_w,
+            pane.height - title_h,
+        );
+        PaneAreas {
+            title: Rect {
+                height: title_h,
+                ..pane
+            },
+            term,
+            bar: Rect::new(term.right(), term.y, bar_w, term.height),
+        }
     }
 
     /// Split `area` between `n` stacked panes — the same geometry the renderer
@@ -239,10 +296,10 @@ impl TerminalManager {
         let ids: Vec<SessionId> = tab.panes.clone();
         let mut changed = false;
         for (id, rect) in ids.iter().zip(rects) {
-            let rows = rect.height.saturating_sub(chrome);
-            let size = (rows, rect.width);
+            let term = Self::pane_areas(*rect, chrome).term;
+            let size = (term.height, term.width);
             if let Some(s) = self.sessions.get_mut(id)
-                && s.size() != (rows.max(1), rect.width.max(1))
+                && s.size() != (term.height.max(1), term.width.max(1))
             {
                 let _ = s.resize(size);
                 changed = true;
@@ -289,8 +346,8 @@ fn pane_size((rows, cols): (u16, u16), n: usize) -> (u16, u16) {
     // this anyway through `sync_sizes`.
     let chrome = if n > 1 { PANE_CHROME_ROWS } else { 0 };
     let n = n.max(1) as u16;
-    let per = rows / n;
-    (per.saturating_sub(chrome).max(1), cols.max(1))
+    let term = TerminalManager::pane_areas(Rect::new(0, 0, cols, rows / n), chrome).term;
+    (term.height.max(1), term.width.max(1))
 }
 
 #[cfg(test)]
@@ -335,7 +392,8 @@ mod tests {
         let (m, _rx) = mgr_with(3);
         for id in &m.tabs[0].panes {
             let (rows, cols) = m.session(*id).unwrap().size();
-            assert_eq!(cols, 80);
+            // The full width, less the scrollbar's column.
+            assert_eq!(cols, 80 - PANE_SCROLLBAR_COLS);
             // 24 rows / 3 panes = 8, less one row of title chrome.
             assert_eq!(rows, 7);
         }
@@ -428,10 +486,71 @@ mod tests {
         let rects = TerminalManager::pane_rects(Rect::new(0, 0, 120, 40), 2);
         assert!(m.sync_sizes(&rects), "first sync must report a change");
         for id in &m.tabs[0].panes.clone() {
-            // 40 rows / 2 panes = 20, less the title row.
-            assert_eq!(m.session(*id).unwrap().size(), (19, 120));
+            // 40 rows / 2 panes = 20, less the title row; the width, less the
+            // scrollbar's column.
+            assert_eq!(
+                m.session(*id).unwrap().size(),
+                (19, 120 - PANE_SCROLLBAR_COLS)
+            );
         }
         assert!(!m.sync_sizes(&rects), "a second sync is a no-op");
+    }
+
+    /// The scrollbar has a column of its own, so the program in the pane is
+    /// told it is one narrower and the bar never covers its text. The title
+    /// rule keeps the full width.
+    #[test]
+    fn a_pane_keeps_its_right_column_for_the_scrollbar() {
+        let a = TerminalManager::pane_areas(Rect::new(3, 1, 80, 24), 0);
+        assert_eq!(a.term, Rect::new(3, 1, 79, 24));
+        assert_eq!(a.bar, Rect::new(82, 1, 1, 24));
+        assert_eq!(a.title.height, 0);
+
+        let a = TerminalManager::pane_areas(Rect::new(0, 10, 80, 8), PANE_CHROME_ROWS);
+        assert_eq!(a.title, Rect::new(0, 10, 80, 1), "the title spans the bar");
+        assert_eq!(a.term, Rect::new(0, 11, 79, 7));
+        assert_eq!(
+            a.bar,
+            Rect::new(79, 11, 1, 7),
+            "the bar runs beside the text"
+        );
+
+        // Too narrow for both: the program keeps the column.
+        let a = TerminalManager::pane_areas(Rect::new(0, 0, 1, 5), 0);
+        assert_eq!((a.term.width, a.bar.width), (1, 0));
+        let a = TerminalManager::pane_areas(Rect::new(0, 0, 0, 0), PANE_CHROME_ROWS);
+        assert_eq!((a.term.width, a.bar.width, a.term.height), (0, 0, 0));
+    }
+
+    /// Typing into a shell that is scrolled back means the prompt. An empty
+    /// write sends nothing, so it moves nothing either.
+    #[test]
+    fn typing_into_the_focused_pane_returns_it_to_the_live_screen() {
+        let (mut m, _rx) = mgr_with(1);
+        let id = m.tabs[0].panes[0];
+        let offset = |m: &TerminalManager| {
+            m.session(id)
+                .unwrap()
+                .parser()
+                .lock()
+                .unwrap()
+                .screen()
+                .scrollback()
+        };
+        {
+            let s = m.session(id).unwrap();
+            let mut p = s.parser().lock().unwrap();
+            for i in 0..100 {
+                p.process(format!("line {i}\r\n").as_bytes());
+            }
+        }
+        m.session(id).unwrap().scroll_history(10);
+        assert_eq!(offset(&m), 10);
+
+        m.write_focused(b"").unwrap();
+        assert_eq!(offset(&m), 10, "an empty write leaves the view alone");
+        m.write_focused(b"x").unwrap();
+        assert_eq!(offset(&m), 0, "a keystroke returns to the prompt");
     }
 
     #[test]
