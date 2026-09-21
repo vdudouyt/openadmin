@@ -1,6 +1,22 @@
 //! Small shared rendering helpers.
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::symbols::{line, scrollbar};
+
+/// The scrollbar beside a list or a terminal: a light line for the track and a
+/// heavy one for the thumb, never the usual full block.
+///
+/// Both places it is used have full-width bars running up to it — the Hosts
+/// cursor row, and whatever a program in a pane draws in inverse video, mc's
+/// cursor line or vim's status line. A filled cell beside one joined the two
+/// into a single shape; a line keeps a sliver of background between them and
+/// reads as part of the frame. The begin and end arrows are never drawn.
+pub const LINE_SCROLLBAR: scrollbar::Set = scrollbar::Set {
+    track: line::VERTICAL,
+    thumb: line::THICK_VERTICAL,
+    begin: "",
+    end: "",
+};
 
 /// Truncate (with a trailing `…`) or right-pad `s` to exactly `w` columns.
 pub fn pad(s: &str, w: usize) -> String {

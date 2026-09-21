@@ -14,10 +14,10 @@ use crate::app::App;
 use crate::term::manager::TerminalManager;
 use crate::term::scrollback::{self, History};
 use crate::ui::theme;
+use crate::ui::widgets::LINE_SCROLLBAR;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::symbols::scrollbar;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use tui_term::widget::{Cursor, PseudoTerminal};
@@ -102,9 +102,11 @@ fn render_scrollbar(f: &mut Frame, area: Rect, h: History, focused: bool) {
     } else {
         theme::LINE_STRONG
     };
+    // A line for a thumb, not a block: programs draw full-width inverse bars
+    // right up to this column (`LINE_SCROLLBAR` says why).
     f.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .symbols(scrollbar::VERTICAL)
+            .symbols(LINE_SCROLLBAR)
             .begin_symbol(None)
             .end_symbol(None)
             .track_style(theme::border_idle())

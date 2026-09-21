@@ -1356,6 +1356,8 @@ fn hosts_right_edge(app: &mut App, w: u16, h: u16) -> Vec<String> {
 /// Where in the list the window is, on the frame's right edge: flush at the
 /// top at the start and at the bottom at the end — and only beside the rows,
 /// so the border by the column header and the corner below stay the frame's.
+/// The thumb is a line, never a filled block: it sits beside the cursor row,
+/// and a block there merged with the row's orange bar into one shape.
 #[test]
 fn the_hosts_scrollbar_shows_where_in_the_list_you_are() {
     let (mut app, _rx) = test_app("hostbar");
@@ -1376,9 +1378,10 @@ fn the_hosts_scrollbar_shows_where_in_the_list_you_are() {
     let n = top.len();
     assert_eq!(top[0], "│", "beside the header, the frame: {top:?}");
     assert_eq!(
-        top[1], "█",
+        top[1], "┃",
         "at the start, the thumb is at the top: {top:?}"
     );
+    assert!(!top.iter().any(|c| c == "█"), "no filled cells: {top:?}");
     assert_eq!(top[n - 2], "│", "{top:?}");
     assert_eq!(top[n - 1], "┘", "the corner is the frame's: {top:?}");
 
@@ -1388,7 +1391,7 @@ fn the_hosts_scrollbar_shows_where_in_the_list_you_are() {
     assert_eq!(end[1], "│", "{end:?}");
     assert_eq!(
         end[n - 2],
-        "█",
+        "┃",
         "at the end, the thumb is at the bottom: {end:?}"
     );
     assert_eq!(end[n - 1], "┘", "{end:?}");
@@ -1741,7 +1744,9 @@ fn bar_column(app: &mut App) -> Vec<String> {
 }
 
 /// A scrollbar counts down from the top and vt100 counts back from the live
-/// screen; the conversion is where an upside-down bar would come from.
+/// screen; the conversion is where an upside-down bar would come from. The
+/// thumb is a line, never a filled block, as on the Hosts list: programs draw
+/// full-width bars right up to this column.
 #[test]
 fn the_scrollbar_thumb_is_at_the_bottom_when_live_and_the_top_at_the_oldest_line() {
     let (mut app, _rx) = test_app("wheelbar");
@@ -1751,10 +1756,11 @@ fn the_scrollbar_thumb_is_at_the_bottom_when_live_and_the_top_at_the_oldest_line
     let live = bar_column(&mut app);
     assert_eq!(
         live.last().unwrap(),
-        "█",
+        "┃",
         "live: thumb at the bottom {live:?}"
     );
     assert_eq!(live.first().unwrap(), "│", "{live:?}");
+    assert!(!live.iter().any(|c| c == "█"), "no filled cells: {live:?}");
 
     let (x, y) = inside(&app, 0);
     for _ in 0..30 {
@@ -1764,7 +1770,7 @@ fn the_scrollbar_thumb_is_at_the_bottom_when_live_and_the_top_at_the_oldest_line
     let oldest = bar_column(&mut app);
     assert_eq!(
         oldest.first().unwrap(),
-        "█",
+        "┃",
         "oldest: thumb at the top {oldest:?}"
     );
     assert_eq!(oldest.last().unwrap(), "│", "{oldest:?}");

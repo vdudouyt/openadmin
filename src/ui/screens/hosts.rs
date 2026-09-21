@@ -11,11 +11,10 @@
 use crate::app::App;
 use crate::db::model::HostRecord;
 use crate::ui::theme;
-use crate::ui::widgets::{pad, padl};
+use crate::ui::widgets::{LINE_SCROLLBAR, pad, padl};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::symbols::scrollbar;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
@@ -170,6 +169,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     // bulk review does on the same plain orange frame, so it costs the table no
     // column. Only when there is somewhere to scroll: a thumb filling the whole
     // edge would say nothing but replace the border.
+    // The thumb is a line (`LINE_SCROLLBAR` says why): the window keeps the
+    // cursor centred, so the thumb nearly always sits beside the cursor row.
     if app.hosts.len() > visible {
         let band = Rect::new(area.right() - 1, inner.y + 1, 1, visible as u16);
         let mut state = ScrollbarState::new(app.hosts.len() - visible + 1)
@@ -177,11 +178,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             .viewport_content_length(visible);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .symbols(scrollbar::VERTICAL)
+                .symbols(LINE_SCROLLBAR)
                 .begin_symbol(None)
                 .end_symbol(None)
                 .track_style(theme::border_focused())
-                .thumb_style(Style::new().fg(theme::ORANGE)),
+                .thumb_style(Style::new().fg(theme::ORANGE_BRIGHT)),
             band,
             &mut state,
         );
