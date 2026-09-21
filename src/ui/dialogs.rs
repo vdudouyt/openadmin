@@ -356,9 +356,18 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     let tail = Rect::new(inner.x, y, inner.width, bottom - y);
     let mut lines: Vec<Line> = Vec::new();
     {
-        app.regions
-            .clicks
-            .push((Rect::new(tail.x, tail.y, tail.width, 1), Click::GenKey));
+        app.regions.clicks.push((
+            Rect::new(tail.x, tail.y, tail.width, 1),
+            Click::FormButton(FormField::KeyButton),
+        ));
+        // Keyboard focus reverses a button, as the pointer over it does.
+        let focus = |b: FormField, style: Style| {
+            if f_is(b) {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            }
+        };
         let mut spans = vec![Span::styled("SSH key", theme::muted()), Span::raw("   ")];
         // The only place a host's key is shown or made, so the key that does it
         // is named beside the button rather than left to the function bar.
@@ -368,7 +377,10 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             spans.push(Span::raw("    "));
             spans.push(Span::styled(
                 "[ Show public key ]",
-                theme::bright().fg(theme::ORANGE_BRIGHT),
+                focus(
+                    FormField::KeyButton,
+                    theme::bright().fg(theme::ORANGE_BRIGHT),
+                ),
             ));
             spans.push(Span::raw("  "));
             spans.push(Span::styled("F7", theme::faint()));
@@ -377,7 +389,7 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
             spans.push(Span::raw("    "));
             spans.push(Span::styled(
                 "[ Generate SSH key ]",
-                Style::new().fg(theme::ORANGE_BRIGHT),
+                focus(FormField::KeyButton, Style::new().fg(theme::ORANGE_BRIGHT)),
             ));
             spans.push(Span::raw("  "));
             spans.push(Span::styled("F7 · prints the public key", theme::faint()));
@@ -385,10 +397,13 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
         lines.push(Line::from(spans));
     }
     lines.push(Line::default());
-    lines.push(Line::styled(
-        "Tab next field   ←/→ change type   Enter save   Esc cancel",
-        theme::faint(),
-    ));
+    // What the keys do from here: on a button ↵ presses it rather than saving.
+    let hint = if form.focus.is_button() {
+        "Tab next   ←/→ choose   Enter or Space press   Esc cancel"
+    } else {
+        "Tab next   ←/→ change type   Enter save   Esc cancel"
+    };
+    lines.push(Line::styled(hint, theme::faint()));
 
     let save_label = if form.is_edit() {
         " Save "
@@ -397,23 +412,30 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     };
     // Bulk add in Add only; `App::open_bulk` says why. Left of the others, as
     // bulk review's Back is.
+    let focused = |b: FormField, style: Style| {
+        if form.focus == b {
+            style.add_modifier(Modifier::REVERSED)
+        } else {
+            style
+        }
+    };
     let mut buttons = Vec::new();
     if !form.is_edit() {
         buttons.push((
             "[ Bulk add ]".to_string(),
-            theme::body(),
-            Click::Key(KeyCode::F(2)),
+            focused(FormField::BulkAdd, theme::body()),
+            Click::FormButton(FormField::BulkAdd),
         ));
     }
     buttons.push((
         save_label.to_string(),
-        theme::primary_btn(),
-        Click::Key(KeyCode::Enter),
+        focused(FormField::Save, theme::primary_btn()),
+        Click::FormButton(FormField::Save),
     ));
     buttons.push((
         "[ Cancel ]".to_string(),
-        theme::body(),
-        Click::Key(KeyCode::Esc),
+        focused(FormField::Cancel, theme::body()),
+        Click::FormButton(FormField::Cancel),
     ));
     lines.push(button_row(app, tail, lines.len() as u16, &buttons));
 

@@ -6,6 +6,7 @@
 //! while costing a row of somebody's shell.
 
 use crate::app::bulk::BulkStep;
+use crate::app::form::FormField;
 use crate::app::{App, Mode, Screen, StatusKind};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -118,11 +119,18 @@ fn entries(app: &App) -> Vec<Entry> {
             } else {
                 "GenKey"
             };
+            // ↵ presses whichever button has focus, so the cap names it.
+            let enter = match app.form.as_ref().map(|f| f.focus) {
+                Some(FormField::KeyButton) => key,
+                Some(FormField::BulkAdd) => "Bulk add",
+                Some(FormField::Cancel) => "Cancel",
+                _ => save,
+            };
             let mut caps = vec![
                 e("Esc", "Cancel", 0xff, false),
-                e("↹", "Next field", 0xff, false),
+                e("↹", "Next", 0xff, false),
                 e("F7", key, 7, false),
-                e("↵", save, 0xff, false),
+                e("↵", enter, 0xff, false),
             ];
             // Add only, as the dialog's button is. Last, so on a narrow bar it
             // is the one that falls off rather than ↵.

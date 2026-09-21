@@ -10,6 +10,10 @@ use ratatui::crossterm::event::{Event, KeyEvent};
 use tui_input::Input;
 use tui_input::backend::crossterm::to_input_request;
 
+/// What has the keyboard in the form: an input, or one of its buttons.
+///
+/// The buttons are in the Tab order after the inputs, so everything the dialog
+/// offers can be reached without the mouse — each also keeps its own key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Name,
@@ -19,9 +23,28 @@ pub enum FormField {
     Mount,
     Login,
     Pass,
+    /// Generate an SSH key, or show the one installed (F7).
+    KeyButton,
+    /// Bulk add (F2) — in the Add dialog only.
+    BulkAdd,
+    /// Add Host, or Save when editing (Enter from an input).
+    Save,
+    /// Cancel (Esc).
+    Cancel,
 }
 
-/// Tab order, matching `FORM_FIELDS` in HostDialogs.jsx:15.
+impl FormField {
+    /// A button takes no text; ↵ or Space presses it.
+    pub fn is_button(self) -> bool {
+        matches!(
+            self,
+            FormField::KeyButton | FormField::BulkAdd | FormField::Save | FormField::Cancel
+        )
+    }
+}
+
+/// The inputs, in tab order, matching `FORM_FIELDS` in HostDialogs.jsx:15. The
+/// buttons follow them; `FormState::focus_order` has the whole of it.
 pub const FORM_FIELDS: [FormField; 7] = [
     FormField::Name,
     FormField::Type,
@@ -108,20 +131,29 @@ impl FormState {
         !self.key_name.is_empty()
     }
 
+    /// Everything Tab reaches, in the order it is drawn: the inputs, the key
+    /// button beneath them, then the button row left to right. Bulk add only
+    /// in Add, where its button is.
+    pub fn focus_order(&self) -> Vec<FormField> {
+        let mut order = FORM_FIELDS.to_vec();
+        order.push(FormField::KeyButton);
+        if !self.is_edit() {
+            order.push(FormField::BulkAdd);
+        }
+        order.extend([FormField::Save, FormField::Cancel]);
+        order
+    }
+
     pub fn focus_next(&mut self) {
-        let i = FORM_FIELDS
-            .iter()
-            .position(|f| *f == self.focus)
-            .unwrap_or(0);
-        self.focus = FORM_FIELDS[(i + 1) % FORM_FIELDS.len()];
+        let order = self.focus_order();
+        let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[(i + 1) % order.len()];
     }
 
     pub fn focus_prev(&mut self) {
-        let i = FORM_FIELDS
-            .iter()
-            .position(|f| *f == self.focus)
-            .unwrap_or(0);
-        self.focus = FORM_FIELDS[(i + FORM_FIELDS.len() - 1) % FORM_FIELDS.len()];
+        let order = self.focus_order();
+        let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[(i + order.len() - 1) % order.len()];
     }
 
     /// Cycle the protocol, resetting the port to that protocol's default —
@@ -189,11 +221,16 @@ impl FormState {
         true
     }
 
-    /// The focused field, or `None` on the protocol cycler, which is not text.
+    /// The focused field, or `None` on the protocol cycler or a button, which
+    /// are not text.
     fn field_mut(&mut self) -> Option<&mut Input> {
         Some(match self.focus {
             FormField::Name => &mut self.name,
-            FormField::Type => return None,
+            FormField::Type
+            | FormField::KeyButton
+            | FormField::BulkAdd
+            | FormField::Save
+            | FormField::Cancel => return None,
             FormField::Addr => &mut self.addr,
             FormField::Port => &mut self.port,
             FormField::Mount => &mut self.mount,
@@ -421,14 +458,40 @@ mod tests {
         assert_eq!(f.effective_mount("/net"), "/net/nas");
     }
 
+    /// Tab walks the inputs, then the buttons as they are drawn, and wraps.
     #[test]
     fn focus_wraps_in_both_directions() {
         let mut f = FormState::new("/net");
         assert_eq!(f.focus, FormField::Name);
         f.focus_prev();
-        assert_eq!(f.focus, FormField::Pass);
+        assert_eq!(
+            f.focus,
+            FormField::Cancel,
+            "back from the first is the last"
+        );
         f.focus_next();
         assert_eq!(f.focus, FormField::Name);
+    }
+
+    /// Every button is in the order; Bulk add only where it is drawn.
+    #[test]
+    fn the_buttons_follow_the_inputs_in_the_tab_order() {
+        use FormField::*;
+        let add = FormState::new("/net");
+        assert_eq!(
+            add.focus_order(),
+            [
+                Name, Type, Addr, Port, Mount, Login, Pass, KeyButton, BulkAdd, Save, Cancel
+            ]
+        );
+        let mut edit = FormState::new("/net");
+        edit.id = 7;
+        assert_eq!(
+            edit.focus_order(),
+            [
+                Name, Type, Addr, Port, Mount, Login, Pass, KeyButton, Save, Cancel
+            ]
+        );
     }
 
     #[test]

@@ -125,7 +125,10 @@ pub enum Click {
     ToggleHost(u16, u16),
     FocusField(FormField),
     CycleType(i32),
-    GenKey,
+    /// One of the host form's buttons. Named rather than sent as its key: ↵
+    /// presses whichever button has focus, so a click on Add Host sent as ↵
+    /// would press Cancel if Cancel had it.
+    FormButton(FormField),
     /// The error dialog's button.
     Dismiss,
 }
@@ -1574,14 +1577,29 @@ impl App {
     }
 
     fn key_host_form(&mut self, key: KeyEvent) {
+        let button = self
+            .form
+            .as_ref()
+            .map(|f| f.focus)
+            .filter(|f| f.is_button());
         match key.code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.form = None;
+                self.cancel_form();
                 return;
             }
+            // On a button ↵ presses it, as Space does; from an input it saves,
+            // as it always has.
             KeyCode::Enter => {
-                self.save_form();
+                match button {
+                    Some(b) => self.press_form_button(b),
+                    None => self.save_form(),
+                }
+                return;
+            }
+            KeyCode::Char(' ') if button.is_some() => {
+                if let Some(b) = button {
+                    self.press_form_button(b);
+                }
                 return;
             }
             // Key generation lives here now, on the F-key it always had.
@@ -1608,10 +1626,32 @@ impl App {
             // pressing ← in a text field means by it.
             KeyCode::Left if form.focus == FormField::Type => form.cycle_type(-1),
             KeyCode::Right if form.focus == FormField::Type => form.cycle_type(1),
+            // Along the buttons the arrows walk them, as in any dialog.
+            KeyCode::Left if form.focus.is_button() => form.focus_prev(),
+            KeyCode::Right if form.focus.is_button() => form.focus_next(),
+            // A button takes no text.
+            _ if form.focus.is_button() => {}
             _ => {
                 form.handle_key(key, &prefix);
             }
         }
+    }
+
+    /// What each of the form's buttons does — the same as its own key, so a
+    /// button reached with Tab and one clicked or keyed cannot differ.
+    fn press_form_button(&mut self, button: FormField) {
+        match button {
+            FormField::KeyButton => self.form_key(),
+            FormField::BulkAdd => self.open_bulk(),
+            FormField::Save => self.save_form(),
+            FormField::Cancel => self.cancel_form(),
+            _ => {}
+        }
+    }
+
+    fn cancel_form(&mut self) {
+        self.mode = Mode::Normal;
+        self.form = None;
     }
 
     fn key_confirm_plan(&mut self, key: KeyEvent) {
@@ -2139,7 +2179,7 @@ impl App {
                     sel.toggle_host(i as usize, j as usize);
                 }
             }
-            Click::GenKey => self.form_key(),
+            Click::FormButton(b) => self.press_form_button(b),
             Click::Dismiss => self.dismiss_alert(),
         }
     }

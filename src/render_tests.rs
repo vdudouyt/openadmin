@@ -778,6 +778,141 @@ fn scrolling_moves_the_cursor() {
     assert_eq!(app.cursor, 0);
 }
 
+/// Tab to a form button: `n` presses from the Name field.
+fn tab_to(app: &mut App, n: usize) {
+    for _ in 0..n {
+        key(app, KeyCode::Tab);
+    }
+}
+
+/// Every button in the Add dialog can be reached with Tab, in the order they
+/// are drawn, and the one with focus is reversed — as the pointer over it
+/// would — with the bar naming what ↵ will do.
+#[test]
+fn tab_reaches_every_button_of_the_host_form() {
+    use crate::app::form::FormField;
+    use ratatui::style::Modifier;
+    let (mut app, _rx) = test_app("formtab");
+    app.open_add();
+    tab_to(&mut app, 7);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        seen.push(app.form.as_ref().unwrap().focus);
+        key(&mut app, KeyCode::Tab);
+    }
+    assert_eq!(
+        seen,
+        [
+            FormField::KeyButton,
+            FormField::BulkAdd,
+            FormField::Save,
+            FormField::Cancel
+        ]
+    );
+    assert_eq!(
+        app.form.as_ref().unwrap().focus,
+        FormField::Name,
+        "and round"
+    );
+
+    // Cancel, by Shift+Tab from the first field.
+    key(&mut app, KeyCode::BackTab);
+    let buf = render_buf(&mut app, 120, 34);
+    let reversed = |c: Click| {
+        let r = button(&app, c);
+        buf[(r.x + 1, r.y)].modifier.contains(Modifier::REVERSED)
+    };
+    assert!(
+        reversed(Click::FormButton(FormField::Cancel)),
+        "focus shows"
+    );
+    assert!(!reversed(Click::FormButton(FormField::Save)));
+    let out = render(&mut app, 120, 34);
+    assert!(
+        out.lines().last().unwrap().contains("↵  Cancel"),
+        "the bar says what ↵ does now: {out}"
+    );
+    assert!(out.contains("Enter or Space press"), "{out}");
+}
+
+/// ↵ or Space presses the focused button, each doing what its own key does.
+#[test]
+fn enter_and_space_press_the_focused_button() {
+    let (mut app, _rx) = test_app("formpress");
+
+    app.open_add();
+    key(&mut app, KeyCode::BackTab); // Cancel
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal, "Cancel");
+    assert!(app.form.is_none());
+
+    app.open_add();
+    tab_to(&mut app, 8); // Bulk add
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.mode, Mode::BulkImport, "Bulk add, by Space");
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Esc);
+
+    // Save, in Edit, where it is two back from the first field.
+    app.set_cursor(1);
+    let before = app.hosts[1].name.clone();
+    app.open_edit();
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal, "Save");
+    assert_eq!(app.hosts[1].name, before);
+
+    // The key button, from the same form.
+    app.open_edit();
+    tab_to(&mut app, 7);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::ShowKey, "the key button");
+}
+
+/// A click presses the button it lands on, whatever has focus. The Add Host
+/// button used to be sent as ↵ — which now presses the focused button, so
+/// with focus on Cancel, clicking Add Host would have cancelled.
+#[test]
+fn a_click_presses_its_own_button_whatever_has_focus() {
+    use crate::app::form::FormField;
+    let (mut app, _rx) = test_app("formclick");
+    let before = app.hosts.len();
+    app.open_add();
+    for c in "bastion".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    tab_to(&mut app, 2); // Address
+    for c in "10.9.9.9".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab); // round to Cancel
+    assert_eq!(app.form.as_ref().unwrap().focus, FormField::Cancel);
+
+    let _ = render(&mut app, 120, 34);
+    let add = button(&app, Click::FormButton(FormField::Save));
+    click(&mut app, add.x + 1, add.y);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.hosts.len(), before + 1, "it added, it did not cancel");
+}
+
+/// A button takes no text: typing or pasting on one leaves every field alone.
+#[test]
+fn typing_on_a_focused_button_types_nothing() {
+    use crate::app::form::FormField;
+    let (mut app, _rx) = test_app("formbuttontype");
+    app.open_add();
+    key(&mut app, KeyCode::BackTab); // Cancel
+    key(&mut app, KeyCode::Char('x'));
+    app.on_paste("yz");
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.focus, FormField::Cancel);
+    assert_eq!(form.name.value(), "");
+    assert_eq!(app.mode, Mode::HostForm);
+}
+
 #[test]
 fn f7_in_the_edit_form_generates_a_key_and_comes_back_to_the_form() {
     let (mut app, _rx) = test_app("formkey");
@@ -868,7 +1003,7 @@ fn the_forms_key_button_is_clickable() {
         .regions
         .clicks
         .iter()
-        .find(|(_, c)| *c == Click::GenKey)
+        .find(|(_, c)| *c == Click::FormButton(crate::app::form::FormField::KeyButton))
         .expect("a key button in the form");
     click(&mut app, rect.x + 1, rect.y);
     assert_eq!(app.mode, Mode::ShowKey);
@@ -885,7 +1020,7 @@ fn dialog_buttons_are_clickable() {
         .regions
         .clicks
         .iter()
-        .find(|(_, c)| *c == Click::Key(KeyCode::Esc))
+        .find(|(_, c)| *c == Click::FormButton(crate::app::form::FormField::Cancel))
         .expect("a Cancel button");
     click(&mut app, rect.x + 1, rect.y);
     assert_eq!(app.mode, Mode::Normal, "Cancel closes the form");
@@ -3455,7 +3590,7 @@ fn clicks_do_not_pass_through_an_error() {
         .regions
         .clicks
         .iter()
-        .find(|(_, c)| *c == Click::Key(KeyCode::Esc))
+        .find(|(_, c)| *c == Click::FormButton(crate::app::form::FormField::Cancel))
         .expect("the form's Cancel");
 
     app.fail("boom");
@@ -3681,7 +3816,10 @@ fn bulk_add_is_offered_in_the_add_dialog_only() {
         out.lines().last().unwrap().contains("Bulk add"),
         "and on the bar: {out}"
     );
-    let _ = button(&app, Click::Key(KeyCode::F(2)));
+    let _ = button(
+        &app,
+        Click::FormButton(crate::app::form::FormField::BulkAdd),
+    );
     key(&mut app, KeyCode::Esc);
 
     app.open_edit();
@@ -3692,7 +3830,7 @@ fn bulk_add_is_offered_in_the_add_dialog_only() {
         !app.regions
             .clicks
             .iter()
-            .any(|(_, c)| *c == Click::Key(KeyCode::F(2)))
+            .any(|(_, c)| *c == Click::FormButton(crate::app::form::FormField::BulkAdd))
     );
     key(&mut app, KeyCode::F(2));
     assert_eq!(app.mode, Mode::HostForm, "F2 in Edit does nothing");
@@ -3709,7 +3847,10 @@ fn f2_and_the_bulk_add_button_both_open_bulk_import() {
     key(&mut app, KeyCode::Esc);
 
     let _ = render(&mut app, 120, 34);
-    let b = button(&app, Click::Key(KeyCode::F(2)));
+    let b = button(
+        &app,
+        Click::FormButton(crate::app::form::FormField::BulkAdd),
+    );
     click(&mut app, b.x + 1, b.y);
     assert_eq!(app.mode, Mode::BulkImport, "the button");
 }
@@ -3798,9 +3939,18 @@ fn a_clipped_button_row_keeps_every_hitbox_on_its_label() {
     assert_hitboxes_on_labels(
         &mut app,
         &[
-            (Click::Key(KeyCode::F(2)), "[ Bulk add ]"),
-            (Click::Key(KeyCode::Enter), " Add Host "),
-            (Click::Key(KeyCode::Esc), "[ Cancel ]"),
+            (
+                Click::FormButton(crate::app::form::FormField::BulkAdd),
+                "[ Bulk add ]",
+            ),
+            (
+                Click::FormButton(crate::app::form::FormField::Save),
+                " Add Host ",
+            ),
+            (
+                Click::FormButton(crate::app::form::FormField::Cancel),
+                "[ Cancel ]",
+            ),
         ],
     );
 
