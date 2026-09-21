@@ -149,24 +149,27 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     // Passwords are masked; an empty one shows a dash.
     assert!(!out.contains("hunter2"));
     assert!(out.contains("•"));
-    // KEY, then PRX, then MNT last.
+    // MNT, then PRX, then KEY last.
     let header = out.lines().find(|l| l.contains("NAME")).unwrap();
-    let (k, p, m) = (
-        header.find("KEY").unwrap(),
-        header.find("PRX").unwrap(),
+    let (m, p, k) = (
         header.find("MNT").unwrap(),
+        header.find("PRX").unwrap(),
+        header.find("KEY").unwrap(),
     );
-    assert!(k < p && p < m, "column order: {header}");
+    assert!(m < p && p < k, "column order: {header}");
     // MNT spells it out; KEY is a status circle, not a button — making a key is
     // the edit form's business.
     let web = out.lines().find(|l| l.contains("web-01")).unwrap();
     assert!(web.contains("[no]"), "{web}");
     assert!(!out.contains("[gen]"), "{out}");
-    // The last four cells are KEY, PRX, MNT and the panel border.
+    // The last four cells are MNT, PRX, KEY and the panel border.
     let cells: Vec<&str> = web.split_whitespace().collect();
     let tail = &cells[cells.len() - 4..];
-    assert!(tail[0] == "○" || tail[0] == "●", "KEY is a circle: {web}");
-    assert_eq!(tail[2], "[no]", "MNT is last: {web}");
+    assert_eq!(tail[0], "[no]", "MNT leads the three: {web}");
+    assert!(
+        tail[2] == "○" || tail[2] == "●",
+        "KEY is a circle, last: {web}"
+    );
     assert_eq!(tail[3], "│", "then the border: {web}");
 }
 

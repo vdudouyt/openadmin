@@ -127,9 +127,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(pad("MOUNT POINT", c.mount), h),
         Span::styled(pad("LOGIN", c.login), h),
         Span::styled(pad("PASSWORD", c.pass), h),
-        Span::styled(pad("KEY", c.key), h),
-        Span::styled(pad("PRX", c.prx), h),
         Span::styled(pad("MNT", c.mnt), h),
+        Span::styled(pad("PRX", c.prx), h),
+        Span::styled(pad("KEY", c.key), h),
     ]));
 
     // Scroll window, keeping the cursor centered like the mockup.
@@ -252,10 +252,9 @@ fn row(h: &HostRecord, c: &Cols, cursor: bool, marked: bool, hover: bool) -> Lin
                 theme::FG_MUTED
             }),
         ),
-        Span::styled(pad(key_text, c.key), accent(key_fg)),
-        Span::styled(pad(prx_text, c.prx), accent(prx_fg)),
-        // Last, so the one word on the row sits at its right edge.
         Span::styled(pad(mnt_text, c.mnt), accent(mnt_fg)),
+        Span::styled(pad(prx_text, c.prx), accent(prx_fg)),
+        Span::styled(pad(key_text, c.key), accent(key_fg)),
     ])
 }
 
