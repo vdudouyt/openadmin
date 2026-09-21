@@ -19,6 +19,7 @@ use crate::db::DataBase;
 use crate::db::model::{HostRecord, mount_for};
 use crate::term::manager::TerminalManager;
 use crate::term::session::{SessionId, Spawn, TermEvent};
+use crate::ui::widgets::ScrollGeometry;
 use crate::{keys, mount, mtab, ssh};
 use approve::{ConfirmedPlan, PlanSelection};
 use bulk::{BulkImport, BulkStep};
@@ -129,6 +130,28 @@ pub enum Click {
     Dismiss,
 }
 
+/// Which list a scrollbar scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
+    /// The Known Hosts list.
+    Hosts,
+    /// A shell pane's history.
+    Pane(SessionId),
+}
+
+/// A scrollbar held down: which one, and where on its thumb it was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrollDrag {
+    target: ScrollTarget,
+    /// Rows from the thumb's top to the pointer, kept while dragging so the
+    /// thumb does not jump to meet it.
+    grab: i32,
+    /// The thumb row last applied. A drag within the same row does nothing:
+    /// a row stands for many positions, and re-resolving it would nudge the
+    /// view while the pointer has not moved a row.
+    row: i32,
+}
+
 /// Clickable screen regions, recaptured every render.
 #[derive(Default, Clone)]
 pub struct Regions {
@@ -152,6 +175,8 @@ pub struct Regions {
     pub chat_log: Option<Rect>,
     /// Dialog controls, captured per render.
     pub clicks: Vec<(Rect, Click)>,
+    /// Scrollbars drawn this frame: the bar's band, and what it scrolls.
+    pub scrollbars: Vec<(Rect, ScrollTarget)>,
 }
 
 impl Regions {
@@ -168,6 +193,7 @@ impl Regions {
         self.plan_card = None;
         self.chat_log = None;
         self.clicks.clear();
+        self.scrollbars.clear();
     }
 }
 
@@ -228,6 +254,8 @@ pub struct App {
     pub hover: Option<Position>,
     pub regions: Regions,
     last_click: Option<(Instant, u16)>,
+    /// A scrollbar being dragged, from the press on it to the release.
+    scroll_drag: Option<ScrollDrag>,
 
     /// The `ssh -D` tunnel backing the host flagged as proxy. Without it the
     /// injected ProxyCommand would point at a port nobody is listening on.
@@ -275,6 +303,7 @@ impl App {
             busy: false,
             hover: None,
             regions: Regions::default(),
+            scroll_drag: None,
             last_click: None,
             proxy_tunnel: None,
             db,
@@ -1722,6 +1751,12 @@ impl App {
             return;
         }
 
+        // Before a terminal can have it: once a scrollbar is pressed, the drag
+        // and the release are the bar's wherever the pointer goes.
+        if self.drag_scrollbar(&ev, at) {
+            return;
+        }
+
         // A focused terminal that asked for mouse reporting gets the event.
         if self.mode == Mode::Normal
             && self.screen == Screen::Shells
@@ -1749,6 +1784,140 @@ impl App {
             .copied()?;
         let id = self.term.active_tab()?.panes.get(pane).copied()?;
         Some((rect, pane, id))
+    }
+
+    /// A press on a scrollbar, and the drag and release that follow it.
+    /// Returns whether the event was the scrollbar's.
+    ///
+    /// On the thumb, a press takes hold where it lands and moves nothing; on
+    /// the track it jumps, centring the thumb on the pointer, and dragging
+    /// carries on from there. From the press to the release every event is
+    /// the bar's, so a drag that wanders over a pane is never forwarded to a
+    /// program that asked for the mouse — which never saw the press, and would
+    /// not know what to make of its release.
+    fn drag_scrollbar(&mut self, ev: &MouseEvent, at: Position) -> bool {
+        if self.mode != Mode::Normal {
+            self.scroll_drag = None;
+            return false;
+        }
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.scroll_drag = None;
+                let Some((band, target)) = self
+                    .regions
+                    .scrollbars
+                    .iter()
+                    .find(|(r, _)| r.contains(at))
+                    .copied()
+                else {
+                    return false;
+                };
+                let Some((g, pos)) = self.scrollbar_now(target, band) else {
+                    return true;
+                };
+                let row = i32::from(at.y) - i32::from(band.y);
+                let (start, len) = g.thumb(pos);
+                let (start, len) = (start as i32, len as i32);
+                if (start..start + len).contains(&row) {
+                    self.scroll_drag = Some(ScrollDrag {
+                        target,
+                        grab: row - start,
+                        row: start,
+                    });
+                } else {
+                    self.scroll_drag = Some(ScrollDrag {
+                        target,
+                        grab: len / 2,
+                        // Not a row the thumb can be on, so the jump applies.
+                        row: i32::MIN,
+                    });
+                    self.drag_to(band, row);
+                }
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(d) = self.scroll_drag else {
+                    return false;
+                };
+                match self.regions.scrollbars.iter().find(|(_, t)| *t == d.target) {
+                    Some(&(band, _)) => self.drag_to(band, i32::from(at.y) - i32::from(band.y)),
+                    // Its bar is gone — the list shrank to fit, the pane
+                    // closed, a full-screen program took it over.
+                    None => self.scroll_drag = None,
+                }
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.scroll_drag.take().is_some(),
+            _ => false,
+        }
+    }
+
+    /// Move the held thumb so the pointer, `pointer` rows into the bar, stays
+    /// where the thumb was taken.
+    fn drag_to(&mut self, band: Rect, pointer: i32) {
+        let Some(mut d) = self.scroll_drag else {
+            return;
+        };
+        let Some((g, _)) = self.scrollbar_now(d.target, band) else {
+            self.scroll_drag = None;
+            return;
+        };
+        let (_, len) = g.thumb(0);
+        // A thumb that fills its track has nowhere to go.
+        if len >= g.track {
+            return;
+        }
+        let row = (pointer - d.grab).clamp(0, (g.track - len) as i32);
+        if row == d.row {
+            return;
+        }
+        d.row = row;
+        self.scroll_drag = Some(d);
+        self.set_scroll_position(d.target, &g, g.position_at(row));
+    }
+
+    /// A scrollbar's numbers and where it stands, read from live state rather
+    /// than the last frame: a shell's history grows while its thumb is held.
+    fn scrollbar_now(&self, target: ScrollTarget, band: Rect) -> Option<(ScrollGeometry, usize)> {
+        match target {
+            ScrollTarget::Hosts => {
+                let visible = band.height as usize;
+                let len = self.hosts.len();
+                if len <= visible {
+                    return None;
+                }
+                Some((
+                    crate::ui::screens::hosts::scrollbar_geometry(len, visible),
+                    crate::ui::screens::hosts::window_start(self.cursor, len, visible),
+                ))
+            }
+            ScrollTarget::Pane(id) => {
+                let s = self.term.session(id)?;
+                let mut p = s.parser().lock().ok()?;
+                let h = crate::term::scrollback::history(p.screen_mut())?;
+                Some((
+                    crate::ui::screens::shells::scrollbar_geometry(h, band.height),
+                    h.lines - h.offset,
+                ))
+            }
+        }
+    }
+
+    /// Scroll `target` to a scrollbar position, 0 at the top.
+    fn set_scroll_position(&mut self, target: ScrollTarget, g: &ScrollGeometry, position: usize) {
+        match target {
+            // The window follows the cursor, so the list scrolls by moving the
+            // cursor to where the window starts at `position` — as the wheel
+            // moves it.
+            ScrollTarget::Hosts => self.set_cursor(position + g.viewport / 2),
+            // Positions count down from the oldest line; vt100's offset counts
+            // back from the live screen.
+            ScrollTarget::Pane(id) => {
+                if let Some(s) = self.term.session(id) {
+                    s.scroll_to(g.max - position);
+                }
+            }
+        }
     }
 
     /// Returns true when the event belonged to a terminal pane.

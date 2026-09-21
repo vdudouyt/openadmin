@@ -296,6 +296,7 @@ fn the_help_dialog_explains_the_shells_keyboard() {
         out.contains("double-click opens a shell"),
         "down to the last line: {out}"
     );
+    assert!(out.contains("a scrollbar"), "and the scrollbars: {out}");
     assert!(!out.contains("Esc then"), "stale chord docs: {out}");
 }
 
@@ -1408,6 +1409,118 @@ fn a_host_list_that_fits_keeps_a_plain_border() {
     assert!(sides.len() > 4, "the border runs past the three rows");
 }
 
+fn press(app: &mut App, x: u16, y: u16) {
+    click(app, x, y);
+}
+
+fn drag_to(app: &mut App, x: u16, y: u16) {
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::empty(),
+    });
+}
+
+fn release(app: &mut App, x: u16, y: u16) {
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::empty(),
+    });
+}
+
+/// The scrollbar drawn this frame for `target`.
+fn scrollbar_band(app: &App, target: crate::app::ScrollTarget) -> ratatui::layout::Rect {
+    app.regions
+        .scrollbars
+        .iter()
+        .find(|(_, t)| *t == target)
+        .map(|(r, _)| *r)
+        .unwrap_or_else(|| panic!("no scrollbar for {target:?}"))
+}
+
+/// The thumb's first row within its band, as drawn.
+fn drawn_thumb(app: &mut App, band: ratatui::layout::Rect, w: u16, h: u16) -> u16 {
+    let buf = render_buf(app, w, h);
+    (0..band.height)
+        .find(|&r| buf[(band.x, band.y + r)].symbol() == "┃")
+        .expect("a thumb")
+}
+
+/// Forty more hosts than the seeded three: 43, in a 120×20 window that shows
+/// 14 of them.
+fn many_hosts(tag: &str) -> App {
+    let (mut app, _rx) = test_app(tag);
+    for i in 0..40 {
+        app.db
+            .save(&HostRecord {
+                name: format!("h{i:02}"),
+                proto: "ssh".into(),
+                addr: format!("10.0.0.{i}"),
+                port: 22,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    app.reload();
+    app
+}
+
+/// A click on the track goes there: the bottom of the bar is the end of the
+/// list, the top its start.
+#[test]
+fn clicking_the_hosts_scrollbar_jumps_there() {
+    use crate::app::ScrollTarget;
+    let mut app = many_hosts("hostbar-click");
+    let _ = render(&mut app, 120, 20);
+    let band = scrollbar_band(&app, ScrollTarget::Hosts);
+
+    press(&mut app, band.x, band.bottom() - 1);
+    release(&mut app, band.x, band.bottom() - 1);
+    let _ = render(&mut app, 120, 20);
+    assert_eq!(app.regions.row_start, 43 - 14, "the end of the list");
+
+    press(&mut app, band.x, band.y);
+    release(&mut app, band.x, band.y);
+    let _ = render(&mut app, 120, 20);
+    assert_eq!(app.regions.row_start, 0, "and back to its start");
+}
+
+/// The thumb moves with the pointer, held where it was taken, and the list
+/// with it. Taking hold moves nothing; letting go ends it.
+#[test]
+fn dragging_the_hosts_thumb_scrolls_the_list_with_it() {
+    use crate::app::ScrollTarget;
+    let mut app = many_hosts("hostbar-drag");
+    let _ = render(&mut app, 120, 20);
+    let band = scrollbar_band(&app, ScrollTarget::Hosts);
+    assert_eq!(drawn_thumb(&mut app, band, 120, 20), 0);
+
+    // Take it by its second row.
+    press(&mut app, band.x, band.y + 1);
+    let _ = render(&mut app, 120, 20);
+    assert_eq!(
+        app.regions.row_start, 0,
+        "a press on the thumb moves nothing"
+    );
+
+    drag_to(&mut app, band.x, band.y + 5);
+    assert_eq!(
+        drawn_thumb(&mut app, band, 120, 20),
+        4,
+        "the thumb followed, the pointer still on its second row"
+    );
+    let moved = app.regions.row_start;
+    assert!(moved > 0, "and the list scrolled");
+
+    release(&mut app, band.x, band.y + 5);
+    drag_to(&mut app, band.x, band.y + 9);
+    let _ = render(&mut app, 120, 20);
+    assert_eq!(app.regions.row_start, moved, "let go, it stays put");
+}
+
 #[test]
 fn resizing_between_frames_keeps_the_table_intact() {
     let (mut app, _rx) = test_app("resize");
@@ -1868,6 +1981,117 @@ fn mouse_reports_never_land_on_the_scrollbar_column() {
         1,
         "only the sentinel: {seen}"
     );
+    app.term.shutdown();
+}
+
+/// A pane's bar scrolls its history: a press on the track jumps — the top of
+/// the bar is the oldest line — and dragging to the bottom is the live screen.
+#[test]
+fn dragging_a_panes_scrollbar_scrolls_its_history() {
+    use crate::app::ScrollTarget;
+    let (mut app, _rx) = test_app("panebar-drag");
+    let id = shells_tab(&mut app, &["local"], "sleep 30")[0];
+    feed_lines(&app, id, 100);
+    let _ = render(&mut app, 100, 30);
+    let band = scrollbar_band(&app, ScrollTarget::Pane(id));
+
+    // Taking hold of the thumb moves nothing, even where one of its rows
+    // stands for several positions: one wheel notch back, then a press on it.
+    let (x, y) = inside(&app, 0);
+    wheel_at(&mut app, x, y, false);
+    assert_eq!(offset(&app, id), 3);
+    let _ = render(&mut app, 100, 30);
+    let thumb = drawn_thumb(&mut app, band, 100, 30);
+    press(&mut app, band.x, band.y + thumb);
+    assert_eq!(offset(&app, id), 3, "a press on the thumb moves nothing");
+    release(&mut app, band.x, band.y + thumb);
+
+    press(&mut app, band.x, band.y);
+    assert_eq!(offset(&app, id), 72, "the oldest line");
+    assert_eq!(top_line(&app, id), "line 001");
+
+    drag_to(&mut app, band.x, band.bottom() - 1);
+    assert_eq!(offset(&app, id), 0, "the live screen");
+    release(&mut app, band.x, band.bottom() - 1);
+
+    // Held by the thumb and drawn up a few rows: somewhere in between.
+    let _ = render(&mut app, 100, 30);
+    let thumb = drawn_thumb(&mut app, band, 100, 30);
+    press(&mut app, band.x, band.y + thumb);
+    drag_to(&mut app, band.x, band.y + thumb - 6);
+    let back = offset(&app, id);
+    assert!(0 < back && back < 72, "part way back: {back}");
+    release(&mut app, band.x, band.y + thumb - 6);
+    app.term.shutdown();
+}
+
+/// From the press on the bar to the release, the pointer is the bar's: a
+/// program that asked for motion reports hears nothing of a drag that
+/// wanders over it, nor of the release — only the click that follows. And
+/// the bar works although the program has the mouse: it is not the program's.
+#[test]
+fn a_scrollbar_drag_never_reaches_the_program() {
+    use crate::app::ScrollTarget;
+    let (mut app, rx) = test_app("panebar-forward");
+    let id = shells_tab(
+        &mut app,
+        &["local"],
+        "printf '\\033[?1002h\\033[?1006h'; cat -v",
+    )[0];
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| {
+            s.mouse_protocol_mode() == vt100::MouseProtocolMode::ButtonMotion
+        }),
+        "the child never asked for motion reports"
+    );
+    feed_lines(&app, id, 100);
+    let _ = render(&mut app, 100, 30);
+    let band = scrollbar_band(&app, ScrollTarget::Pane(id));
+    let (x, y) = inside(&app, 0);
+
+    press(&mut app, band.x, band.y);
+    assert!(offset(&app, id) > 0, "the bar moved the view");
+    drag_to(&mut app, x, y);
+    drag_to(&mut app, x + 3, y + 1);
+    release(&mut app, x + 3, y + 1);
+
+    app.term.session(id).unwrap().scroll_to_live();
+    click(&mut app, x, y); // the sentinel
+    assert!(
+        wait_for_screen(&app, &rx, id, |s| s.contents().contains("^[[<0;5;4M")),
+        "the sentinel click never arrived"
+    );
+    let seen = app
+        .term
+        .session(id)
+        .unwrap()
+        .parser()
+        .lock()
+        .unwrap()
+        .screen()
+        .contents();
+    assert_eq!(seen.matches("^[[<").count(), 1, "only the sentinel: {seen}");
+    app.term.shutdown();
+}
+
+/// Scrolling a pane you are not typing in leaves the keyboard where it was,
+/// as the wheel does.
+#[test]
+fn dragging_an_unfocused_panes_scrollbar_leaves_the_keyboard_where_it_was() {
+    use crate::app::ScrollTarget;
+    let (mut app, _rx) = test_app("panebar-focus");
+    let ids = shells_tab(&mut app, &["a", "b"], "sleep 30");
+    for id in &ids {
+        feed_lines(&app, *id, 100);
+    }
+    let _ = render(&mut app, 100, 30);
+    let band = scrollbar_band(&app, ScrollTarget::Pane(ids[1]));
+
+    press(&mut app, band.x, band.y);
+    release(&mut app, band.x, band.y);
+    assert!(offset(&app, ids[1]) > 0);
+    assert_eq!(offset(&app, ids[0]), 0);
+    assert_eq!(app.term.active_tab().unwrap().focus, 0);
     app.term.shutdown();
 }
 

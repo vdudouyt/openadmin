@@ -50,6 +50,20 @@ pub fn scroll(screen: &mut vt100::Screen, lines: isize) {
     screen.set_scrollback(screen.scrollback().saturating_add_signed(lines));
 }
 
+/// Put the view `offset` lines back, for a drag on the pane's scrollbar.
+///
+/// Unlike the wheel, not refused when the program asked for mouse reports: the
+/// bar is drawn in a column the program does not have, and is never told
+/// about, so a press on it can only have been meant for the bar. The alternate
+/// screen has no history and draws no bar, so there is nothing to set.
+pub fn set_offset(screen: &mut vt100::Screen, offset: usize) {
+    if screen.alternate_screen() {
+        return;
+    }
+    // vt100 clamps at the oldest line.
+    screen.set_scrollback(offset);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +167,23 @@ mod tests {
                 offset: 0
             })
         );
+    }
+
+    /// The scrollbar is not the program's, even when the wheel is: a drag on
+    /// it moves the view. There is still nothing to move on the alternate
+    /// screen.
+    #[test]
+    fn a_drag_on_the_bar_sets_the_view_even_when_the_program_has_the_mouse() {
+        let mut p = fed(20);
+        p.process(b"\x1b[?1000h");
+        set_offset(p.screen_mut(), 5);
+        assert_eq!(p.screen().scrollback(), 5);
+        set_offset(p.screen_mut(), 1000);
+        assert_eq!(p.screen().scrollback(), 16, "no further back than held");
+
+        p.process(b"\x1b[?1049h");
+        set_offset(p.screen_mut(), 3);
+        assert_eq!(p.screen().scrollback(), 0);
     }
 
     /// A program that asked for the mouse owns the wheel, even where it cannot

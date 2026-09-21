@@ -8,15 +8,15 @@
 //! *where you are*, the yellow `●` marks are *what you tagged*, so a marked row
 //! stays readable underneath the cursor.
 
-use crate::app::App;
+use crate::app::{App, ScrollTarget};
 use crate::db::model::HostRecord;
 use crate::ui::theme;
-use crate::ui::widgets::{LINE_SCROLLBAR, pad, padl};
+use crate::ui::widgets::{LINE_SCROLLBAR, ScrollGeometry, pad, padl};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation};
 
 /// Fixed column widths; ADDR and MOUNT POINT absorb the slack. The mockup's
 /// 120-column reference is `HostsScreen.jsx:6`.
@@ -134,13 +134,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Scroll window, keeping the cursor centered like the mockup.
     let visible = inner.height.saturating_sub(1) as usize;
-    let start = if app.hosts.len() > visible {
-        app.cursor
-            .saturating_sub(visible / 2)
-            .min(app.hosts.len() - visible)
-    } else {
-        0
-    };
+    let start = window_start(app.cursor, app.hosts.len(), visible);
     app.scroll = start;
 
     // Register hitboxes before drawing, so clicks and pixels agree.
@@ -173,9 +167,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     // cursor centred, so the thumb nearly always sits beside the cursor row.
     if app.hosts.len() > visible {
         let band = Rect::new(area.right() - 1, inner.y + 1, 1, visible as u16);
-        let mut state = ScrollbarState::new(app.hosts.len() - visible + 1)
-            .position(start)
-            .viewport_content_length(visible);
+        let mut state = scrollbar_geometry(app.hosts.len(), visible).state(start);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .symbols(LINE_SCROLLBAR)
@@ -186,6 +178,28 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
             band,
             &mut state,
         );
+        app.regions.scrollbars.push((band, ScrollTarget::Hosts));
+    }
+}
+
+/// The first host row on screen: the window keeps the cursor centred, and
+/// stops at either end of the list. The scrollbar's drag moves the window by
+/// moving the cursor, through this same rule.
+pub fn window_start(cursor: usize, len: usize, visible: usize) -> usize {
+    if len > visible {
+        cursor.saturating_sub(visible / 2).min(len - visible)
+    } else {
+        0
+    }
+}
+
+/// The list's scrollbar, `visible` rows tall: positions are window starts.
+/// Only meaningful when the list overflows, which is when one is drawn.
+pub fn scrollbar_geometry(len: usize, visible: usize) -> ScrollGeometry {
+    ScrollGeometry {
+        track: visible,
+        max: len.saturating_sub(visible),
+        viewport: visible,
     }
 }
 

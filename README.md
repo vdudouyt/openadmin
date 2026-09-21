@@ -63,6 +63,11 @@ label in the function bar says Mount or Unmount for whichever it will do.
 some hosts are mounted and some are not. Either way, a host already in the state
 asked for is left alone.
 
+**A long list scrolls with the cursor** — arrows, `PgUp`/`PgDn`, the wheel —
+and a scrollbar on the panel's right edge shows where you are. Drag its thumb, or
+click the bar to jump there; the cursor moves with the list, as it does under the
+wheel.
+
 **Mounting runs in the background, with a way out.** A dialog shows which host
 sshfs is connecting to, with a bar of one segment per host — solid once mounted,
 a sweeping block on the one in flight, since sshfs reports nothing while it
@@ -154,12 +159,15 @@ That means **the mouse is how you drive the app while a pane is focused**:
 
 **The wheel scrolls a pane back** through what it has printed — up to
 `scrollback` lines each, 5000 by default — with a scrollbar in the pane's
-right-hand column showing where you are. Output arriving meanwhile does not move
-what you are reading; typing or pasting returns you to the live prompt.
+right-hand column showing where you are: drag its thumb, or click the bar to
+jump there. Output arriving meanwhile does not move what you are reading; typing
+or pasting returns you to the live prompt.
 Full-screen programs are left alone: mc, htop and anything else that asked for
 the mouse get the wheel themselves, and vim, less and their like draw on the
 alternate screen, which has no history to scroll. The scrollbar has a column of
 its own, so a pane tells its program it is one column narrower than it looks.
+It stays yours even when a program has the mouse: the program is never told
+about it, and a drag that starts on the bar stays the bar's until you let go.
 
 **Closing the last shell takes you back** to the screen you were on before
 Shells — Hosts, for the usual Enter on a host and `exit` — whether you closed it

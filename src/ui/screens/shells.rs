@@ -10,16 +10,16 @@
 //! functions that drive `sync_sizes`, so what is drawn and what the PTY believes
 //! can never disagree.
 
-use crate::app::App;
+use crate::app::{App, ScrollTarget};
 use crate::term::manager::TerminalManager;
 use crate::term::scrollback::{self, History};
 use crate::ui::theme;
-use crate::ui::widgets::LINE_SCROLLBAR;
+use crate::ui::widgets::{LINE_SCROLLBAR, ScrollGeometry};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation};
 use tui_term::widget::{Cursor, PseudoTerminal};
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
@@ -48,14 +48,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         // still means this pane.
         app.regions.panes.push((*rect, i));
         let focused = single || focus == i;
-        render_pane(f, *rect, app, *id, focused, chrome);
+        if let Some(bar) = render_pane(f, *rect, app, *id, focused, chrome) {
+            app.regions.scrollbars.push((bar, ScrollTarget::Pane(*id)));
+        }
     }
 }
 
-fn render_pane(f: &mut Frame, rect: Rect, app: &App, id: u64, focused: bool, chrome: u16) {
-    let Some(session) = app.term.session(id) else {
-        return;
-    };
+/// Returns the scrollbar's band when one is drawn, for the mouse to find.
+fn render_pane(
+    f: &mut Frame,
+    rect: Rect,
+    app: &App,
+    id: u64,
+    focused: bool,
+    chrome: u16,
+) -> Option<Rect> {
+    let session = app.term.session(id)?;
 
     let areas = TerminalManager::pane_areas(rect, chrome);
     if chrome > 0 {
@@ -63,7 +71,7 @@ fn render_pane(f: &mut Frame, rect: Rect, app: &App, id: u64, focused: bool, chr
     }
 
     let Ok(mut parser) = session.parser().lock() else {
-        return;
+        return None;
     };
     // Read under the lock the terminal is drawn with, so the bar and the text
     // describe the same moment.
@@ -82,9 +90,9 @@ fn render_pane(f: &mut Frame, rect: Rect, app: &App, id: u64, focused: bool, chr
             .style(Style::new().bg(theme::BG_BASE)),
         areas.term,
     );
-    if let Some(h) = history {
-        render_scrollbar(f, areas.bar, h, focused);
-    }
+    let h = history?;
+    render_scrollbar(f, areas.bar, h, focused);
+    (areas.bar.width > 0).then_some(areas.bar)
 }
 
 /// Where the view is in a pane's history. Nothing is drawn with no history, or
@@ -93,9 +101,7 @@ fn render_scrollbar(f: &mut Frame, area: Rect, h: History, focused: bool) {
     // vt100 counts back from the live screen and a scrollbar counts down from
     // the top, so the live screen is the last position. `lines + 1` positions
     // put the thumb flush against each end, as in the dialogs.
-    let mut state = ScrollbarState::new(h.lines + 1)
-        .position(h.lines - h.offset)
-        .viewport_content_length(area.height as usize);
+    let mut state = scrollbar_geometry(h, area.height).state(h.lines - h.offset);
     // The title rule's convention: orange on the pane that has the keyboard.
     let thumb = if focused {
         theme::ORANGE
@@ -114,6 +120,16 @@ fn render_scrollbar(f: &mut Frame, area: Rect, h: History, focused: bool) {
         area,
         &mut state,
     );
+}
+
+/// A pane's scrollbar, `rows` tall: positions count down from the oldest line
+/// held (0) to the live screen (`lines`), the reverse of vt100's offset.
+pub fn scrollbar_geometry(h: History, rows: u16) -> ScrollGeometry {
+    ScrollGeometry {
+        track: rows as usize,
+        max: h.lines,
+        viewport: rows as usize,
+    }
 }
 
 /// The one-row rule above a pane: `─ host ───────── label ─`.

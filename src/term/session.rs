@@ -189,6 +189,14 @@ impl TerminalSession {
         }
     }
 
+    /// Put the view `offset` lines back, for the pane's scrollbar — see
+    /// `scrollback::set_offset`.
+    pub fn scroll_to(&self, offset: usize) {
+        if let Ok(mut p) = self.parser.lock() {
+            super::scrollback::set_offset(p.screen_mut(), offset);
+        }
+    }
+
     /// Back to the live screen.
     pub fn scroll_to_live(&self) {
         if let Ok(mut p) = self.parser.lock() {

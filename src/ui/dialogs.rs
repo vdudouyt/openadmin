@@ -1263,6 +1263,7 @@ pub fn help(f: &mut Frame, app: &App) {
     lines.push(head("MOUSE"));
     lines.push(k("hover", "row highlights, hint in the status bar"));
     lines.push(k("click", "move cursor   double-click opens a shell"));
+    lines.push(k("drag", "a scrollbar; click one to jump there"));
 
     // Sized from what it says: a fixed height had fallen eight lines short,
     // and the MOUSE section was never on screen. Four is the border and the
