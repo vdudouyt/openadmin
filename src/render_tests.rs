@@ -1897,13 +1897,9 @@ fn a_waiting_plan_opens_itself_on_the_chat_screen() {
 
     assert!(tick(&mut app), "it opened");
     assert_eq!(app.mode, Mode::ConfirmPlan);
-    assert!(
-        !app.plan.as_ref().unwrap().armed,
-        "and it is disarmed, having opened on its own"
-    );
     let out = render(&mut app, 120, 30);
     assert!(out.contains("Confirm Plan"), "{out}");
-    assert!(out.contains("↵ twice to run"), "which it says: {out}");
+    assert!(out.contains("↵ run"), "one press, and it says so: {out}");
     assert!(!tick(&mut app), "and it does not re-open over itself");
 }
 
@@ -1949,27 +1945,25 @@ fn a_waiting_plan_does_not_interrupt_a_half_typed_message() {
     assert!(tick(&mut app), "and it appears once the draft is gone");
 }
 
-/// The hazard that kept this feature out to begin with: a dialog landing under
-/// the fingers, and the keystroke already in flight running scripts on a fleet.
+/// The operator who watched the plan arrive and read it without touching
+/// anything used to need two presses: a dialog that opened by itself swallowed
+/// the first ↵, in case it had been in flight. Nothing about that ↵ says which
+/// it was, so the gate charged everyone for the rare stray one — and the only
+/// explanation was a status line that reverted within seconds.
 #[test]
-fn an_auto_opened_dialog_absorbs_the_first_enter() {
+fn an_auto_opened_dialog_runs_on_the_first_enter() {
     use crate::agent::AgentEvent;
-    let (mut app, _rx) = test_app("autoopen-arm");
+    let (mut app, _rx) = test_app("autoopen-enter");
     app.screen = Screen::Chat;
     app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
-    tick(&mut app);
+    assert!(tick(&mut app), "it opened by itself");
 
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, Mode::ConfirmPlan, "still up, nothing ran");
-    assert!(app.pending_plan.is_some(), "and still unanswered");
-
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, Mode::Normal, "the second one is deliberate");
-    assert!(app.pending_plan.is_none());
+    assert_eq!(app.mode, Mode::Normal, "one press answered it");
+    assert!(app.pending_plan.is_none(), "and nothing is left waiting");
 }
 
-/// Opening it yourself is already the deliberate act; making that ↵ twice
-/// would be friction with nothing to prevent.
+/// The same for a dialog the operator opened with F2.
 #[test]
 fn a_dialog_the_operator_opened_runs_on_the_first_enter() {
     use crate::agent::AgentEvent;
@@ -1978,38 +1972,10 @@ fn a_dialog_the_operator_opened_runs_on_the_first_enter() {
     app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
     app.screen = Screen::Chat;
     key(&mut app, KeyCode::F(2));
-    assert!(app.plan.as_ref().unwrap().armed);
+    assert_eq!(app.mode, Mode::ConfirmPlan);
 
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Normal, "it ran");
-}
-
-/// Anything that proves a person is looking at the dialog arms it — including
-/// the pointer arriving, which is what lets the Run button work first click.
-#[test]
-fn touching_an_auto_opened_dialog_arms_it() {
-    use crate::agent::AgentEvent;
-    for touch in 0..2 {
-        let (mut app, _rx) = test_app(&format!("autoopen-touch{touch}"));
-        app.screen = Screen::Chat;
-        app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("ls", vec![1]))));
-        tick(&mut app);
-        assert!(!app.plan.as_ref().unwrap().armed);
-
-        if touch == 0 {
-            key(&mut app, KeyCode::Down);
-        } else {
-            app.on_mouse(MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 40,
-                row: 12,
-                modifiers: KeyModifiers::empty(),
-            });
-        }
-        assert!(app.plan.as_ref().unwrap().armed, "touch {touch}");
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(app.mode, Mode::Normal, "touch {touch}: it ran");
-    }
 }
 
 /// The dialog now arrives uninvited, on top of the transcript that explains
@@ -2038,10 +2004,6 @@ fn hiding_a_plan_leaves_it_waiting_and_it_does_not_spring_back() {
     assert_eq!(app.mode, Mode::ConfirmPlan, "F2 brings it back");
     let sel = app.plan.as_ref().unwrap();
     assert!(!sel.host_on[0][0], "with the checkbox as it was left");
-    assert!(
-        sel.armed,
-        "and asking for it is deliberate enough to run it"
-    );
 }
 
 /// A second proposal is a new decision: whatever the operator did with the

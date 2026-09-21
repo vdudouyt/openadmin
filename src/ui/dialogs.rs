@@ -638,16 +638,10 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
 
     lines.push(Line::default());
     // Kept short enough to fit the dialog: a clipped hint helps nobody.
-    // The disarmed hint is the only place the extra ↵ is explained, so it says
-    // so plainly rather than leaving the first one looking broken.
-    let mut hint = if sel.armed {
-        "↑↓ move · Space toggle · a/x · ↵ run · F2 hide · Esc reject".to_string()
-    } else {
-        "↑↓ move · Space toggle · a/x · ↵ twice to run · F2 hide · Esc reject".to_string()
-    };
+    let mut hint = "↑↓ move · Space toggle · a/x · ↵ run · F2 hide · Esc reject".to_string();
     // Named with the key that reaches it: ↑/↓ walk the rows, and would step
-    // over every line of a script. No word after the count, so the armed hint
-    // still fits an 80-column terminal.
+    // over every line of a script. No word after the count, so the hint still
+    // fits an 80-column terminal.
     if hidden > 0 {
         hint.push_str(&format!(" · PgDn ↓{hidden}"));
     } else if scroll > 0 {

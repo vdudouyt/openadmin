@@ -98,10 +98,6 @@ pub struct PlanSelection {
     /// tall the body is and how much of it fits.
     pub max_scroll: usize,
     pub page: usize,
-    /// Whether `↵` runs. A dialog the operator opened is armed; one that
-    /// opened itself is not, until they touch it. See
-    /// `App::maybe_auto_open_plan`.
-    pub armed: bool,
 }
 
 impl PlanSelection {
@@ -122,19 +118,7 @@ impl PlanSelection {
             follow: true,
             max_scroll: 0,
             page: 1,
-            armed: true,
         }
-    }
-
-    /// A dialog that appeared on its own does not run on the next `↵`.
-    pub fn disarm(&mut self) {
-        self.armed = false;
-    }
-
-    /// Any deliberate touch — a cursor move, a toggle, the pointer entering
-    /// the dialog — is proof somebody is looking at it.
-    pub fn arm(&mut self) {
-        self.armed = true;
     }
 
     /// The flattened row list the dialog draws and the cursor walks.
@@ -294,10 +278,6 @@ impl crate::app::App {
         if self.plan.as_ref().map(|s| s.plan.id) != Some(plan.id) {
             self.plan = Some(PlanSelection::new(plan));
         }
-        if let Some(sel) = self.plan.as_mut() {
-            // Asking for it is already the deliberate act.
-            sel.arm();
-        }
         self.plan_hidden = false;
         self.mode = super::Mode::ConfirmPlan;
     }
@@ -330,7 +310,8 @@ impl crate::app::App {
     /// card and the `F2` cap still advertise it, and this is retried every
     /// frame, so it appears the moment the operator arrives.
     ///
-    /// It opens *disarmed* — see `App::key_confirm_plan`.
+    /// It opens ready to run: `↵` confirms on the first press, the same as a
+    /// dialog the operator opened with `F2`.
     ///
     /// Returns whether it opened, so the caller knows to redraw.
     pub fn maybe_auto_open_plan(&mut self) -> bool {
@@ -344,9 +325,6 @@ impl crate::app::App {
             return false;
         }
         self.open_plan();
-        if let Some(sel) = self.plan.as_mut() {
-            sel.disarm();
-        }
         true
     }
 }
