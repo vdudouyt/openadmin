@@ -73,7 +73,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::ShowKey => dialogs::show_key(f, app),
         Mode::Help => dialogs::help(f, app),
         Mode::Mounting => dialogs::mounting(f, app),
-        Mode::Actions => dialogs::actions(f, app),
         Mode::BulkImport => dialogs::bulk_import(f, app),
         Mode::Normal => {}
     }

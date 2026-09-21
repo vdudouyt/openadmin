@@ -9,7 +9,7 @@ use crate::agent::plan::StepKind;
 use crate::app::approve::Row;
 use crate::app::bulk::{self, BulkStep};
 use crate::app::form::FormField;
-use crate::app::{Action, App, Click};
+use crate::app::{App, Click};
 use crate::ui::theme;
 use crate::ui::widgets::{centered, pad, sanitize, wrap};
 use ratatui::Frame;
@@ -41,8 +41,15 @@ fn danger_block(title: &str) -> Block<'static> {
         .border_style(Style::new().fg(theme::ORANGE_DIM))
 }
 
-/// Right-aligned buttons that register their own hitboxes, replicating
-/// `Line::right_aligned()`'s geometry so clicks land where they look.
+/// Right-aligned buttons that register their own hitboxes, replicating how a
+/// `Paragraph` draws a right-aligned line so clicks land where they look.
+///
+/// Including when the buttons are wider than the row. A `Paragraph` keeps an
+/// overlong line's start and cuts its end, whatever its alignment, so the row
+/// is drawn from `inner.x` and the last buttons lose their right edge or
+/// vanish. Each hitbox is clipped to what is drawn, and a button with nothing
+/// on screen gets none; unclipped, a cut button's hitbox ran on past its text
+/// over the dialog's frame.
 fn button_row(
     app: &mut App,
     inner: Rect,
@@ -56,23 +63,26 @@ fn button_row(
         .collect();
     let content: u16 = widths.iter().sum::<u16>() + SEP * btns.len().saturating_sub(1) as u16;
     let y = inner.y + line;
+    let right = inner.right();
     let mut x = inner.x + inner.width.saturating_sub(content);
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, (label, style, click)) in btns.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("   "));
-            x += SEP;
+            x = x.saturating_add(SEP);
         }
         let w = widths[i];
-        let rect = Rect::new(x, y, w, 1);
-        app.regions.clicks.push((rect, *click));
-        let style = if app.is_hovered(rect) {
-            style.add_modifier(Modifier::REVERSED)
-        } else {
-            *style
-        };
+        let end = x.saturating_add(w).min(right);
+        let mut style = *style;
+        if end > x {
+            let rect = Rect::new(x, y, end - x, 1);
+            app.regions.clicks.push((rect, *click));
+            if app.is_hovered(rect) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
         spans.push(Span::styled(label.clone(), style));
-        x += w;
+        x = x.saturating_add(w);
     }
     Line::from(spans).right_aligned()
 }
@@ -385,23 +395,27 @@ pub fn host_form(f: &mut Frame, app: &mut App) {
     } else {
         " Add Host "
     };
-    lines.push(button_row(
-        app,
-        tail,
-        lines.len() as u16,
-        &[
-            (
-                save_label.to_string(),
-                theme::primary_btn(),
-                Click::Key(ratatui::crossterm::event::KeyCode::Enter),
-            ),
-            (
-                "[ Cancel ]".to_string(),
-                theme::body(),
-                Click::Key(ratatui::crossterm::event::KeyCode::Esc),
-            ),
-        ],
+    // Bulk add in Add only; `App::open_bulk` says why. Left of the others, as
+    // bulk review's Back is.
+    let mut buttons = Vec::new();
+    if !form.is_edit() {
+        buttons.push((
+            "[ Bulk add ]".to_string(),
+            theme::body(),
+            Click::Key(KeyCode::F(2)),
+        ));
+    }
+    buttons.push((
+        save_label.to_string(),
+        theme::primary_btn(),
+        Click::Key(KeyCode::Enter),
     ));
+    buttons.push((
+        "[ Cancel ]".to_string(),
+        theme::body(),
+        Click::Key(KeyCode::Esc),
+    ));
+    lines.push(button_row(app, tail, lines.len() as u16, &buttons));
 
     f.render_widget(Paragraph::new(lines), tail);
 }
@@ -852,55 +866,6 @@ pub fn confirm_delete(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The F12 menu: a row per `Action`, each one the button for its own letter.
-pub fn actions(f: &mut Frame, app: &mut App) {
-    let area = f.area();
-    // Borders and padding, a row per action, a blank and the hint.
-    let rect = centered(area, 56, 4 + Action::ALL.len() as u16 + 2);
-    f.render_widget(Clear, rect);
-    let block = modal_block("Actions");
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, a) in Action::ALL.iter().enumerate() {
-        let y = inner.y + lines.len() as u16;
-        let row = Rect::new(inner.x, y, inner.width, 1);
-        if y < inner.y + inner.height {
-            app.regions
-                .clicks
-                .push((row, Click::Key(KeyCode::Char(a.key()))));
-        }
-        let lit = i == app.actions_cursor || app.is_hovered(row);
-        lines.push(Line::from(vec![
-            Span::styled(
-                if i == app.actions_cursor {
-                    "▸ "
-                } else {
-                    "  "
-                },
-                theme::proxied(),
-            ),
-            Span::styled(
-                format!("{}  ", a.key()),
-                Style::new().fg(theme::ORANGE_BRIGHT),
-            ),
-            Span::styled(
-                pad(a.label(), 14),
-                if lit {
-                    theme::bright().add_modifier(Modifier::BOLD)
-                } else {
-                    theme::body()
-                },
-            ),
-            Span::styled(a.detail(), theme::muted()),
-        ]));
-    }
-    lines.push(Line::default());
-    lines.push(Line::styled("↑↓ move · ↵ open · Esc close", theme::faint()));
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
 /// Bulk import: paste a qhostman list, then review what it would add.
 ///
 /// Both steps derive their rows from the text on every frame, against the
@@ -1262,13 +1227,12 @@ pub fn help(f: &mut Frame, app: &App) {
         k("↑ ↓", "move cursor"),
         k("Insert", "mark / unmark host (multi-select)"),
         k("*", "invert marks    Ctrl+A select all"),
-        k("F2 / a", "add"),
+        k("F2 / a", "add — bulk add: F2 in the form"),
         k("F4 / e", "edit — SSH key: F7 in the form"),
         k("↵", "open shell (marked hosts → group tab)"),
         k("F9 · m · u", "mount / unmount · mount · unmount"),
         k("F6", "use as proxy"),
         k("F8", "delete"),
-        k("F12 / i", "actions — bulk import"),
         Line::default(),
         head("SHELLS"),
     ];

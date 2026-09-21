@@ -118,12 +118,18 @@ fn entries(app: &App) -> Vec<Entry> {
             } else {
                 "GenKey"
             };
-            return vec![
+            let mut caps = vec![
                 e("Esc", "Cancel", 0xff, false),
                 e("↹", "Next field", 0xff, false),
                 e("F7", key, 7, false),
                 e("↵", save, 0xff, false),
             ];
+            // Add only, as the dialog's button is. Last, so on a narrow bar it
+            // is the one that falls off rather than ↵.
+            if app.form.as_ref().is_some_and(|f| !f.is_edit()) {
+                caps.push(e("F2", "Bulk add", 2, false));
+            }
+            return caps;
         }
         Mode::ConfirmPlan => {
             let danger = app.plan.as_ref().is_some_and(|p| !p.is_empty());
@@ -139,7 +145,6 @@ fn entries(app: &App) -> Vec<Entry> {
         }
         Mode::ShowKey | Mode::Help => return vec![e("Esc", "Close", 0xff, false)],
         Mode::Mounting => return vec![e("Esc", "Cancel", 0xff, false)],
-        Mode::Actions => return vec![e("Esc", "Close", 0xff, false), e("↵", "Open", 0xff, false)],
         Mode::BulkImport => {
             return match app.bulk.as_ref().map(|b| b.step) {
                 Some(BulkStep::Review) => vec![
@@ -197,9 +202,6 @@ fn entries(app: &App) -> Vec<Entry> {
                     false,
                 ),
                 e("F10", "Quit", 10, false),
-                // After Quit, so on a narrow bar it is the one that falls off
-                // rather than pushing an older cap out.
-                e("F12", "Actions", 12, false),
             ]
         }
         // A focused pane owns the whole keyboard, so these are click-only and

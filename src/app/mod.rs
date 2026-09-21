@@ -83,40 +83,9 @@ pub enum Mode {
     Help,
     /// sshfs is connecting. Modal: the only thing to do is wait or cancel.
     Mounting,
-    /// The F12 menu.
-    Actions,
-    /// Pasting a qhostman host list, then reviewing what it would add.
+    /// Pasting a qhostman host list, then reviewing what it would add. Opened
+    /// over the Add dialog, which stays in `form` to come back to.
     BulkImport,
-}
-
-/// What the Actions menu offers: things done to the host list as a whole,
-/// rather than to the host under the cursor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    BulkImport,
-}
-
-impl Action {
-    pub const ALL: [Action; 1] = [Action::BulkImport];
-
-    /// The letter that runs it from the menu.
-    pub fn key(self) -> char {
-        match self {
-            Action::BulkImport => 'i',
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Action::BulkImport => "Bulk import",
-        }
-    }
-
-    pub fn detail(self) -> &'static str {
-        match self {
-            Action::BulkImport => "add hosts from a qhostman list",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,8 +201,6 @@ pub struct App {
     /// `(host name, public key)` for the SSH Public Key dialog.
     pub key_dialog: Option<(String, String)>,
     pub alert: Option<String>,
-    /// The Actions menu's highlighted row, an index into `Action::ALL`.
-    pub actions_cursor: usize,
     /// The bulk import in progress, while `Mode::BulkImport` shows it.
     pub bulk: Option<BulkImport>,
 
@@ -294,7 +261,6 @@ impl App {
             mounting: None,
             key_dialog: None,
             alert: None,
-            actions_cursor: 0,
             bulk: None,
             chat: ChatState::default(),
             agent: None,
@@ -829,25 +795,30 @@ impl App {
         ));
     }
 
-    /// F12, or `i` — F11 would be the natural key, but GNOME Terminal, Konsole
-    /// and Windows Terminal keep it for fullscreen and it never arrives.
-    pub fn open_actions(&mut self) {
-        self.actions_cursor = 0;
-        self.mode = Mode::Actions;
-    }
-
-    fn run_action(&mut self, action: Action) {
-        match action {
-            Action::BulkImport => {
-                self.bulk = Some(BulkImport::new());
-                self.mode = Mode::BulkImport;
-            }
+    /// Bulk add, opened over the Add dialog by F2 or its Bulk add button.
+    ///
+    /// The form stays in `self.form`, so leaving without importing returns to
+    /// it as it was left. Not from Edit: an import closes the form it came
+    /// from, and an Edit form would take its unsaved changes with it.
+    fn open_bulk(&mut self) {
+        if self.form.as_ref().is_none_or(|f| f.is_edit()) {
+            return;
         }
+        self.bulk = Some(BulkImport::new());
+        self.mode = Mode::BulkImport;
     }
 
+    /// Leave bulk import without importing, back to the Add dialog it came
+    /// from. Every way out but an import comes here, as the key dialog's all go
+    /// through `close_popup`, so none can leave a form behind `Normal` for the
+    /// next dialog to return to.
     fn close_bulk(&mut self) {
         self.bulk = None;
-        self.mode = Mode::Normal;
+        self.mode = if self.form.is_some() {
+            Mode::HostForm
+        } else {
+            Mode::Normal
+        };
     }
 
     /// Add every new host in the paste, in one transaction.
@@ -880,7 +851,11 @@ impl App {
         }
         match self.db.insert_all(&recs) {
             Ok(ids) => {
-                self.close_bulk();
+                // Done with both. The Add form was only the way in; left in
+                // `self.form` it would come back the next time Help closed.
+                self.bulk = None;
+                self.form = None;
+                self.mode = Mode::Normal;
                 self.reload();
                 // Marked, so whatever comes next — mount them, open shells on
                 // them, or delete them if the list was the wrong one — applies
@@ -1221,7 +1196,6 @@ impl App {
             Mode::HostForm => self.key_host_form(key),
             Mode::ConfirmPlan => self.key_confirm_plan(key),
             Mode::ConfirmDelete => self.key_confirm_delete(key),
-            Mode::Actions => self.key_actions(key),
             Mode::BulkImport => self.key_bulk(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
@@ -1299,7 +1273,6 @@ impl App {
             // was asked rather than what qhostman's rule would guess.
             KeyCode::Char('m' | 'M') => self.set_mount(Some(true)),
             KeyCode::Char('u' | 'U') => self.set_mount(Some(false)),
-            KeyCode::Char('i' | 'I') => self.open_actions(),
             KeyCode::Esc => self.marked.clear(),
             KeyCode::Enter => self.open_shell(),
             KeyCode::Delete => self.open_delete(),
@@ -1469,13 +1442,11 @@ impl App {
     /// all three share the same behavior. On the Shells screen only the clicks
     /// reach it: a focused terminal keeps the whole keyboard.
     pub fn function_key(&mut self, n: u8) {
-        // A click on the bar reaches here in any mode, so a dialog's own keys are
-        // honoured and nothing behind it is: F10 must not quit out from under an
-        // unsaved form.
+        // Nothing behind a dialog is reachable from here: F10 must not quit out
+        // from under an unsaved form. Which F-keys the form has is
+        // `key_host_form`'s call, so the two cannot disagree.
         if self.mode == Mode::HostForm {
-            if n == 7 {
-                self.form_key();
-            }
+            self.key_host_form(KeyEvent::new(KeyCode::F(n), KeyModifiers::empty()));
             return;
         }
         // Nor may a click on the bar quit out from under a paste.
@@ -1504,7 +1475,6 @@ impl App {
                 6 => self.toggle_proxy(),
                 8 => self.open_delete(),
                 9 => self.set_mount(None),
-                12 => self.open_actions(),
                 _ => {}
             },
             Screen::Shells => match n {
@@ -1590,6 +1560,11 @@ impl App {
                 self.form_key();
                 return;
             }
+            // F2 opened this dialog from Hosts, so F2 again is "add, but many".
+            KeyCode::F(2) => {
+                self.open_bulk();
+                return;
+            }
             _ => {}
         }
         let prefix = self.cfg.mount_prefix.clone();
@@ -1673,32 +1648,9 @@ impl App {
         }
     }
 
-    fn key_actions(&mut self, key: KeyEvent) {
-        let last = Action::ALL.len() - 1;
-        match key.code {
-            KeyCode::Esc | KeyCode::F(12) => self.mode = Mode::Normal,
-            KeyCode::Up => self.actions_cursor = self.actions_cursor.saturating_sub(1),
-            KeyCode::Down => self.actions_cursor = (self.actions_cursor + 1).min(last),
-            KeyCode::Enter => {
-                if let Some(&a) = Action::ALL.get(self.actions_cursor) {
-                    self.run_action(a);
-                }
-            }
-            KeyCode::Char(c) => {
-                if let Some(&a) = Action::ALL
-                    .iter()
-                    .find(|a| a.key().eq_ignore_ascii_case(&c))
-                {
-                    self.run_action(a);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn key_bulk(&mut self, key: KeyEvent) {
         let Some(b) = self.bulk.as_mut() else {
-            self.mode = Mode::Normal;
+            self.close_bulk();
             return;
         };
         if key.code == KeyCode::Esc {
@@ -1897,11 +1849,10 @@ impl App {
             {
                 self.dispatch_click(click);
             } else if matches!(self.mode, Mode::Help | Mode::ShowKey) {
+                // Help and the key dialog are dismissed by looking away from
+                // them. The form and bulk import are not: a stray click must not
+                // throw away what was typed or pasted.
                 self.close_popup();
-            } else if self.mode == Mode::Actions {
-                // A menu is dismissed by looking away from it. Bulk import is
-                // not: a stray click must not throw away a paste.
-                self.mode = Mode::Normal;
             }
             return;
         }

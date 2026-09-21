@@ -132,7 +132,7 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     // The keymap, as the bar advertises it: the letter twin beside each F-key,
     // and Shell on Enter.
     let bar = out.lines().last().unwrap();
-    for cap in ["F2", "F4", "↵", "F6", "F8", "F9", "F10", "F12"] {
+    for cap in ["F2", "F4", "↵", "F6", "F8", "F9", "F10"] {
         assert!(bar.contains(cap), "{cap} missing from: {bar}");
     }
     // Just the keys. The letter twins are in F1's help, not on the caps.
@@ -143,7 +143,7 @@ fn hosts_screen_shows_the_table_and_function_bar() {
         );
     }
     assert!(bar.contains("Shell") && bar.contains("Mount"), "{bar}");
-    for gone in ["F3", "F5", "F7", "GenKey"] {
+    for gone in ["F3", "F5", "F7", "GenKey", "F12", "Actions"] {
         assert!(!bar.contains(gone), "{gone} should be gone: {bar}");
     }
     // Passwords are masked; an empty one shows a dash.
@@ -180,17 +180,15 @@ fn every_dialog_renders() {
         (Mode::Help, "Key Bindings"),
         (Mode::HostForm, "Add Host"),
         (Mode::ConfirmDelete, "Confirm Delete"),
-        (Mode::Actions, "Bulk import"),
         (Mode::BulkImport, "Bulk Import · 1 of 2"),
     ] {
         let a = &mut app;
         a.mode = Mode::Normal;
         match mode {
             Mode::HostForm => a.open_add(),
-            Mode::Actions => a.open_actions(),
             Mode::BulkImport => {
-                a.open_actions();
-                key(a, KeyCode::Char('i'));
+                a.open_add();
+                key(a, KeyCode::F(2));
             }
             Mode::ConfirmDelete => {
                 a.pending_delete = vec![a.hosts[0].id];
@@ -2711,8 +2709,9 @@ fn a_backend_error_is_sanitized_before_it_is_drawn() {
 }
 
 /// The Hosts keymap: letter twins, Enter for a shell, F9 for mount, and the
-/// old F3/F5/F7 unbound. Every assertion goes through a path that cannot
-/// reach sshfs or ssh, so nothing here opens a connection.
+/// old F3/F5/F7 unbound — and F12 and `i`, whose Actions menu is gone. Every
+/// assertion goes through a path that cannot reach sshfs or ssh, so nothing
+/// here opens a connection.
 #[test]
 fn the_hosts_keymap() {
     use crate::app::StatusKind;
@@ -2751,6 +2750,10 @@ fn the_hosts_keymap() {
     assert!(app.term.is_empty(), "F5 opens no shell");
     app.function_key(7);
     assert_eq!(app.mode, Mode::Normal, "F7 is the form's now");
+    app.function_key(12);
+    assert_eq!(app.mode, Mode::Normal, "F12 is unbound");
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.mode, Mode::Normal, "and so is i");
 
     // m and u go the way they say, and only touch hosts not already there.
     assert!(!app.hosts[0].mounted);
@@ -3347,9 +3350,11 @@ fn every_route_onto_shells_remembers_where_it_came_from() {
 const QHOSTMAN: &str =
     "mydomain-s5000\r1.2.3.4\rroot\r123123\r\rmydomain-s5001\r2.3.4.5\rroot\r123123\r";
 
+/// Bulk add the keyboard way: F2 for the Add dialog, F2 again from there.
 fn open_bulk(app: &mut App) {
-    key(app, KeyCode::F(12));
-    key(app, KeyCode::Char('i'));
+    key(app, KeyCode::F(2));
+    assert_eq!(app.mode, Mode::HostForm);
+    key(app, KeyCode::F(2));
     assert_eq!(app.mode, Mode::BulkImport);
 }
 
@@ -3362,45 +3367,153 @@ fn button(app: &App, want: Click) -> ratatui::layout::Rect {
         .unwrap_or_else(|| panic!("no {want:?} button"))
 }
 
+/// Bulk add lives in the Add dialog — a button, a cap, and F2 — and only
+/// there: an import closes the form it came from, which from Edit would take
+/// unsaved changes with it.
 #[test]
-fn f12_and_i_open_the_actions_menu() {
-    let (mut app, _rx) = test_app("actions");
-    key(&mut app, KeyCode::F(12));
-    assert_eq!(app.mode, Mode::Actions);
+fn bulk_add_is_offered_in_the_add_dialog_only() {
+    let (mut app, _rx) = test_app("bulk-offer");
+    app.open_add();
     let out = render(&mut app, 120, 34);
+    assert!(out.contains("[ Bulk add ]"), "{out}");
     assert!(
-        out.contains("Actions") && out.contains("Bulk import"),
-        "{out}"
+        out.lines().last().unwrap().contains("Bulk add"),
+        "and on the bar: {out}"
     );
-    key(&mut app, KeyCode::F(12));
-    assert_eq!(app.mode, Mode::Normal, "F12 closes what it opened");
-
-    // The letter twin, for terminals that keep F12 for themselves.
-    key(&mut app, KeyCode::Char('i'));
-    assert_eq!(app.mode, Mode::Actions);
+    let _ = button(&app, Click::Key(KeyCode::F(2)));
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.mode, Mode::Normal);
 
-    // ↵ runs the highlighted row, and so does its letter.
-    key(&mut app, KeyCode::Char('i'));
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, Mode::BulkImport);
+    app.open_edit();
+    let name = app.form.as_ref().unwrap().name.value().to_string();
+    let out = render(&mut app, 120, 34);
+    assert!(!out.contains("Bulk add"), "{out}");
+    assert!(
+        !app.regions
+            .clicks
+            .iter()
+            .any(|(_, c)| *c == Click::Key(KeyCode::F(2)))
+    );
+    key(&mut app, KeyCode::F(2));
+    assert_eq!(app.mode, Mode::HostForm, "F2 in Edit does nothing");
+    assert!(app.bulk.is_none());
+    assert_eq!(app.form.as_ref().unwrap().name.value(), name);
 }
 
 #[test]
-fn the_actions_menu_is_clickable_and_a_click_outside_closes_it() {
-    let (mut app, _rx) = test_app("actions-click");
-    app.function_key(12);
-    let _ = render(&mut app, 120, 34);
-    let row = button(&app, Click::Key(KeyCode::Char('i')));
-    click(&mut app, row.x + 4, row.y);
-    assert_eq!(app.mode, Mode::BulkImport);
+fn f2_and_the_bulk_add_button_both_open_bulk_import() {
+    let (mut app, _rx) = test_app("bulk-open");
+    app.open_add();
+    key(&mut app, KeyCode::F(2));
+    assert_eq!(app.mode, Mode::BulkImport, "F2");
+    key(&mut app, KeyCode::Esc);
 
-    let (mut app, _rx) = test_app("actions-away");
-    app.function_key(12);
     let _ = render(&mut app, 120, 34);
-    click(&mut app, 1, 1);
+    let b = button(&app, Click::Key(KeyCode::F(2)));
+    click(&mut app, b.x + 1, b.y);
+    assert_eq!(app.mode, Mode::BulkImport, "the button");
+}
+
+/// It was opened from the Add dialog, so leaving it goes back there — with
+/// what had been typed, and the caret where it was.
+#[test]
+fn esc_from_bulk_import_returns_to_the_add_dialog_as_it_was_left() {
+    use crate::app::form::FormField;
+    let (mut app, _rx) = test_app("bulk-back");
+    app.open_add();
+    for c in "bastion".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Tab); // Type
+    key(&mut app, KeyCode::Tab); // Address
+    for c in "edge".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+
+    key(&mut app, KeyCode::F(2));
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Esc);
+
+    assert_eq!(app.mode, Mode::HostForm);
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.name.value(), "bastion");
+    assert_eq!(form.addr.value(), "edge");
+    assert_eq!(form.focus, FormField::Addr);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("Add Host") && out.contains("bastion"), "{out}");
+}
+
+/// An import closes the Add dialog too. Left in `app.form`, the form came back
+/// the next time Help closed.
+#[test]
+fn an_import_leaves_no_add_dialog_behind() {
+    let (mut app, _rx) = test_app("bulk-done");
+    open_bulk(&mut app);
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Normal);
+    assert!(app.form.is_none());
+
+    key(&mut app, KeyCode::F(1));
+    assert_eq!(app.mode, Mode::Help);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal, "not the Add dialog");
+}
+
+/// Draw at 40 columns, where the buttons overflow their row, and check that
+/// what lies under each button's hitbox is part of that button's label.
+fn assert_hitboxes_on_labels(app: &mut App, labels: &[(Click, &str)]) {
+    let buf = render_buf(app, 40, 24);
+    let mut clipped = false;
+    for (click, label) in labels {
+        // A button with nothing on screen has no hitbox, which is right.
+        let Some((r, _)) = app.regions.clicks.iter().find(|(_, c)| c == click) else {
+            continue;
+        };
+        assert!(
+            r.right() <= buf.area.right(),
+            "{click:?}'s hitbox runs off the screen: {r:?}"
+        );
+        let under: String = (r.x..r.right())
+            .map(|x| buf[(x, r.y)].symbol().to_string())
+            .collect();
+        assert!(
+            label.contains(&under),
+            "{click:?} is over {under:?}, not part of {label:?}"
+        );
+        clipped |= under.chars().count() < label.chars().count();
+    }
+    assert!(clipped, "at 40 columns the row should overflow");
+}
+
+/// A button row wider than its dialog is cut at its end — a `Paragraph` keeps
+/// an overlong line's start — and every hitbox must follow what is drawn: on
+/// its own label, clipped where the label is cut, and none where it is gone.
+/// The Add dialog's third button is what first makes its row overflow.
+#[test]
+fn a_clipped_button_row_keeps_every_hitbox_on_its_label() {
+    let (mut app, _rx) = test_app("bulk-clip");
+    app.open_add();
+    assert_hitboxes_on_labels(
+        &mut app,
+        &[
+            (Click::Key(KeyCode::F(2)), "[ Bulk add ]"),
+            (Click::Key(KeyCode::Enter), " Add Host "),
+            (Click::Key(KeyCode::Esc), "[ Cancel ]"),
+        ],
+    );
+
+    key(&mut app, KeyCode::F(2));
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Tab);
+    assert_hitboxes_on_labels(
+        &mut app,
+        &[
+            (Click::Key(KeyCode::BackTab), "[ ◂ Back ]"),
+            (Click::Key(KeyCode::Enter), " Import 2 hosts "),
+            (Click::Key(KeyCode::Esc), "[ Cancel ]"),
+        ],
+    );
 }
 
 #[test]
@@ -3525,6 +3638,8 @@ fn a_malformed_block_stops_the_whole_import() {
 }
 
 #[test]
+/// Esc from either step writes nothing, and goes back to the Add dialog it was
+/// opened from; a second Esc leaves that as it always did.
 fn esc_from_either_step_writes_nothing() {
     let (mut app, _rx) = test_app("bulk-esc");
     let before = app.hosts.len();
@@ -3535,9 +3650,13 @@ fn esc_from_either_step_writes_nothing() {
             key(&mut app, KeyCode::Tab);
         }
         key(&mut app, KeyCode::Esc);
-        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.mode, Mode::HostForm, "step {tabs}");
         assert!(app.bulk.is_none());
         assert_eq!(app.hosts.len(), before);
+
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.form.is_none());
     }
 }
 
