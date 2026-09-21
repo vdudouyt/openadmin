@@ -208,7 +208,7 @@ through one tool per question rather than one tool that takes a command line:
 |---|---|
 | `readonly_*` | nineteen read-only questions — logs, services, network, disks, files, processes |
 | `list_hosts` | the known SSH machines, by name — never an address, login or password |
-| `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included |
+| `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included; a plan uploads one to `/tmp/openadmin/` |
 | `list_manuals` · `fetch_manual` | what the operator has written about *this* fleet |
 | `propose_plan` | proposes changes; **executes nothing** |
 | `create_host` · `edit_host` | write the host database, and only on request |
@@ -279,9 +279,14 @@ neither listed nor fetched.
 `~/.openadmin/artifacts/` recursively, so stage files the way they are organised
 — `nginx/site.conf` beside `postgres/pg_hba.conf` — rather than flattening
 everything into one directory to make them visible. A name is a path relative to
-that directory, it keeps that path under the plan's upload directory on the far
-side (so two files called `site.conf` stay two files), and a scriptlet in the
-same plan can name it by the path it already knows. A very large tree is listed
+that directory, it keeps that path under `/tmp/openadmin/` on the far side (so
+two files called `site.conf` stay two files), and a scriptlet in the same plan
+can name it by the path it already knows — `/tmp/openadmin/nginx/site.conf`.
+One fixed directory rather than one per plan, because the model writes that path
+into a script *before* the plan has run, and a path with a plan number in it is
+one it cannot know yet; the cost is that files outlive the plan that sent them,
+so an upload the operator unchecked can leave a later script reading an older
+file of the same name. A very large tree is listed
 up to a limit and says when it stopped; anything under the directory can still be
 uploaded by name whether it was listed or not. Nothing escapes: a name with `..`
 in it is refused, and so is a path that leads out through a symlink, because the

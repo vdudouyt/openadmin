@@ -103,28 +103,6 @@ impl ExecReport {
     }
 }
 
-/// Where uploads land: one directory per plan, so a step cannot clobber a file
-/// something else is relying on at a predictable path.
-fn upload_dir(plan_id: u64) -> String {
-    format!("/tmp/openadmin-plan-{plan_id}")
-}
-
-/// Where one staged file lands: `(directory to create, full path)`.
-///
-/// The staged path is kept rather than flattened to a basename, because
-/// `nginx/site.conf` and `apache/site.conf` are two different files and
-/// flattening them would have the second silently overwrite the first. It also
-/// lets a scriptlet in the same plan name an upload by the path it already knows
-/// from `list_artifacts`.
-fn upload_target(plan_id: u64, rel: &str) -> (String, String) {
-    let base = upload_dir(plan_id);
-    let dir = match rel.rsplit_once('/') {
-        Some((parent, _)) => format!("{base}/{parent}"),
-        None => base.clone(),
-    };
-    (dir, format!("{base}/{rel}"))
-}
-
 /// Run the plan, one step at a time, one host at a time.
 ///
 /// `on_line` receives each output line as it arrives; `on_step` brackets each
@@ -174,15 +152,7 @@ pub fn execute(
             }
 
             on_step(step_no, &host.name, &step.summary);
-            let captured = run_one(
-                plan,
-                &step.kind,
-                host,
-                proxy.as_ref(),
-                datadir,
-                cfg,
-                on_line,
-            );
+            let captured = run_one(&step.kind, host, proxy.as_ref(), datadir, cfg, on_line);
             let (exit, timed_out, output) = match captured {
                 Ok(c) => {
                     let mut out: Vec<String> = c.stdout.lines().map(sanitize).collect();
@@ -215,9 +185,7 @@ pub fn execute(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // a step needs all of it
 fn run_one(
-    plan: &ConfirmedPlan,
     kind: &StepKind,
     host: &HostRecord,
     proxy: Option<&HostRecord>,
@@ -243,7 +211,10 @@ fn run_one(
             // `rel` comes back from the canonicalized path, so it is a clean
             // relative path whatever the model wrote.
             let (local, rel) = artifacts::staged(datadir, artifact)?;
-            let (dir, dest) = upload_target(plan.plan_id(), &rel);
+            // The destination is `artifacts::UPLOAD_DIR`, the same constant the
+            // plan schema names — so the path the model wrote into a scriptlet
+            // of this plan is the path the file arrives at.
+            let (dir, dest) = artifacts::upload_target(&rel);
             let mkdir = ssh::exec_command(
                 host,
                 datadir,
@@ -335,40 +306,6 @@ mod tests {
         assert!(t.contains("timed out"), "{t}");
         assert!(t.contains("skipped (cancelled)"), "{t}");
         assert_eq!(report(vec![r(1, "x", Some(0))]).failures().len(), 0);
-    }
-
-    #[test]
-    fn uploads_land_in_a_directory_of_their_own() {
-        assert_eq!(upload_dir(7), "/tmp/openadmin-plan-7");
-    }
-
-    /// A staged subdirectory survives the upload, so two files of the same name
-    /// from different directories stay two files.
-    #[test]
-    fn a_staged_path_keeps_its_shape_on_the_far_side() {
-        assert_eq!(
-            upload_target(3, "hotfix.sh"),
-            (
-                "/tmp/openadmin-plan-3".to_string(),
-                "/tmp/openadmin-plan-3/hotfix.sh".to_string()
-            )
-        );
-        assert_eq!(
-            upload_target(3, "nginx/site.conf"),
-            (
-                "/tmp/openadmin-plan-3/nginx".to_string(),
-                "/tmp/openadmin-plan-3/nginx/site.conf".to_string()
-            )
-        );
-        assert_eq!(
-            upload_target(3, "a/b/c/deep.conf").1,
-            "/tmp/openadmin-plan-3/a/b/c/deep.conf"
-        );
-        // The collision this exists to prevent.
-        assert_ne!(
-            upload_target(3, "nginx/site.conf").1,
-            upload_target(3, "apache/site.conf").1
-        );
     }
 
     #[test]

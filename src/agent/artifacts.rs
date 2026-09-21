@@ -3,7 +3,9 @@
 //! The path handling — every way a name could point outside the directory, and
 //! the bounded recursive walk — is `store::ARTIFACTS`, shared with `manuals`.
 //! What is here is only what makes an artifact an artifact: its size, which is
-//! what an operator wants to see before approving an upload of it.
+//! what an operator wants to see before approving an upload of it — and where
+//! one lands when a plan sends it: `UPLOAD_DIR`, the one place that path is
+//! written.
 
 use crate::agent::store::ARTIFACTS;
 use anyhow::Result;
@@ -26,6 +28,69 @@ pub struct Artifact {
 pub struct Listing {
     pub items: Vec<Artifact>,
     pub truncated: bool,
+}
+
+/// Where a plan's uploads land, on every host, in every plan.
+///
+/// Fixed rather than one directory per plan, because the model writes this path
+/// into a scriptlet *before* the plan exists: a per-plan directory needs a plan
+/// id, and the id is assigned when the proposal is recorded — after the script
+/// was written. A constant is the only form of the path a model can know in
+/// advance, and a path it cannot know is one it has to guess.
+///
+/// The cost, accepted: the directory outlives the plan that filled it, so an
+/// upload step that failed, or that the operator unchecked, can leave a later
+/// scriptlet reading an older file of the same name.
+pub const UPLOAD_DIR: &str = "/tmp/openadmin";
+
+/// Where one staged file lands: `(directory to create, full path)`.
+///
+/// The staged path is kept rather than flattened to a basename, because
+/// `nginx/site.conf` and `apache/site.conf` are two different files and
+/// flattening them would have the second silently overwrite the first.
+pub fn upload_target(rel: &str) -> (String, String) {
+    let dir = match rel.rsplit_once('/') {
+        Some((parent, _)) => format!("{UPLOAD_DIR}/{parent}"),
+        None => UPLOAD_DIR.to_string(),
+    };
+    (dir, format!("{UPLOAD_DIR}/{rel}"))
+}
+
+/// The `artifact` field's description in `propose_plan`, built from the same
+/// constant the executor uploads to.
+///
+/// Generated rather than written: a description naming a directory the executor
+/// does not write to is then not something anyone can accidentally write, and
+/// the script the model pairs with an upload depends on this being exact.
+pub fn describe_artifact_field() -> String {
+    format!(
+        "For kind=upload: a name from list_artifacts, which may be a path like \
+         `nginx/site.conf`. The file keeps that path on the far side, under \
+         {dir} — `nginx/site.conf` arrives at `{example}`, so two files called \
+         `site.conf` stay two files. That destination is the same on every host \
+         and in every plan, so a scriptlet step in the same plan can be written \
+         against it; list the upload before the script that uses it.",
+        dir = UPLOAD_DIR,
+        example = upload_target("nginx/site.conf").1,
+    )
+}
+
+/// The `script` field's, for the same reason: the path is only useful to a
+/// scriptlet if it is the path the upload actually used.
+pub fn describe_script_field() -> String {
+    format!(
+        "For kind=scriptlet: the bash to run. It is piped to `bash -s` as the \
+         host's login user, with no arguments and no working directory to rely \
+         on, so name every file by an absolute path. A file an upload step of \
+         this same plan sent is at {dir} plus the name list_artifacts gave it — \
+         `nginx/site.conf` is at `{example}`. Steps run in the order you list \
+         them, so put the upload first. That directory is under /tmp, which is \
+         sometimes mounted noexec: run an uploaded script as `bash {script}` \
+         rather than executing it directly.",
+        dir = UPLOAD_DIR,
+        example = upload_target("nginx/site.conf").1,
+        script = upload_target("hotfix.sh").1,
+    )
 }
 
 /// Create the directory if it is missing, owner-only like `keys/`.
@@ -77,6 +142,74 @@ mod tests {
 
     fn names(l: &Listing) -> Vec<&str> {
         l.items.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    /// One directory, with the same name in every plan. The model has to be able
+    /// to write this path into a script before the plan it belongs to has an id,
+    /// which rules out anything with a plan number in it.
+    #[test]
+    fn uploads_land_in_one_directory_with_the_same_name_everywhere() {
+        assert_eq!(UPLOAD_DIR, "/tmp/openadmin");
+    }
+
+    /// A staged subdirectory survives the upload, so two files of the same name
+    /// from different directories stay two files.
+    #[test]
+    fn a_staged_path_keeps_its_shape_on_the_far_side() {
+        assert_eq!(
+            upload_target("hotfix.sh"),
+            (
+                "/tmp/openadmin".to_string(),
+                "/tmp/openadmin/hotfix.sh".to_string()
+            )
+        );
+        assert_eq!(
+            upload_target("nginx/site.conf"),
+            (
+                "/tmp/openadmin/nginx".to_string(),
+                "/tmp/openadmin/nginx/site.conf".to_string()
+            )
+        );
+        assert_eq!(
+            upload_target("a/b/c/deep.conf").1,
+            "/tmp/openadmin/a/b/c/deep.conf"
+        );
+        // The collision this exists to prevent.
+        assert_ne!(
+            upload_target("nginx/site.conf").1,
+            upload_target("apache/site.conf").1
+        );
+        // And nothing lands outside the one directory the schema names.
+        for rel in ["hotfix.sh", "nginx/site.conf", "a/b/c/deep.conf"] {
+            let (dir, dest) = upload_target(rel);
+            assert!(dir.starts_with(UPLOAD_DIR), "{rel}: {dir}");
+            assert!(dest.starts_with(UPLOAD_DIR), "{rel}: {dest}");
+        }
+    }
+
+    /// Both descriptions are rendered from the constant, so neither can name a
+    /// directory the executor does not write to. The full destination, not only
+    /// the directory: the staged name is what joins the two fields, and a model
+    /// holding only the directory is still assembling a path by hand.
+    #[test]
+    fn the_field_descriptions_are_built_from_the_destination_itself() {
+        let dest = upload_target("nginx/site.conf").1;
+        for (field, text) in [
+            ("artifact", describe_artifact_field()),
+            ("script", describe_script_field()),
+        ] {
+            assert!(
+                text.contains(UPLOAD_DIR),
+                "{field} omits the directory: {text}"
+            );
+            assert!(text.contains(&dest), "{field} omits the whole path: {text}");
+        }
+        // The script field is where a path gets written, so it says how a script
+        // runs and what would otherwise be discovered by being refused.
+        let script = describe_script_field();
+        assert!(script.contains("bash -s"), "{script}");
+        assert!(script.contains("noexec"), "{script}");
+        assert!(script.contains("order you list them"), "{script}");
     }
 
     #[test]

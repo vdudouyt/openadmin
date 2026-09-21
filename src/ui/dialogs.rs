@@ -4,6 +4,7 @@
 //! a `Vec<Line>` in one `Paragraph`, with `button_row` registering its own
 //! hitboxes (`/root/cfdns/src/ui/dialogs.rs:16-51`).
 
+use crate::agent::artifacts;
 use crate::agent::plan::StepKind;
 use crate::app::approve::Row;
 use crate::app::bulk::{self, BulkStep};
@@ -482,18 +483,20 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                         // path is kept on the far side, so `nginx/site.conf`
                         // lands in a `nginx/` of its own and the operator should
                         // see where the file actually goes before approving it.
+                        //
+                        // From the executor's own constant, never a literal here:
+                        // the operator is approving a path, so the path they read
+                        // has to be the path the file lands at. The name is
+                        // trimmed but not canonicalized — `staged()` stats the
+                        // filesystem, and this runs on every frame — so a staged
+                        // symlink displays as the link rather than its target.
+                        let name = artifact.trim();
+                        let (_, dest) = artifacts::upload_target(name);
                         body.push((
                             Line::from(vec![
                                 Span::styled("    │ ", theme::border_idle()),
-                                Span::styled(sanitize(artifact), theme::muted()),
-                                Span::styled(
-                                    format!(
-                                        " → /tmp/openadmin-plan-{}/{}",
-                                        sel.plan.id,
-                                        sanitize(artifact)
-                                    ),
-                                    theme::faint(),
-                                ),
+                                Span::styled(sanitize(name), theme::muted()),
+                                Span::styled(format!(" → {}", sanitize(&dest)), theme::faint()),
                             ]),
                             None,
                         ));

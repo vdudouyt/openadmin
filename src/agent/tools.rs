@@ -187,8 +187,8 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
                             "properties": {
                                 "summary": {"type": "string", "description": "One line: what this step does."},
                                 "kind": {"type": "string", "enum": ["scriptlet", "upload"]},
-                                "script": {"type": "string", "description": "For kind=scriptlet: the bash to run."},
-                                "artifact": {"type": "string", "description": "For kind=upload: a name from list_artifacts, which may be a path like `nginx/site.conf`. It keeps that path on the far side, under the plan's upload directory."},
+                                "script": {"type": "string", "description": artifacts::describe_script_field()},
+                                "artifact": {"type": "string", "description": artifacts::describe_artifact_field()},
                                 "hosts": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -884,6 +884,35 @@ mod tests {
         );
         assert!(matches!(out, ToolOutcome::Text(_)));
         assert!(out.text().contains("unknown host"), "{}", out.text());
+    }
+
+    /// The chicken-and-egg this arrangement exists to remove: the model writes
+    /// the path of a file the plan has not uploaded yet, in the same call that
+    /// uploads it — so the destination named in the schema has to be the one the
+    /// executor uses. Asserted against the constant rather than a string typed
+    /// here, because a string typed here is exactly the drift being guarded
+    /// against.
+    #[test]
+    fn the_plan_schema_names_where_an_upload_lands() {
+        let defs = definitions(&Config::default());
+        let plan = defs
+            .iter()
+            .find(|d| d.function.name == PROPOSE_PLAN)
+            .unwrap();
+        let props = &plan.function.parameters["properties"]["steps"]["items"]["properties"];
+        let dest = artifacts::upload_target("nginx/site.conf").1;
+        // Both fields: the model reads the one it is filling in, not the other.
+        for field in ["artifact", "script"] {
+            let text = props[field]["description"].as_str().unwrap_or_default();
+            assert!(
+                text.contains(artifacts::UPLOAD_DIR),
+                "{field} does not say where an upload lands: {text}"
+            );
+            assert!(
+                text.contains(&dest),
+                "{field} names the directory but not the whole path: {text}"
+            );
+        }
     }
 
     #[test]

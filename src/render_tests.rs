@@ -1569,6 +1569,37 @@ fn the_dialog_shows_every_step_host_and_the_script_verbatim() {
     assert!(out.contains("Run 1 step(s) on 2 host(s)"), "{out}");
 }
 
+/// An operator approving an upload is approving a destination, so the dialog
+/// shows the path the file actually lands at — read from the same constant the
+/// executor scps to, never a literal in the renderer.
+#[test]
+fn the_dialog_names_where_an_upload_lands() {
+    use crate::agent::AgentEvent;
+    use crate::agent::artifacts;
+    let (mut app, _rx) = test_app("uploaddest");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(Plan {
+        id: 1,
+        title: "ship the config".into(),
+        steps: vec![PlanStep {
+            summary: "upload the site config".into(),
+            kind: StepKind::Upload {
+                artifact: "nginx/site.conf".into(),
+            },
+            hosts: vec![1],
+        }],
+    })));
+    app.function_key(2);
+    assert_eq!(app.mode, Mode::ConfirmPlan);
+
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("nginx/site.conf"), "{out}");
+    assert!(
+        out.contains(&artifacts::upload_target("nginx/site.conf").1),
+        "the whole destination, not just the directory: {out}"
+    );
+}
+
 #[test]
 fn unchecking_a_host_changes_what_would_run() {
     use crate::agent::AgentEvent;

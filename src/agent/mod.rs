@@ -243,7 +243,9 @@ pub fn system_prompt(manuals: &str) -> String {
          They must never prompt, never wait for a terminal, and never assume a TTY. Start \
          with `set -euo pipefail` unless you have a reason not to. Prefer idempotent \
          commands, so re-running a step after a partial failure is safe. Say what a step \
-         does in its summary; the operator reads that before the script.\n\
+         does in its summary; the operator reads that before the script. A script may use \
+         a file an upload step of the same plan sent, as long as the upload is the earlier \
+         step; the `script` field says where uploads land.\n\
          \n\
          Be concise. The operator is reading a terminal, not a report.",
         ro = "readonly_",
@@ -856,6 +858,16 @@ mod tests {
         );
         assert!(p.contains("bash -s"), "{p}");
         assert!(p.contains("only those hosts"), "{p}");
+        // An upload and the script that reads it can share one plan, and the
+        // order matters — both decided while the model is planning, before it
+        // opens the `script` field. The path itself is not here: it is stated
+        // once, in the schema, where it is read at the moment it is written, and
+        // a second copy is a copy that can drift.
+        assert!(p.contains("upload step of the same plan"), "{p}");
+        assert!(
+            !p.contains(artifacts::UPLOAD_DIR),
+            "the path belongs in the schema, not a second time here: {p}"
+        );
         // The grammar itself is the probe schemas' own field types, which is
         // where it is read at the moment a call is filled in. The prompt's job
         // is to send the model there and to say the fields are the whole of it,

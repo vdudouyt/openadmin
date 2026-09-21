@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum StepKind {
     /// Non-interactive bash, piped to `bash -s` on each target.
     Scriptlet { script: String },
-    /// A file from `<datadir>/artifacts/`, uploaded to a per-run directory.
+    /// A file from `<datadir>/artifacts/`, uploaded to
+    /// [`crate::agent::artifacts::UPLOAD_DIR`] on each host.
     Upload { artifact: String },
 }
 
