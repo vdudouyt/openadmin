@@ -1334,6 +1334,77 @@ fn the_cursor_row_stays_visible_when_the_list_scrolls() {
     assert!(app.regions.row_start > 0, "the window scrolled");
 }
 
+/// The right border beside the host rows, from the cell by the column header
+/// down to the bottom-right corner.
+fn hosts_right_edge(app: &mut App, w: u16, h: u16) -> Vec<String> {
+    let buf = render_buf(app, w, h);
+    let rows = app.regions.rows;
+    let x = rows.right();
+    let mut edge = vec![buf[(x, rows.y - 1)].symbol().to_string()];
+    let mut y = rows.y;
+    loop {
+        let cell = buf[(x, y)].symbol().to_string();
+        let corner = cell == "┘";
+        edge.push(cell);
+        if corner {
+            return edge;
+        }
+        y += 1;
+    }
+}
+
+/// Where in the list the window is, on the frame's right edge: flush at the
+/// top at the start and at the bottom at the end — and only beside the rows,
+/// so the border by the column header and the corner below stay the frame's.
+#[test]
+fn the_hosts_scrollbar_shows_where_in_the_list_you_are() {
+    let (mut app, _rx) = test_app("hostbar");
+    for i in 0..40 {
+        app.db
+            .save(&HostRecord {
+                name: format!("h{i:02}"),
+                proto: "ssh".into(),
+                addr: format!("10.0.0.{i}"),
+                port: 22,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    app.reload();
+
+    let top = hosts_right_edge(&mut app, 120, 20);
+    let n = top.len();
+    assert_eq!(top[0], "│", "beside the header, the frame: {top:?}");
+    assert_eq!(
+        top[1], "█",
+        "at the start, the thumb is at the top: {top:?}"
+    );
+    assert_eq!(top[n - 2], "│", "{top:?}");
+    assert_eq!(top[n - 1], "┘", "the corner is the frame's: {top:?}");
+
+    key(&mut app, KeyCode::End);
+    let end = hosts_right_edge(&mut app, 120, 20);
+    assert_eq!(end[0], "│", "{end:?}");
+    assert_eq!(end[1], "│", "{end:?}");
+    assert_eq!(
+        end[n - 2],
+        "█",
+        "at the end, the thumb is at the bottom: {end:?}"
+    );
+    assert_eq!(end[n - 1], "┘", "{end:?}");
+}
+
+/// A list that fits has nowhere to scroll, and keeps its plain border.
+#[test]
+fn a_host_list_that_fits_keeps_a_plain_border() {
+    let (mut app, _rx) = test_app("hostnobar");
+    let edge = hosts_right_edge(&mut app, 120, 30);
+    let (last, sides) = edge.split_last().unwrap();
+    assert_eq!(last, "┘");
+    assert!(sides.iter().all(|c| c == "│"), "{edge:?}");
+    assert!(sides.len() > 4, "the border runs past the three rows");
+}
+
 #[test]
 fn resizing_between_frames_keeps_the_table_intact() {
     let (mut app, _rx) = test_app("resize");

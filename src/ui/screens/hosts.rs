@@ -15,8 +15,9 @@ use crate::ui::widgets::{pad, padl};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::symbols::scrollbar;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 /// Fixed column widths; ADDR and MOUNT POINT absorb the slack. The mockup's
 /// 120-column reference is `HostsScreen.jsx:6`.
@@ -164,6 +165,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     f.render_widget(Paragraph::new(lines), inner);
+
+    // The list's position on the frame's right edge, beside the rows only — as
+    // bulk review does on the same plain orange frame, so it costs the table no
+    // column. Only when there is somewhere to scroll: a thumb filling the whole
+    // edge would say nothing but replace the border.
+    if app.hosts.len() > visible {
+        let band = Rect::new(area.right() - 1, inner.y + 1, 1, visible as u16);
+        let mut state = ScrollbarState::new(app.hosts.len() - visible + 1)
+            .position(start)
+            .viewport_content_length(visible);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .symbols(scrollbar::VERTICAL)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(theme::border_focused())
+                .thumb_style(Style::new().fg(theme::ORANGE)),
+            band,
+            &mut state,
+        );
+    }
 }
 
 fn row(h: &HostRecord, c: &Cols, cursor: bool, marked: bool, hover: bool) -> Line<'static> {
