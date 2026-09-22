@@ -548,12 +548,13 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
             }
             Row::Host(i, j) => {
                 let id = sel.plan.steps[i].hosts[j];
-                let name = app
-                    .hosts
-                    .iter()
-                    .find(|h| h.id == id)
+                let host = app.hosts.iter().find(|h| h.id == id);
+                let name = host
                     .map(|h| h.name.clone())
                     .unwrap_or_else(|| format!("#{id} (gone)"));
+                // Proposed before the filter changed: said so, not unchecked —
+                // whether it runs is still the operator's call.
+                let hidden = host.is_some_and(|h| !app.is_visible(h));
                 let on = sel.host_on[i][j];
                 let active = sel.host_active(i, j);
                 body.push((
@@ -570,6 +571,10 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                             } else {
                                 theme::faint()
                             },
+                        ),
+                        Span::styled(
+                            if hidden { " · hidden by filter" } else { "" },
+                            theme::faint(),
                         ),
                     ]),
                     Some(r),
@@ -859,7 +864,11 @@ pub fn confirm_delete(f: &mut Frame, app: &mut App) {
                 theme::faint(),
             ));
         }
-    } else if let Some(h) = app.hosts.iter().find(|h| h.name == names[0]) {
+    } else if let Some(h) = app
+        .pending_delete
+        .first()
+        .and_then(|id| app.hosts.iter().find(|h| h.id == *id))
+    {
         lines.push(Line::styled(
             format!("  {}@{}:{}", h.login, h.addr, h.port),
             theme::muted(),
@@ -893,6 +902,71 @@ pub fn confirm_delete(f: &mut Frame, app: &mut App) {
     lines.push(Line::styled("Y delete   N cancel", theme::faint()).right_aligned());
 
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Ctrl+F on Hosts: the filter, typed. Shows as it is typed how many hosts it
+/// would list, so a needle that matches nothing is seen before it is applied.
+pub fn filter_hosts(f: &mut Frame, app: &mut App) {
+    let Some(input) = app.filter_edit.clone() else {
+        return;
+    };
+    let rect = centered(f.area(), 60, 11);
+    f.render_widget(Clear, rect);
+    let block = modal_block("Filter Hosts");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 7 || inner.width < 20 {
+        return;
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            "Show hosts whose name or address contains:",
+            theme::muted(),
+        )),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let field = Rect::new(inner.x, inner.y + 1, inner.width, 3);
+    input_box(f, field, "Name or address", &input, true, "");
+
+    let needle = input.value().trim().to_lowercase();
+    let all = app.hosts.len();
+    let count = if needle.is_empty() {
+        format!("All {all} hosts")
+    } else {
+        let n = app
+            .hosts
+            .iter()
+            .filter(|h| {
+                h.name.to_lowercase().contains(&needle) || h.addr.to_lowercase().contains(&needle)
+            })
+            .count();
+        format!("{n} of {all} match")
+    };
+    let tail = Rect::new(inner.x, inner.y + 4, inner.width, inner.height - 4);
+    let mut lines = vec![
+        Line::styled(count, theme::faint()),
+        Line::styled("↵ filter · empty shows all · Esc cancel", theme::faint()),
+    ];
+    let row = button_row(
+        app,
+        tail,
+        lines.len() as u16,
+        &[
+            (
+                " Filter ".to_string(),
+                theme::primary_btn(),
+                Click::Key(KeyCode::Enter),
+            ),
+            (
+                "[ Cancel ]".to_string(),
+                theme::body(),
+                Click::Key(KeyCode::Esc),
+            ),
+        ],
+    );
+    lines.push(row);
+    f.render_widget(Paragraph::new(lines), tail);
 }
 
 /// Bulk import: paste a qhostman list, then review what it would add.
@@ -1256,6 +1330,7 @@ pub fn help(f: &mut Frame, app: &App) {
         k("↑ ↓", "move cursor"),
         k("Insert", "mark / unmark host (multi-select)"),
         k("*", "invert marks    Ctrl+A select all"),
+        k("Ctrl+F", "filter by name or address — Esc shows all"),
         k("F2 / a", "add — bulk add: F2 in the form"),
         k("F4 / e", "edit — SSH key: F7 in the form"),
         k("↵", "open shell (marked hosts → group tab)"),

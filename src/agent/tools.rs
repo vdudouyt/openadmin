@@ -14,7 +14,7 @@
 
 use super::exec::run_capture;
 use super::hosts::{HostFields, HostWrite, validate_create, validate_edit};
-use super::plan::{Plan, PlanRequest, resolve};
+use super::plan::{Plan, PlanRequest, hosts_available, resolve};
 use super::proto::ToolDef;
 use super::{artifacts, manuals, probe, readonly};
 use crate::config::Config;
@@ -31,7 +31,13 @@ use std::time::Duration;
 
 /// Everything a tool may touch. No executor, by construction.
 pub struct ToolCtx<'a> {
+    /// The hosts the model may see and act on — the operator's filter applied.
     pub hosts: &'a [HostRecord],
+    /// Whether a filter narrowed `hosts`, so the answers can say so.
+    pub filtered: bool,
+    /// The proxy host, from all hosts: not looked up in `hosts`, where a filter
+    /// could hide it.
+    pub proxy: Option<&'a HostRecord>,
     pub datadir: &'a Path,
     pub cfg: &'a Config,
     /// Raised when the operator cancels; the plan executor polls it between
@@ -125,8 +131,16 @@ pub fn definitions(cfg: &Config) -> Vec<ToolDef> {
              OpenAdmin supplies the address, port, login and credentials itself. \
              They are not available to you, and you do not need them — never ask \
              the operator for them, and never write one into a script. The list is \
-             a snapshot taken when the turn began; a host added mid-turn will not \
-             appear.",
+             a snapshot taken when the turn began: a host added, or a filter \
+             changed, mid-turn takes effect with the operator's next message.\n\
+             \n\
+             The operator can narrow this list with a filter on the Hosts screen. \
+             When they have, the result says so, and only the hosts it names are \
+             available to any tool: others may exist, and naming one gets the same \
+             unknown-host answer as a name that does not. What the filter matches is \
+             not given to you, and you do not need it. If the task needs a host that \
+             is not listed, ask the operator to clear the filter (Esc on the Hosts \
+             screen) — do not guess names.",
             serde_json::json!({"type": "object", "properties": {}}),
         ),
         ToolDef::function(
@@ -316,16 +330,33 @@ pub fn dispatch(ctx: &ToolCtx, name: &str, arguments: &str) -> ToolOutcome {
         // infrastructure on somebody else's server.
         LIST_HOSTS => {
             let names: Vec<&str> = ctx.hosts.iter().map(|h| h.name.as_str()).collect();
-            if names.is_empty() {
-                return ToolOutcome::Text(
+            // Under a filter, said so — what the filter is never is: it can
+            // hold part of an address.
+            match (names.is_empty(), ctx.filtered) {
+                (true, false) => ToolOutcome::Text(
                     "No hosts are configured. The operator adds them on the Hosts screen."
                         .to_string(),
-                );
+                ),
+                (true, true) => ToolOutcome::Text(
+                    "No host you can use matches the operator's current filter on the \
+                     Hosts screen, so none is available to you. If the task needs one, ask \
+                     them to change or clear it (Esc on the Hosts screen)."
+                        .to_string(),
+                ),
+                (false, filtered) => {
+                    let list = serde_json::to_string(&names)
+                        .unwrap_or_else(|e| format!("could not list hosts: {e}"));
+                    ToolOutcome::Text(if filtered {
+                        format!(
+                            "{list}\nThe operator has filtered the host list: these are the \
+                             only hosts available to you until they clear it. If the task \
+                             needs another, ask them to clear the filter."
+                        )
+                    } else {
+                        list
+                    })
+                }
             }
-            ToolOutcome::Text(
-                serde_json::to_string(&names)
-                    .unwrap_or_else(|e| format!("could not list hosts: {e}")),
-            )
         }
         LIST_ARTIFACTS => match artifacts::list(ctx.datadir) {
             Ok(l) if l.items.is_empty() => ToolOutcome::Text(
@@ -403,13 +434,10 @@ fn run_probe(ctx: &ToolCtx, name: &str, arguments: &str) -> String {
     };
     let host_name = value.get("host").and_then(|h| h.as_str()).unwrap_or("");
     let Some(host) = ctx.hosts.iter().find(|h| h.name == host_name) else {
+        let names: Vec<&str> = ctx.hosts.iter().map(|h| h.name.as_str()).collect();
         return format!(
-            "unknown host {host_name:?}. Known hosts: {}.",
-            ctx.hosts
-                .iter()
-                .map(|h| h.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            "unknown host {host_name:?}. {}",
+            hosts_available(&names, ctx.filtered)
         );
     };
 
@@ -424,8 +452,7 @@ fn run_probe(ctx: &ToolCtx, name: &str, arguments: &str) -> String {
     }
 
     let remote = ssh::quote_command(program, &args);
-    let proxy = ctx.hosts.iter().find(|h| h.proxy);
-    let launch = ssh::exec_command(host, ctx.datadir, ctx.cfg, &remote, ssh::Stdin::Null, proxy);
+    let launch = probe_launch(ctx, host, &remote);
     match run_capture(
         &launch,
         None,
@@ -438,6 +465,20 @@ fn run_probe(ctx: &ToolCtx, name: &str, arguments: &str) -> String {
         Ok(c) => sanitize_block(&c.summarize()),
         Err(e) => format!("could not run the command: {e}"),
     }
+}
+
+/// The ssh invocation for one probe. Through the proxy handed in from all
+/// hosts — never one looked up among `ctx.hosts`, where the operator's filter
+/// could hide it and send the probe around the proxy.
+fn probe_launch(ctx: &ToolCtx, host: &HostRecord, remote: &str) -> ssh::Launch {
+    ssh::exec_command(
+        host,
+        ctx.datadir,
+        ctx.cfg,
+        remote,
+        ssh::Stdin::Null,
+        ctx.proxy,
+    )
 }
 
 /// Sanitize a multi-line block, keeping the line structure.
@@ -503,7 +544,7 @@ fn propose(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
         Err(e) => return ToolOutcome::Text(format!("could not read the plan: {e}")),
     };
     let known: Vec<(i64, String)> = ctx.hosts.iter().map(|h| (h.id, h.name.clone())).collect();
-    match resolve(ctx.next_plan_id, req, &known) {
+    match resolve(ctx.next_plan_id, req, &known, ctx.filtered) {
         Ok(plan) => {
             let receipt = format!(
                 "Plan #{} recorded: {} step(s) across {} host(s). It is now waiting for the \
@@ -604,9 +645,17 @@ fn edit_host(ctx: &ToolCtx, arguments: &str) -> ToolOutcome {
     if !taken.iter().any(|n| *n == host) {
         // No name, and no list: the point of a write-only tool is that you
         // cannot learn from it which hosts exist.
+        // Under a filter a hidden host is refused the same way — and said why,
+        // or the natural next step, `create_host`, would duplicate it.
+        let filter = if ctx.filtered {
+            " The operator has filtered the host list, so a host outside it cannot be \
+             changed — if that is the one they meant, ask them to clear the filter."
+        } else {
+            ""
+        };
         return ToolOutcome::Text(format!(
             "refused: no host by that name. This tool changes a record that already \
-             exists; {CREATE_HOST} adds a new one."
+             exists; {CREATE_HOST} adds a new one.{filter}"
         ));
     }
     if let Err(e) = validate_edit(&fields, &host, &taken) {
@@ -662,6 +711,8 @@ mod tests {
     ) -> ToolCtx<'a> {
         ToolCtx {
             hosts,
+            filtered: false,
+            proxy: None,
             datadir: dir,
             cfg,
             cancel,
@@ -1119,6 +1170,118 @@ mod tests {
         assert!(!text.contains("2222"), "the new port leaked: {text}");
     }
 
+    /// A context the operator's filter has narrowed to `hosts`.
+    fn filtered<'a>(
+        hosts: &'a [HostRecord],
+        cfg: &'a Config,
+        cancel: &'a AtomicBool,
+    ) -> ToolCtx<'a> {
+        ToolCtx {
+            filtered: true,
+            ..ctx(hosts, cfg, Path::new("/tmp"), cancel)
+        }
+    }
+
+    /// Under a filter the list says so — these are all the model may use — and
+    /// never what the filter is.
+    #[test]
+    fn a_filtered_list_says_so() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let out = dispatch(&filtered(&h[..1], &cfg, &cancel), LIST_HOSTS, "{}");
+        assert_eq!(
+            out.text(),
+            "[\"web-01\"]\nThe operator has filtered the host list: these are the only hosts \
+             available to you until they clear it. If the task needs another, ask them to \
+             clear the filter."
+        );
+    }
+
+    /// A filter matching none of the model's hosts is not "no hosts configured":
+    /// the operator has hosts, and the model is told how to get one back.
+    #[test]
+    fn a_filter_that_matches_nothing_is_not_no_hosts_configured() {
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let text = dispatch(&filtered(&[], &cfg, &cancel), LIST_HOSTS, "{}")
+            .text()
+            .to_string();
+        assert!(!text.contains("configured"), "{text}");
+        assert!(text.contains("filter") && text.contains("Esc"), "{text}");
+    }
+
+    /// Every unknown name gets the same answer under a filter — a host it hides
+    /// and one that never existed alike — so no refusal says which is which.
+    #[test]
+    fn unknown_hosts_under_a_filter_all_get_the_same_answer() {
+        let h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let c = filtered(&h[..1], &cfg, &cancel);
+        let calls = [
+            (
+                "readonly_read_file",
+                r#"{"host":"HOST","paths":["/etc/hostname"]}"#,
+            ),
+            (
+                PROPOSE_PLAN,
+                r#"{"steps":[{"kind":"scriptlet","script":"id","hosts":["HOST"]}]}"#,
+            ),
+            (EDIT_HOST, r#"{"host":"HOST","port":2222}"#),
+        ];
+        for (tool, args) in calls {
+            let hidden = dispatch(&c, tool, &args.replace("HOST", "db-main"))
+                .text()
+                .replace("db-main", "X");
+            let absent = dispatch(&c, tool, &args.replace("HOST", "nowhere"))
+                .text()
+                .replace("nowhere", "X");
+            assert_eq!(hidden, absent, "{tool}");
+            assert!(hidden.contains("filtered"), "{tool}: {hidden}");
+        }
+    }
+
+    /// The proxy is handed in from all hosts: a probe goes through it though the
+    /// filter hides the proxy host — and a proxy flag on a host in scope no longer
+    /// decides anything.
+    #[test]
+    fn a_hidden_proxy_still_carries_probes() {
+        let mut h = hosts();
+        let cfg = Config::default();
+        let cancel = AtomicBool::new(false);
+        let proxy = HostRecord {
+            proxy: true,
+            ..h[1].clone()
+        };
+        let via = |c: &ToolCtx| {
+            probe_launch(c, &c.hosts[0], "id")
+                .args
+                .iter()
+                .any(|a| a.starts_with("ProxyCommand="))
+        };
+        let mut c = filtered(&h[..1], &cfg, &cancel);
+        c.proxy = Some(&proxy);
+        assert!(via(&c), "the hidden proxy carries it");
+
+        h[0].proxy = false;
+        h[1].proxy = true;
+        let c = ctx(&h, &cfg, Path::new("/tmp"), &cancel);
+        assert!(!via(&c), "only the proxy handed in counts");
+    }
+
+    /// The contract is in the schema, where it is read — and the schema stays the
+    /// same whatever the filter, as the cached prompt prefix must.
+    #[test]
+    fn the_list_hosts_schema_states_the_filter_contract() {
+        let defs = definitions(&Config::default());
+        let list = defs.iter().find(|d| d.function.name == LIST_HOSTS).unwrap();
+        let d = &list.function.description;
+        assert!(d.contains("filter on the Hosts screen"), "{d}");
+        assert!(d.contains("not given to you"), "{d}");
+        assert!(d.contains("same unknown-host answer"), "{d}");
+    }
+
     /// A refusal must not become a way to ask "does this host exist?".
     #[test]
     fn a_missing_host_is_refused_without_saying_which_hosts_exist() {
@@ -1169,6 +1332,8 @@ mod tests {
         let written = vec!["web-03".to_string()];
         let c = ToolCtx {
             hosts: &h,
+            filtered: false,
+            proxy: None,
             datadir: Path::new("/tmp"),
             cfg: &cfg,
             cancel: &cancel,

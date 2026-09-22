@@ -22,10 +22,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Say plainly when there is no model rather than rendering an empty label.
     let right = if app.cfg.agent.configured() {
+        // What the agent is given: SSH hosts, the filter applied.
+        let scope = app.agent_scope();
         format!(
-            " {} · {} hosts in context ",
+            " {} · {} hosts in context{} ",
             app.cfg.agent.model,
-            app.hosts.len()
+            scope.hosts.len(),
+            if scope.filtered { " · filtered" } else { "" }
         )
     } else {
         " no model set · see [agent] in config.toml ".to_string()

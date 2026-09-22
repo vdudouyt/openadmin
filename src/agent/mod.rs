@@ -38,6 +38,21 @@ use tools::{ToolCtx, ToolOutcome};
 /// context window or the bill ran out.
 const MAX_STEPS: usize = 24;
 
+/// The hosts the model may see and act on, as the operator has scoped them —
+/// a snapshot, because `DataBase` is not `Sync` and lives on the UI thread.
+#[derive(Debug, Clone, Default)]
+pub struct HostScope {
+    /// SSH hosts the Hosts screen lists: all of them, or those its filter
+    /// matches. Every tool reads this and nothing wider.
+    pub hosts: Vec<HostRecord>,
+    /// Whether a filter narrowed `hosts`. The model is told so; never what the
+    /// filter is, which can hold part of an address.
+    pub filtered: bool,
+    /// The proxy host, from *all* hosts: hiding it must not route around it.
+    /// Its record only switches the SOCKS route on; the model never sees it.
+    pub proxy: Option<HostRecord>,
+}
+
 /// What the UI asks the worker to do.
 pub enum AgentCommand {
     /// Run a plan the operator confirmed. The payload can only be built by
@@ -45,13 +60,16 @@ pub enum AgentCommand {
     /// here.
     Execute {
         plan: crate::app::approve::ConfirmedPlan,
-        hosts: Vec<HostRecord>,
+        /// The hosts the plan names, as the operator approved them — looked
+        /// up among all hosts, so a filter changed since cannot skip one.
+        run_on: Vec<HostRecord>,
+        /// What the model may see when it reads the report.
+        scope: HostScope,
     },
-    /// Begin a turn. `hosts` is a snapshot because `DataBase` is not `Sync` and
-    /// lives on the UI thread — the worker is handed what it may see.
+    /// Begin a turn, with the hosts the model may see.
     Send {
         text: String,
-        hosts: Vec<HostRecord>,
+        scope: HostScope,
     },
     Shutdown,
 }
@@ -273,6 +291,9 @@ pub struct Worker {
     next_plan_id: u64,
     /// Host names written during the turn in progress. Cleared when one starts.
     written_this_turn: Vec<String>,
+    /// The scope the model last saw — whether filtered, and the host ids —
+    /// for `scope_note`.
+    scope_seen: Option<(bool, Vec<i64>)>,
 }
 
 impl Worker {
@@ -304,6 +325,7 @@ impl Worker {
             events,
             next_plan_id: 1,
             written_this_turn: Vec::new(),
+            scope_seen: None,
         }
     }
 
@@ -311,15 +333,19 @@ impl Worker {
     pub fn run(mut self, commands: Receiver<AgentCommand>) {
         for cmd in commands {
             match cmd {
-                AgentCommand::Send { text, hosts } => {
+                AgentCommand::Send { text, scope } => {
                     self.cancel.store(false, Ordering::Release);
-                    if let Err(e) = self.turn(text, &hosts) {
+                    if let Err(e) = self.turn(text, &scope) {
                         let _ = self.events.send(AgentEvent::Error(e));
                     }
                 }
-                AgentCommand::Execute { plan, hosts } => {
+                AgentCommand::Execute {
+                    plan,
+                    run_on,
+                    scope,
+                } => {
                     self.cancel.store(false, Ordering::Release);
-                    if let Err(e) = self.execute(plan, &hosts) {
+                    if let Err(e) = self.execute(plan, &run_on, &scope) {
                         let _ = self.events.send(AgentEvent::Error(e));
                     }
                 }
@@ -332,7 +358,8 @@ impl Worker {
     fn execute(
         &mut self,
         plan: crate::app::approve::ConfirmedPlan,
-        hosts: &[HostRecord],
+        run_on: &[HostRecord],
+        scope: &HostScope,
     ) -> Result<(), String> {
         let report = {
             let events = self.events.clone();
@@ -346,7 +373,8 @@ impl Worker {
             };
             exec_plan::execute(
                 &plan,
-                hosts,
+                run_on,
+                scope.proxy.as_ref(),
                 &self.datadir,
                 &self.cfg,
                 &self.cancel,
@@ -367,19 +395,52 @@ impl Worker {
         // The report is a fresh user message, not a tool result: propose_plan
         // was already answered when the plan was recorded, and answering the
         // same tool_call_id twice is a protocol error.
-        self.history.push(Message::user(report.to_text()));
-        self.continue_turn(hosts)
+        let note = self.scope_note(scope);
+        self.history
+            .push(Message::user(format!("{note}{}", report.to_text())));
+        self.continue_turn(scope)
     }
 
     /// One user message, through however many tool round-trips it takes.
-    fn turn(&mut self, text: String, hosts: &[HostRecord]) -> Result<(), String> {
+    fn turn(&mut self, text: String, scope: &HostScope) -> Result<(), String> {
         self.written_this_turn.clear();
-        self.history.push(Message::user(text));
-        self.continue_turn(hosts)
+        let note = self.scope_note(scope);
+        self.history.push(Message::user(format!("{note}{text}")));
+        self.continue_turn(scope)
+    }
+
+    /// A line for the model when the operator's filter changed what it may see
+    /// since it last looked — once, at the next thing it reads. Host names
+    /// from earlier in the conversation stay in its context; without this it
+    /// would try one and spend a round trip learning it is gone.
+    fn scope_note(&mut self, scope: &HostScope) -> &'static str {
+        let now = (
+            scope.filtered,
+            scope.hosts.iter().map(|h| h.id).collect::<Vec<_>>(),
+        );
+        let note = match &self.scope_seen {
+            // The first message: `list_hosts` says whatever there is to say.
+            None => "",
+            Some(before) if *before == now => "",
+            Some((true, _)) if !now.0 => {
+                "[OpenAdmin: the operator has cleared the host filter; list_hosts now \
+                 returns every host.]\n\n"
+            }
+            Some((was, _)) if *was || now.0 => {
+                "[OpenAdmin: the operator has changed which hosts are available to you \
+                 since your last message. Host names from earlier in this conversation \
+                 may no longer be usable; list_hosts returns the current ones.]\n\n"
+            }
+            // Unfiltered both times: a host added or removed is the snapshot's
+            // business, as it always was.
+            Some(_) => "",
+        };
+        self.scope_seen = Some(now);
+        note
     }
 
     /// Drive the model until it stops, proposes, or runs out of steps.
-    fn continue_turn(&mut self, hosts: &[HostRecord]) -> Result<(), String> {
+    fn continue_turn(&mut self, scope: &HostScope) -> Result<(), String> {
         let defs = tools::definitions(&self.cfg);
 
         for _ in 0..MAX_STEPS {
@@ -445,7 +506,9 @@ impl Worker {
                 });
 
                 let ctx = ToolCtx {
-                    hosts,
+                    hosts: &scope.hosts,
+                    filtered: scope.filtered,
+                    proxy: scope.proxy.as_ref(),
                     datadir: &self.datadir,
                     cfg: &self.cfg,
                     cancel: &self.cancel,
@@ -668,7 +731,10 @@ mod tests {
         cmd_tx
             .send(AgentCommand::Send {
                 text: text.to_string(),
-                hosts: hosts(),
+                scope: HostScope {
+                    hosts: hosts(),
+                    ..Default::default()
+                },
             })
             .unwrap();
         drop(cmd_tx);
@@ -1036,6 +1102,71 @@ mod tests {
         }
     }
 
+    /// One message per scope, the model answering each in plain text; returns
+    /// the user messages as the model last saw them.
+    fn user_messages_under(scopes: Vec<HostScope>) -> Vec<String> {
+        let turns = scopes.iter().map(|_| ScriptedTurn::text("ok")).collect();
+        let client = Arc::new(ScriptedClient::new(turns));
+        let (ev_tx, _ev_rx) = channel();
+        let (cmd_tx, cmd_rx) = channel();
+        let worker = Worker::new(
+            Box::new(Arc::clone(&client)),
+            Config::default(),
+            std::env::temp_dir(),
+            Arc::new(Stream::default()),
+            Arc::new(ExecStream::default()),
+            Arc::new(AtomicBool::new(false)),
+            ev_tx,
+        );
+        for (n, scope) in scopes.into_iter().enumerate() {
+            cmd_tx
+                .send(AgentCommand::Send {
+                    text: format!("message {n}"),
+                    scope,
+                })
+                .unwrap();
+        }
+        drop(cmd_tx);
+        worker.run(cmd_rx);
+        client
+            .last_request()
+            .into_iter()
+            .filter(|m| m.role == Role::User)
+            .filter_map(|m| m.content)
+            .collect()
+    }
+
+    /// When the operator's filter changes what the model may use, the next
+    /// thing it reads says so — once. Not on the first message, where
+    /// `list_hosts` says it all, and not again while the scope holds.
+    #[test]
+    fn a_changed_host_scope_is_announced_once_at_the_next_message() {
+        let all = HostScope {
+            hosts: hosts(),
+            ..Default::default()
+        };
+        let web = HostScope {
+            hosts: hosts()[..1].to_vec(),
+            filtered: true,
+            proxy: None,
+        };
+        let seen = user_messages_under(vec![all.clone(), web.clone(), web, all]);
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert_eq!(seen[0], "message 0");
+        assert!(
+            seen[1].starts_with("[OpenAdmin: the operator has changed which hosts")
+                && seen[1].ends_with("message 1"),
+            "{}",
+            seen[1]
+        );
+        assert_eq!(seen[2], "message 2", "announced once");
+        assert!(
+            seen[3].starts_with("[OpenAdmin: the operator has cleared the host filter"),
+            "{}",
+            seen[3]
+        );
+    }
+
     /// Drive two prompts through one worker, so a turn can poison the history
     /// for the turn after it.
     fn run_two_turns(
@@ -1060,7 +1191,10 @@ mod tests {
             cmd_tx
                 .send(AgentCommand::Send {
                     text: text.to_string(),
-                    hosts: hosts(),
+                    scope: HostScope {
+                        hosts: hosts(),
+                        ..Default::default()
+                    },
                 })
                 .unwrap();
         }

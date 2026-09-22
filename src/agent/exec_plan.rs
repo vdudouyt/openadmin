@@ -111,6 +111,7 @@ impl ExecReport {
 pub fn execute(
     plan: &ConfirmedPlan,
     hosts: &[HostRecord],
+    proxy: Option<&HostRecord>,
     datadir: &Path,
     cfg: &Config,
     cancel: &AtomicBool,
@@ -119,7 +120,9 @@ pub fn execute(
     mut on_finish: impl FnMut(Option<i32>, bool),
 ) -> ExecReport {
     let mut results = Vec::new();
-    let proxy = hosts.iter().find(|h| h.proxy).cloned();
+    // Handed in from all hosts rather than found among `hosts`: a filter that
+    // hides the proxy host must not route an approved run around the proxy.
+    let proxy = proxy.cloned();
 
     for (i, step) in plan.steps().iter().enumerate() {
         let step_no = i + 1;

@@ -11,7 +11,7 @@
 use crate::app::{App, ScrollTarget};
 use crate::db::model::HostRecord;
 use crate::ui::theme;
-use crate::ui::widgets::{LINE_SCROLLBAR, ScrollGeometry, pad, padl};
+use crate::ui::widgets::{LINE_SCROLLBAR, ScrollGeometry, pad, padl, sanitize};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -92,16 +92,30 @@ pub(crate) fn mask_pass(p: &str) -> String {
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
-    let right = if app.marked.is_empty() {
-        format!(" {} hosts ", app.hosts.len())
-    } else {
-        format!(" {} marked of {} ", app.marked.len(), app.hosts.len())
+    // The listed hosts — all, or those the filter matches — as indices into
+    // `app.hosts`; the cursor is a position in this.
+    let view = app.view();
+    let listed = view.len();
+    let right = match (app.marked.is_empty(), &app.filter) {
+        (true, None) => format!(" {listed} hosts "),
+        (true, Some(_)) => format!(" {listed} of {} hosts ", app.hosts.len()),
+        (false, _) => format!(" {} marked of {listed} ", app.marked.len()),
+    };
+    // The filter is named in the title, so a short list is never mistaken for
+    // the whole of it.
+    let title = match &app.filter {
+        None => " Known Hosts ".to_string(),
+        Some(needle) => {
+            let room = (area.width as usize / 3).max(8);
+            let shown = pad(&sanitize(needle), room.min(needle.chars().count().max(1)));
+            format!(" Known Hosts · {} ", shown.trim_end())
+        }
     };
     let block = Block::bordered()
         .border_style(theme::border_focused())
         .style(Style::new().bg(theme::BG_BASE))
         .title_top(Line::styled(
-            " Known Hosts ",
+            title,
             theme::bright().add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::styled(right, theme::muted()).right_aligned());
@@ -134,7 +148,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Scroll window, keeping the cursor centered like the mockup.
     let visible = inner.height.saturating_sub(1) as usize;
-    let start = window_start(app.cursor, app.hosts.len(), visible);
+    let start = window_start(app.cursor, listed, visible);
     app.scroll = start;
 
     // Register hitboxes before drawing, so clicks and pixels agree.
@@ -142,18 +156,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         inner.x,
         inner.y + 1,
         inner.width,
-        visible.min(app.hosts.len().saturating_sub(start)) as u16,
+        visible.min(listed.saturating_sub(start)) as u16,
     );
     app.regions.row_start = start;
     let hovered = app.hovered_row();
 
-    for (i, host) in app.hosts.iter().enumerate().skip(start).take(visible) {
+    for (pos, &i) in view.iter().enumerate().skip(start).take(visible) {
+        let host = &app.hosts[i];
         lines.push(row(
             host,
             &c,
-            i == app.cursor,
+            pos == app.cursor,
             app.marked.contains(&host.id),
-            hovered == Some(i),
+            hovered == Some(pos),
+        ));
+    }
+    if listed == 0 && app.filter.is_some() {
+        lines.push(Line::styled(
+            "  No hosts match the filter — Esc shows all",
+            theme::faint(),
         ));
     }
 
@@ -165,9 +186,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     // edge would say nothing but replace the border.
     // The thumb is a line (`LINE_SCROLLBAR` says why): the window keeps the
     // cursor centred, so the thumb nearly always sits beside the cursor row.
-    if app.hosts.len() > visible {
+    if listed > visible {
         let band = Rect::new(area.right() - 1, inner.y + 1, 1, visible as u16);
-        let mut state = scrollbar_geometry(app.hosts.len(), visible).state(start);
+        let mut state = scrollbar_geometry(listed, visible).state(start);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .symbols(LINE_SCROLLBAR)

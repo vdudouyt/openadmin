@@ -75,6 +75,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Help => dialogs::help(f, app),
         Mode::Mounting => dialogs::mounting(f, app),
         Mode::BulkImport => dialogs::bulk_import(f, app),
+        Mode::Filter => dialogs::filter_hosts(f, app),
         Mode::Normal => {}
     }
 

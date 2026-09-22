@@ -153,6 +153,12 @@ fn entries(app: &App) -> Vec<Entry> {
         }
         Mode::ShowKey | Mode::Help => return vec![e("Esc", "Close", 0xff, false)],
         Mode::Mounting => return vec![e("Esc", "Cancel", 0xff, false)],
+        Mode::Filter => {
+            return vec![
+                e("Esc", "Cancel", 0xff, false),
+                e("↵", "Filter", 0xff, false),
+            ];
+        }
         Mode::BulkImport => {
             return match app.bulk.as_ref().map(|b| b.step) {
                 Some(BulkStep::Review) => vec![

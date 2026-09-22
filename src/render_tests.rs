@@ -2984,7 +2984,12 @@ fn the_agent_is_shown_ssh_hosts_only() {
         port: 21,
         ..Default::default()
     });
-    let seen: Vec<String> = app.agent_hosts().into_iter().map(|h| h.name).collect();
+    let seen: Vec<String> = app
+        .agent_scope()
+        .hosts
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
     assert!(!seen.is_empty(), "the ssh ones are still there");
     assert!(
         !seen.iter().any(|n| n == "files-01"),
@@ -4348,4 +4353,436 @@ fn a_long_review_scrolls() {
     for (w, h) in [(80, 24), (60, 16), (30, 8)] {
         let _ = render(&mut app, w, h);
     }
+}
+
+// ---- the host filter ---------------------------------------------------------
+
+fn ctrl(app: &mut App, c: char) {
+    app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+
+fn type_str(app: &mut App, s: &str) {
+    for c in s.chars() {
+        key(app, KeyCode::Char(c));
+    }
+}
+
+/// Filter the Hosts screen to `needle`, the way the operator does.
+fn filter_to(app: &mut App, needle: &str) {
+    ctrl(app, 'f');
+    assert_eq!(app.mode, Mode::Filter);
+    app.filter_edit = Some(tui_input::Input::new(needle.to_string()));
+    key(app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+fn listed(app: &App) -> Vec<String> {
+    app.visible().map(|h| h.name.clone()).collect()
+}
+
+/// Ctrl+F, a needle, Enter: only hosts whose name or address contains it, in
+/// any case — FTP hosts too, on the screen — and the frame says what it shows.
+#[test]
+fn ctrl_f_filters_by_name_or_address_in_any_case() {
+    let (mut app, _rx) = test_app("filter");
+    ctrl(&mut app, 'f');
+    assert!(render(&mut app, 120, 30).contains("Filter Hosts"));
+    type_str(&mut app, "WEB");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter.as_deref(), Some("WEB"));
+    assert_eq!(listed(&app), ["web-01"]);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("Known Hosts · WEB"), "{out}");
+    assert!(out.contains(" 1 of 3 hosts "), "{out}");
+    assert!(!out.contains("db-main"), "{out}");
+
+    filter_to(&mut app, "10.0.8");
+    assert_eq!(listed(&app), ["db-main"], "by address");
+    filter_to(&mut app, "192.168");
+    assert_eq!(listed(&app), ["nas"], "an FTP host is listed too");
+}
+
+/// The dialog holds the filter there is; cancelling — Esc or Ctrl+C — leaves
+/// it as it was; an empty needle shows every host.
+#[test]
+fn the_filter_dialog_is_prefilled_and_cancelling_keeps_the_filter() {
+    let (mut app, _rx) = test_app("filter-cancel");
+    filter_to(&mut app, "web");
+    ctrl(&mut app, 'f');
+    assert_eq!(app.filter_edit.as_ref().unwrap().value(), "web");
+    type_str(&mut app, "zzz");
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(
+        (app.mode, app.filter.as_deref()),
+        (Mode::Normal, Some("web"))
+    );
+
+    ctrl(&mut app, 'f');
+    ctrl(&mut app, 'c');
+    assert_eq!(
+        (app.mode, app.filter.as_deref()),
+        (Mode::Normal, Some("web"))
+    );
+
+    filter_to(&mut app, "   ");
+    assert_eq!(app.filter, None, "blank shows all");
+    assert_eq!(listed(&app).len(), 3);
+}
+
+/// Each Esc undoes one thing: the filter first, then the marks.
+#[test]
+fn esc_clears_the_filter_before_the_marks() {
+    let (mut app, _rx) = test_app("filter-esc");
+    filter_to(&mut app, "web");
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.marked.len(), 1);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filter, None);
+    assert_eq!(app.marked.len(), 1, "the marks stay");
+    key(&mut app, KeyCode::Esc);
+    assert!(app.marked.is_empty());
+}
+
+/// The cursor lives in the listed hosts: Home, End, arrows and a click move
+/// over them, and the hover hint describes the host on that row.
+#[test]
+fn the_cursor_moves_within_the_filtered_list() {
+    let mut app = many_hosts("filter-cursor");
+    filter_to(&mut app, "h1");
+    assert_eq!(listed(&app).len(), 10, "h10 to h19");
+    key(&mut app, KeyCode::End);
+    assert_eq!(app.host().unwrap().name, "h19");
+    key(&mut app, KeyCode::Home);
+    assert_eq!(app.host().unwrap().name, "h10");
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.host().unwrap().name, "h11");
+    key(&mut app, KeyCode::PageDown);
+    assert_eq!(app.host().unwrap().name, "h19", "clamped to the list");
+
+    let _ = render(&mut app, 120, 20);
+    let rows = app.regions.rows;
+    click(&mut app, rows.x + 2, rows.y + 2);
+    assert_eq!(app.host().unwrap().name, "h12");
+    moved(&mut app, rows.x + 2, rows.y + 3);
+    let hint = app.hover_hint().unwrap();
+    assert!(hint.contains("10.0.0.13"), "{hint}");
+}
+
+/// Nothing reaches a host the filter hides: applying one drops its marks,
+/// Ctrl+A and `*` act on the listed hosts, and what Enter, mount and F8 act on
+/// is listed — even should a mark on a hidden host slip through.
+#[test]
+fn marks_and_actions_stay_inside_the_filter() {
+    let (mut app, _rx) = test_app("filter-marks");
+    ctrl(&mut app, 'a');
+    assert_eq!(app.marked.len(), 3);
+    filter_to(&mut app, "web");
+    let web = app.hosts[0].id;
+    assert_eq!(
+        app.marked,
+        [web].into_iter().collect(),
+        "hidden marks dropped"
+    );
+
+    key(&mut app, KeyCode::Char('*'));
+    assert!(app.marked.is_empty(), "inverted within the list");
+    ctrl(&mut app, 'a');
+    assert_eq!(
+        app.marked,
+        [web].into_iter().collect(),
+        "all the listed ones"
+    );
+
+    app.marked.insert(app.hosts[1].id);
+    let targets: Vec<String> = app.targets().into_iter().map(|h| h.name).collect();
+    assert_eq!(targets, ["web-01"]);
+    app.function_key(8);
+    assert_eq!(
+        app.pending_delete,
+        vec![web],
+        "F8 deletes only what is shown"
+    );
+}
+
+/// A host deleted above the cursor does not move it to another host.
+#[test]
+fn reload_keeps_the_cursor_on_its_host() {
+    let (mut app, _rx) = test_app("filter-reload");
+    key(&mut app, KeyCode::End);
+    assert_eq!(app.host().unwrap().name, "nas");
+    app.db.remove(app.hosts[0].id).unwrap();
+    app.reload();
+    assert_eq!(app.host().unwrap().name, "nas");
+}
+
+/// A filter that matches nothing says so, and there is nothing to act on.
+#[test]
+fn a_filter_matching_nothing_says_so_and_nothing_acts() {
+    let (mut app, _rx) = test_app("filter-none");
+    filter_to(&mut app, "zzz");
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("No hosts match the filter"), "{out}");
+    assert!(app.host().is_none());
+    assert!(app.targets().is_empty());
+    key(&mut app, KeyCode::Enter);
+    assert!(app.term.is_empty(), "no shell opened");
+    app.function_key(8);
+    assert_eq!(app.mode, Mode::Normal, "nothing to delete");
+}
+
+/// Only Ctrl+F and Esc change the filter — it is the agent's scope too. A
+/// host saved or imported that it would hide is said so, and not marked.
+#[test]
+fn a_saved_or_imported_host_the_filter_hides_leaves_the_filter_on() {
+    let (mut app, _rx) = test_app("filter-save");
+    filter_to(&mut app, "web");
+    app.open_add();
+    type_str(&mut app, "bastion");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Tab);
+    type_str(&mut app, "10.9.9.9");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter.as_deref(), Some("web"));
+    assert!(
+        app.status.text.contains("hidden by the filter"),
+        "{}",
+        app.status.text
+    );
+    assert_eq!(listed(&app), ["web-01"]);
+
+    key(&mut app, KeyCode::F(2));
+    key(&mut app, KeyCode::F(2));
+    app.on_paste(QHOSTMAN);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter.as_deref(), Some("web"));
+    assert!(app.marked.is_empty(), "nothing hidden is marked");
+    assert!(
+        app.status.text.contains("the filter hides 2"),
+        "{}",
+        app.status.text
+    );
+}
+
+/// The dialog takes a paste as one line, its Filter button applies, and a
+/// click outside it cancels.
+#[test]
+fn the_filter_dialog_takes_a_paste_its_button_and_a_click_outside() {
+    let (mut app, _rx) = test_app("filter-dialog");
+    ctrl(&mut app, 'f');
+    app.on_paste("db\r\n");
+    assert_eq!(app.filter_edit.as_ref().unwrap().value(), "db");
+    let _ = render(&mut app, 120, 30);
+    let b = button(&app, Click::Key(KeyCode::Enter));
+    click(&mut app, b.x + 1, b.y);
+    assert_eq!(app.filter.as_deref(), Some("db"));
+
+    ctrl(&mut app, 'f');
+    let _ = render(&mut app, 120, 30);
+    click(&mut app, 0, 0);
+    assert_eq!(
+        (app.mode, app.filter.as_deref()),
+        (Mode::Normal, Some("db"))
+    );
+}
+
+/// The agent is given the SSH hosts the filter lists, is told it is filtered,
+/// and keeps the proxy though the filter hides the proxy host.
+#[test]
+fn the_agent_scope_is_the_filtered_ssh_hosts_and_the_proxy_survives() {
+    let (mut app, _rx) = test_app("filter-scope");
+    app.hosts[1].proxy = true;
+    filter_to(&mut app, "web");
+    let scope = app.agent_scope();
+    let names: Vec<&str> = scope.hosts.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(names, ["web-01"]);
+    assert!(scope.filtered);
+    assert_eq!(scope.proxy.map(|h| h.name), Some("db-main".to_string()));
+
+    filter_to(&mut app, "nas");
+    assert!(
+        app.agent_scope().hosts.is_empty(),
+        "an FTP host is no agent host"
+    );
+}
+
+/// What the filter is never reaches the model — it can hold part of an
+/// address — through any answer a filtered scope gives.
+#[test]
+fn the_needle_never_reaches_the_agent() {
+    use crate::agent::tools::{EDIT_HOST, LIST_HOSTS, PROPOSE_PLAN, ToolCtx, dispatch};
+    use std::sync::atomic::AtomicBool;
+    let (mut app, _rx) = test_app("filter-needle");
+    filter_to(&mut app, "10.0.4");
+    let scope = app.agent_scope();
+    let cancel = AtomicBool::new(false);
+    let ctx = ToolCtx {
+        hosts: &scope.hosts,
+        filtered: scope.filtered,
+        proxy: scope.proxy.as_ref(),
+        datadir: std::path::Path::new("/tmp"),
+        cfg: &app.cfg,
+        cancel: &cancel,
+        next_plan_id: 1,
+        written_this_turn: &[],
+    };
+    let answers = [
+        dispatch(&ctx, LIST_HOSTS, "{}").text().to_string(),
+        dispatch(
+            &ctx,
+            "readonly_read_file",
+            r#"{"host":"db-main","paths":["/etc/hostname"]}"#,
+        )
+        .text()
+        .to_string(),
+        dispatch(
+            &ctx,
+            PROPOSE_PLAN,
+            r#"{"steps":[{"kind":"scriptlet","script":"id","hosts":["db-main"]}]}"#,
+        )
+        .text()
+        .to_string(),
+        dispatch(&ctx, EDIT_HOST, r#"{"host":"db-main","port":2222}"#)
+            .text()
+            .to_string(),
+    ];
+    for a in &answers {
+        assert!(!a.contains("10.0.4"), "the needle leaked: {a}");
+        assert!(a.contains("filter"), "and it is said to be filtered: {a}");
+    }
+}
+
+/// A write the agent asks for that reaches past the filter — a hidden host
+/// edited, a hidden host's name taken — is refused, to the operator.
+#[test]
+fn an_agent_write_outside_the_filter_is_refused_to_the_operator() {
+    use crate::agent::AgentEvent;
+    use crate::agent::hosts::{HostFields, HostWrite};
+    let (mut app, _rx) = test_app("filter-write");
+    filter_to(&mut app, "web");
+    let fields = |name: Option<&str>, port: Option<i64>| HostFields {
+        name: name.map(str::to_string),
+        port,
+        addr: Some("10.1.1.1".into()),
+        ..Default::default()
+    };
+    let write =
+        |app: &mut App, w: HostWrite| app.on_agent_event(AgentEvent::HostWrite(Box::new(w)));
+
+    write(
+        &mut app,
+        HostWrite::Edit {
+            name: "db-main".into(),
+            fields: fields(None, Some(2222)),
+        },
+    );
+    assert!(
+        app.alert.as_deref().unwrap_or("").contains("hides"),
+        "{:?}",
+        app.alert
+    );
+    assert_eq!(app.hosts[1].port, 22, "not changed");
+    app.alert = None;
+
+    write(&mut app, HostWrite::Create(fields(Some("DB-MAIN"), None)));
+    assert!(
+        app.alert
+            .as_deref()
+            .unwrap_or("")
+            .contains("already exists"),
+        "{:?}",
+        app.alert
+    );
+    assert_eq!(app.hosts.len(), 3, "not added");
+    app.alert = None;
+
+    write(
+        &mut app,
+        HostWrite::Edit {
+            name: "web-01".into(),
+            fields: fields(Some("nas"), None),
+        },
+    );
+    assert!(
+        app.alert
+            .as_deref()
+            .unwrap_or("")
+            .contains("already exists"),
+        "{:?}",
+        app.alert
+    );
+    app.alert = None;
+
+    // A listed host, its name kept: fine.
+    write(
+        &mut app,
+        HostWrite::Edit {
+            name: "web-01".into(),
+            fields: HostFields {
+                port: Some(2200),
+                ..Default::default()
+            },
+        },
+    );
+    assert!(app.alert.is_none(), "{:?}", app.alert);
+    assert_eq!(app.hosts[0].port, 2200);
+}
+
+/// A plan proposed before the filter changed names hosts it now hides: the
+/// dialog says so, and leaves whether they run to the operator.
+#[test]
+fn the_plan_dialog_marks_hosts_the_filter_hides() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("filter-plan");
+    filter_to(&mut app, "web");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan("id", vec![1, 2]))));
+    app.function_key(2);
+    let out = render(&mut app, 120, 34);
+    assert!(out.contains("db-main · hidden by filter"), "{out}");
+    assert!(!out.contains("web-01 · hidden"), "{out}");
+}
+
+/// The delete dialog describes the host it deletes by id: another host of the
+/// same name used to lend it its login and address.
+#[test]
+fn the_delete_dialog_describes_the_host_by_id() {
+    let (mut app, _rx) = test_app("filter-delete");
+    for addr in ["10.5.5.1", "10.5.5.2"] {
+        app.db
+            .save(&HostRecord {
+                name: "dup".into(),
+                proto: "ssh".into(),
+                addr: addr.into(),
+                port: 22,
+                login: "root".into(),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    app.reload();
+    key(&mut app, KeyCode::End);
+    app.function_key(8);
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("root@10.5.5.2:22"), "{out}");
+}
+
+/// The chat screen counts what the agent is given: SSH hosts, filtered.
+#[test]
+fn the_chat_label_counts_the_agents_hosts() {
+    let (mut app, _rx) = test_app("filter-chat");
+    app.cfg.agent.model = "m".into();
+    app.screen = Screen::Chat;
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("2 hosts in context "), "{out}");
+    filter_to_on_hosts(&mut app, "web");
+    let out = render(&mut app, 120, 30);
+    assert!(out.contains("1 hosts in context · filtered"), "{out}");
+}
+
+fn filter_to_on_hosts(app: &mut App, needle: &str) {
+    let back = app.screen;
+    app.screen = Screen::Hosts;
+    filter_to(app, needle);
+    app.screen = back;
 }

@@ -12,6 +12,7 @@
 //! there is no function it can reach that accepts what it can make.
 
 use crate::agent::plan::{Plan, PlanStep};
+use crate::db::model::HostRecord;
 
 /// A plan the operator confirmed, holding exactly what they left checked.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +20,21 @@ pub struct ConfirmedPlan {
     plan_id: u64,
     title: String,
     steps: Vec<PlanStep>,
+}
+
+/// The hosts `plan` runs on: the SSH hosts among `all` whose id it names —
+/// exactly what the operator approved. Looked up among all hosts, not the
+/// filtered ones: a filter changed after approval must not skip one.
+pub fn approved_hosts(all: &[HostRecord], plan: &ConfirmedPlan) -> Vec<HostRecord> {
+    let ids: std::collections::HashSet<i64> = plan
+        .steps()
+        .iter()
+        .flat_map(|s| s.hosts.iter().copied())
+        .collect();
+    all.iter()
+        .filter(|h| ids.contains(&h.id) && h.proto.eq_ignore_ascii_case("ssh"))
+        .cloned()
+        .collect()
 }
 
 impl ConfirmedPlan {
@@ -355,6 +371,28 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// What runs is what was approved: the plan's own host ids, looked up among
+    /// every host — the filter plays no part — and SSH only, as before.
+    #[test]
+    fn approved_hosts_are_the_plans_ids_from_every_host() {
+        let sel = PlanSelection::new(plan());
+        let c = ConfirmedPlan::from_selection(&sel).unwrap();
+        let host = |id: i64, proto: &str| HostRecord {
+            id,
+            name: format!("h{id}"),
+            proto: proto.into(),
+            ..Default::default()
+        };
+        let all = vec![
+            host(1, "ssh"),
+            host(2, "ftp"),
+            host(3, "ssh"),
+            host(9, "ssh"),
+        ];
+        let got: Vec<i64> = approved_hosts(&all, &c).iter().map(|h| h.id).collect();
+        assert_eq!(got, vec![1, 3], "not 2 (FTP), not 9 (not in the plan)");
     }
 
     #[test]

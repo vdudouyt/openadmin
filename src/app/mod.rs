@@ -13,7 +13,7 @@ pub mod mount_job;
 
 use crate::agent::hosts::HostWrite;
 use crate::agent::plan::Plan;
-use crate::agent::{AgentCommand, AgentEvent, ExecStream, Stream, Worker};
+use crate::agent::{AgentCommand, AgentEvent, ExecStream, HostScope, Stream, Worker};
 use crate::config::Config;
 use crate::db::DataBase;
 use crate::db::model::{HostRecord, mount_for};
@@ -35,6 +35,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
+use tui_input::Input;
+use tui_input::backend::crossterm::to_input_request;
+
+/// Whether `h` is one the filter `needle_lc` (already lowercased) lists: its
+/// name or its address contains it, in any case.
+fn host_matches(h: &HostRecord, needle_lc: &str) -> bool {
+    h.name.to_lowercase().contains(needle_lc) || h.addr.to_lowercase().contains(needle_lc)
+}
 
 /// How long a transient status message stays before reverting.
 const STATUS_REVERT: Duration = Duration::from_millis(3400);
@@ -87,6 +95,8 @@ pub enum Mode {
     /// Pasting a qhostman host list, then reviewing what it would add. Opened
     /// over the Add dialog, which stays in `form` to come back to.
     BulkImport,
+    /// Typing the Hosts screen's filter (Ctrl+F).
+    Filter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +232,13 @@ pub struct App {
     pub cursor: usize,
     pub scroll: usize,
     pub marked: HashSet<i64>,
+    /// The Hosts screen's filter: only hosts whose name or address contains it
+    /// are listed, acted on — and available to the agent. `None` shows all.
+    /// Only Ctrl+F then Enter, and Esc, change it: it is the agent's scope, so
+    /// nothing clears it as a side effect. Never saved.
+    pub filter: Option<String>,
+    /// The filter being typed, while `Mode::Filter` shows it.
+    pub filter_edit: Option<Input>,
 
     pub form: Option<FormState>,
     pub pending_delete: Vec<i64>,
@@ -287,6 +304,8 @@ impl App {
             cursor: 0,
             scroll: 0,
             marked: HashSet::new(),
+            filter: None,
+            filter_edit: None,
             form: None,
             pending_delete: Vec::new(),
             mounting: None,
@@ -369,12 +388,21 @@ impl App {
     /// each tool means `list_hosts`, `run_readonly` and plan resolution cannot
     /// disagree about what exists: to the model, an FTP host simply is not a
     /// host, and naming one gets the ordinary "unknown host" refusal.
-    pub(crate) fn agent_hosts(&self) -> Vec<HostRecord> {
-        self.hosts
-            .iter()
-            .filter(|h| h.proto.eq_ignore_ascii_case("ssh"))
-            .cloned()
-            .collect()
+    ///
+    /// And only the hosts the Hosts screen lists: the operator's filter is the
+    /// model's scope, for every tool at once, so a host it hides cannot be
+    /// listed, probed, planned on or edited, and no refusal names one. The
+    /// proxy comes from all hosts: hiding it must not route around it.
+    pub(crate) fn agent_scope(&self) -> HostScope {
+        HostScope {
+            hosts: self
+                .visible()
+                .filter(|h| h.proto.eq_ignore_ascii_case("ssh"))
+                .cloned()
+                .collect(),
+            filtered: self.filter.is_some(),
+            proxy: self.proxy_host().cloned(),
+        }
     }
 
     /// Hand the composed message to the worker.
@@ -400,7 +428,7 @@ impl App {
             .tx
             .send(AgentCommand::Send {
                 text,
-                hosts: self.agent_hosts(),
+                scope: self.agent_scope(),
             })
             .is_err()
         {
@@ -422,8 +450,11 @@ impl App {
         if handle
             .tx
             .send(AgentCommand::Execute {
+                // The hosts it names, from all of them: what was approved
+                // runs, whatever the filter has become since.
+                run_on: approve::approved_hosts(&self.hosts, &plan),
                 plan,
-                hosts: self.agent_hosts(),
+                scope: self.agent_scope(),
             })
             .is_err()
         {
@@ -571,13 +602,26 @@ impl App {
         let existing = match &write {
             HostWrite::Create(_) => None,
             HostWrite::Edit { name, .. } => {
-                match self.hosts.iter().find(|h| &h.name == name) {
-                    Some(h) => Some(h.clone()),
-                    // Only reachable if the record went away between the tool
-                    // validating and this running. The operator is told, because
-                    // they are the one who asked for the change.
+                // Among the listed hosts: the filter is the agent's scope, and
+                // it is checked again here, live — it may have changed since the
+                // tool ran.
+                let found = self.visible().find(|h| &h.name == name).cloned();
+                match found {
+                    Some(h) => Some(h),
+                    // The operator is told, not the model: they are the one who
+                    // asked for the change, and the model must not learn that a
+                    // hidden host exists.
                     None => {
-                        self.fail(format!("No host called {name} to edit."));
+                        if self.hosts.iter().any(|h| &h.name == name) {
+                            self.fail(format!(
+                                "The agent asked to change {name}, which the host filter \
+                                 hides. Nothing was changed."
+                            ));
+                        } else {
+                            // The record went away between the tool validating
+                            // and this running.
+                            self.fail(format!("No host called {name} to edit."));
+                        }
                         return;
                     }
                 }
@@ -586,14 +630,45 @@ impl App {
         let creating = existing.is_none();
         let rec = write.apply(existing.as_ref(), &self.cfg.mount_prefix);
         let name = rec.name.clone();
+        // No two hosts share a name. Checked here, against all of them, because
+        // the agent's own check sees only what the filter lists — and telling
+        // the model a hidden name is taken would tell it the host exists. A
+        // name kept as it was is not checked, so a duplicate from before can
+        // still be edited.
+        let own = existing.as_ref().map(|e| e.id);
+        let named_anew = existing
+            .as_ref()
+            .is_none_or(|e| !e.name.eq_ignore_ascii_case(&name));
+        let taken = self
+            .hosts
+            .iter()
+            .any(|h| Some(h.id) != own && h.name.eq_ignore_ascii_case(&name));
+        if named_anew && taken {
+            let what = if creating {
+                "add a host called"
+            } else {
+                "rename a host to"
+            };
+            self.fail(format!(
+                "The agent asked to {what} {name}, but a host by that name already \
+                 exists. Nothing was saved."
+            ));
+            return;
+        }
         match self.db.save(&rec) {
-            Ok(_) => {
-                // The cursor is left where it is: the operator may be reading
-                // the Hosts screen, and a write they did not initiate should not
+            Ok(id) => {
+                // The cursor stays on its host: the operator may be reading the
+                // Hosts screen, and a write they did not initiate should not
                 // move what is under their fingers.
                 self.reload();
                 let what = if creating { "added" } else { "changed" };
-                self.flash(format!("Agent {what} host {name}."), StatusKind::Warn);
+                let shown = self.visible().any(|h| h.id == id);
+                let text = if shown {
+                    format!("Agent {what} host {name}.")
+                } else {
+                    format!("Agent {what} host {name} — hidden by the filter.")
+                };
+                self.flash(text, StatusKind::Warn);
             }
             Err(e) => self.fail(format!("Could not save {name}: {e}")),
         }
@@ -606,10 +681,14 @@ impl App {
                 for h in &mut hosts {
                     h.mounted = !h.mount_point.is_empty() && mounts.contains(&h.mount_point);
                 }
+                let on = self.host().map(|h| h.id);
                 self.hosts = hosts;
-                let ids: HashSet<i64> = self.hosts.iter().map(|h| h.id).collect();
-                self.marked.retain(|id| ids.contains(id));
-                self.clamp_cursor();
+                // Marks on a host that is gone, or that the filter now hides —
+                // an edit can rename one out of it — go with it.
+                self.prune_marks();
+                // The cursor stays on the host it was on, not the index: a host
+                // deleted above it, or the filter, moves its row.
+                self.restore_cursor(on);
             }
             Err(e) => self.fail(format!("Could not read hosts: {e}")),
         }
@@ -623,21 +702,94 @@ impl App {
         }
     }
 
+    /// The hosts the Hosts screen lists, as indices into `hosts`: all of them,
+    /// or those the filter matches. Worked out on each use rather than kept, so
+    /// it can never disagree with `hosts` — a reload, an agent's write, a test
+    /// pushing a record.
+    pub fn view(&self) -> Vec<usize> {
+        match self.filter_lc() {
+            None => (0..self.hosts.len()).collect(),
+            Some(n) => (0..self.hosts.len())
+                .filter(|&i| host_matches(&self.hosts[i], &n))
+                .collect(),
+        }
+    }
+
+    /// The listed hosts themselves.
+    pub fn visible(&self) -> impl Iterator<Item = &HostRecord> {
+        let n = self.filter_lc();
+        self.hosts
+            .iter()
+            .filter(move |h| n.as_deref().is_none_or(|n| host_matches(h, n)))
+    }
+
+    pub fn is_visible(&self, h: &HostRecord) -> bool {
+        self.filter_lc().is_none_or(|n| host_matches(h, &n))
+    }
+
+    fn filter_lc(&self) -> Option<String> {
+        self.filter.as_ref().map(|f| f.to_lowercase())
+    }
+
+    /// The host under the cursor — a position in the view, not in `hosts`.
     pub fn host(&self) -> Option<&HostRecord> {
-        self.hosts.get(self.cursor)
+        self.view()
+            .get(self.cursor)
+            .and_then(|&i| self.hosts.get(i))
     }
 
     /// The hosts an action applies to: every marked host, else the cursor row.
+    /// Only ever listed ones: Enter, mount and F8's delete go through here, and
+    /// none of them may reach a host the filter hides.
     pub fn targets(&self) -> Vec<HostRecord> {
         if self.marked.is_empty() {
             self.host().cloned().into_iter().collect()
         } else {
-            self.hosts
-                .iter()
+            self.visible()
                 .filter(|h| self.marked.contains(&h.id))
                 .cloned()
                 .collect()
         }
+    }
+
+    /// Marks only on hosts that exist and are listed.
+    fn prune_marks(&mut self) {
+        let keep: HashSet<i64> = self.visible().map(|h| h.id).collect();
+        self.marked.retain(|id| keep.contains(id));
+    }
+
+    /// Put the cursor back on host `id` if it is listed; else keep the position,
+    /// clamped.
+    fn restore_cursor(&mut self, id: Option<i64>) {
+        let pos = id.and_then(|id| self.visible().position(|h| h.id == id));
+        match pos {
+            Some(pos) => self.cursor = pos,
+            None => self.clamp_cursor(),
+        }
+    }
+
+    /// Apply a filter, or clear it with `None` or a blank needle. The cursor
+    /// keeps its host if it is still listed, else goes to the top; marks on
+    /// hosts it hides are dropped.
+    pub fn set_filter(&mut self, needle: Option<String>) {
+        let needle = needle
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
+        let on = self.host().map(|h| h.id);
+        self.filter = needle;
+        self.prune_marks();
+        self.cursor = 0;
+        self.restore_cursor(on);
+        let (shown, all) = (self.view().len(), self.hosts.len());
+        let mut text = match (&self.filter, shown) {
+            (None, _) => format!("Showing all {all} hosts."),
+            (Some(_), 0) => "No host matches — Esc shows all.".to_string(),
+            (Some(_), n) => format!("Showing {n} of {all} hosts."),
+        };
+        if self.busy {
+            text.push_str(" The agent sees this from your next message.");
+        }
+        self.flash(text, StatusKind::Idle);
     }
 
     pub fn proxy_host(&self) -> Option<&HostRecord> {
@@ -649,24 +801,28 @@ impl App {
     }
 
     fn clamp_cursor(&mut self) {
-        if self.hosts.is_empty() {
+        let n = self.view().len();
+        if n == 0 {
             self.cursor = 0;
             self.scroll = 0;
-        } else if self.cursor >= self.hosts.len() {
-            self.cursor = self.hosts.len() - 1;
+        } else if self.cursor >= n {
+            self.cursor = n - 1;
         }
     }
 
+    /// Move within the listed hosts.
     pub fn move_cursor(&mut self, delta: isize) {
-        if self.hosts.is_empty() {
+        let n = self.view().len();
+        if n == 0 {
             return;
         }
-        let last = self.hosts.len() as isize - 1;
+        let last = n as isize - 1;
         self.cursor = (self.cursor as isize + delta).clamp(0, last) as usize;
     }
 
+    /// Put the cursor on row `i` of the listed hosts.
     pub fn set_cursor(&mut self, i: usize) {
-        if i < self.hosts.len() {
+        if i < self.view().len() {
             self.cursor = i;
         }
     }
@@ -681,9 +837,44 @@ impl App {
         }
     }
 
+    /// Within the listed hosts: a hidden host is never marked.
     fn invert_marks(&mut self) {
-        let all: HashSet<i64> = self.hosts.iter().map(|h| h.id).collect();
-        self.marked = all.difference(&self.marked).copied().collect();
+        let listed: HashSet<i64> = self.visible().map(|h| h.id).collect();
+        self.marked = listed.difference(&self.marked).copied().collect();
+    }
+
+    /// Ctrl+F: the filter dialog, holding the filter there is, to change.
+    pub fn open_filter(&mut self) {
+        self.filter_edit = Some(Input::new(self.filter.clone().unwrap_or_default()));
+        self.mode = Mode::Filter;
+    }
+
+    fn close_filter(&mut self) {
+        self.filter_edit = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn key_filter(&mut self, key: KeyEvent) {
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            // Cancel leaves the filter as it was. Ctrl+C too: it quits only
+            // from the screens, so here it would otherwise do nothing.
+            KeyCode::Esc => self.close_filter(),
+            _ if ctrl_c => self.close_filter(),
+            KeyCode::Enter => {
+                let needle = self.filter_edit.as_ref().map(|i| i.value().to_string());
+                self.close_filter();
+                self.set_filter(needle);
+            }
+            _ => {
+                if let Some(i) = self.filter_edit.as_mut()
+                    && let Some(req) = to_input_request(&ratatui::crossterm::event::Event::Key(key))
+                {
+                    i.handle(req);
+                }
+            }
+        }
     }
 
     // ---- status ---------------------------------------------------------
@@ -785,14 +976,26 @@ impl App {
                 self.mode = Mode::Normal;
                 self.form = None;
                 self.reload();
-                if let Some(i) = self.hosts.iter().position(|h| h.id == id) {
-                    self.cursor = i;
-                }
                 let name = rec.name.clone();
-                if editing {
-                    self.ok(format!("Saved {name}."));
-                } else {
-                    self.ok(format!("Added {name}."));
+                // The filter stays: it is the agent's scope too, and only the
+                // operator's Esc widens that. A host it hides is said so.
+                let pos = self.visible().position(|h| h.id == id);
+                match pos {
+                    Some(pos) => {
+                        self.cursor = pos;
+                        if editing {
+                            self.ok(format!("Saved {name}."));
+                        } else {
+                            self.ok(format!("Added {name}."));
+                        }
+                    }
+                    None => self.flash(
+                        format!(
+                            "{} {name} — hidden by the filter; Esc shows all.",
+                            if editing { "Saved" } else { "Added" }
+                        ),
+                        StatusKind::Warn,
+                    ),
                 }
             }
             Err(e) => self.fail(format!("Could not save: {e}")),
@@ -891,15 +1094,28 @@ impl App {
                 self.reload();
                 // Marked, so whatever comes next — mount them, open shells on
                 // them, or delete them if the list was the wrong one — applies
-                // to exactly what was imported.
-                self.marked = ids.iter().copied().collect();
-                if let Some(i) = self.hosts.iter().position(|h| Some(&h.id) == ids.first()) {
-                    self.cursor = i;
+                // to exactly what was imported. Only those listed: a mark on a
+                // host the filter hides would be one no action can reach.
+                let listed: HashSet<i64> = self.visible().map(|h| h.id).collect();
+                self.marked = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| listed.contains(id))
+                    .collect();
+                let first = self.visible().position(|h| self.marked.contains(&h.id));
+                if let Some(pos) = first {
+                    self.cursor = pos;
                 }
-                self.ok(format!(
-                    "Imported {} — marked; Esc clears.",
-                    bulk::count(ids.len(), "host")
-                ));
+                let hidden = ids.len() - self.marked.len();
+                let all = bulk::count(ids.len(), "host");
+                if hidden == 0 {
+                    self.ok(format!("Imported {all} — marked; Esc clears."));
+                } else {
+                    self.flash(
+                        format!("Imported {all} — the filter hides {hidden}; Esc shows all."),
+                        StatusKind::Warn,
+                    );
+                }
             }
             Err(e) => self.fail(format!("Could not import: {e}. Nothing was added.")),
         }
@@ -1229,6 +1445,7 @@ impl App {
             Mode::ConfirmPlan => self.key_confirm_plan(key),
             Mode::ConfirmDelete => self.key_confirm_delete(key),
             Mode::BulkImport => self.key_bulk(key),
+            Mode::Filter => self.key_filter(key),
             Mode::ShowKey | Mode::Help => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::F(1)) {
                     self.close_popup();
@@ -1290,13 +1507,15 @@ impl App {
             KeyCode::PageDown => self.move_cursor(10),
             KeyCode::PageUp => self.move_cursor(-10),
             KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.hosts.len().saturating_sub(1),
+            KeyCode::End => self.cursor = self.view().len().saturating_sub(1),
             KeyCode::Insert | KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('*') => self.invert_marks(),
-            // Before the plain letter below, or Ctrl+A would add a host.
+            // Before the plain letter below, or Ctrl+A would add a host. All
+            // the listed hosts: a hidden one is never marked.
             KeyCode::Char('a') if ctrl => {
-                self.marked = self.hosts.iter().map(|h| h.id).collect();
+                self.marked = self.visible().map(|h| h.id).collect();
             }
+            KeyCode::Char('f' | 'F') if ctrl => self.open_filter(),
             // Letter twins of the F-keys, for keyboards and terminals where the
             // F-row is awkward. Either case, so Caps Lock is not a trap.
             KeyCode::Char('a' | 'A') => self.open_add(),
@@ -1305,6 +1524,8 @@ impl App {
             // was asked rather than what qhostman's rule would guess.
             KeyCode::Char('m' | 'M') => self.set_mount(Some(true)),
             KeyCode::Char('u' | 'U') => self.set_mount(Some(false)),
+            // A filter first, then the marks: each Esc undoes one thing.
+            KeyCode::Esc if self.filter.is_some() => self.set_filter(None),
             KeyCode::Esc => self.marked.clear(),
             KeyCode::Enter => self.open_shell(),
             KeyCode::Delete => self.open_delete(),
@@ -1459,6 +1680,14 @@ impl App {
                             .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                     }
                 }
+                // One line: what a paste carries besides text goes.
+                Mode::Filter => {
+                    if let Some(i) = self.filter_edit.as_mut() {
+                        for c in text.chars().filter(|c| !c.is_control()) {
+                            i.handle(tui_input::InputRequest::InsertChar(c));
+                        }
+                    }
+                }
                 _ => {}
             },
         }
@@ -1482,7 +1711,7 @@ impl App {
             return;
         }
         // Nor may a click on the bar quit out from under a paste.
-        if matches!(self.mode, Mode::Mounting | Mode::BulkImport) {
+        if matches!(self.mode, Mode::Mounting | Mode::BulkImport | Mode::Filter) {
             return;
         }
         // `Esc 0` and F10 are both Quit.
@@ -1922,7 +2151,7 @@ impl App {
         match target {
             ScrollTarget::Hosts => {
                 let visible = band.height as usize;
-                let len = self.hosts.len();
+                let len = self.view().len();
                 if len <= visible {
                     return None;
                 }
@@ -2062,6 +2291,10 @@ impl App {
                 // them. The form and bulk import are not: a stray click must not
                 // throw away what was typed or pasted.
                 self.close_popup();
+            } else if self.mode == Mode::Filter {
+                // Nothing typed there is lost that the filter held: it is
+                // left as it was.
+                self.close_filter();
             }
             return;
         }
@@ -2113,7 +2346,7 @@ impl App {
         if self.regions.rows.contains(at) {
             let offset = (at.y - self.regions.rows.y) as usize;
             let idx = self.regions.row_start + offset;
-            if idx < self.hosts.len() {
+            if idx < self.view().len() {
                 let double = self.is_double_click(at.y);
                 self.set_cursor(idx);
                 if double {
@@ -2208,7 +2441,7 @@ impl App {
             return None;
         }
         let idx = self.regions.row_start + (at.y - self.regions.rows.y) as usize;
-        let h = self.hosts.get(idx)?;
+        let h = self.hosts.get(*self.view().get(idx)?)?;
         Some(format!(
             "{}@{}:{} · {} · double-click for a shell",
             h.login,
@@ -2229,7 +2462,7 @@ impl App {
             return None;
         }
         let idx = self.regions.row_start + (at.y - self.regions.rows.y) as usize;
-        (idx < self.hosts.len()).then_some(idx)
+        (idx < self.view().len()).then_some(idx)
     }
 
     pub fn is_hovered(&self, rect: Rect) -> bool {
