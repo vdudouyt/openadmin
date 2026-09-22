@@ -147,3 +147,45 @@ pub fn marked() -> Style {
         .fg(YELLOW_MARK)
         .add_modifier(Modifier::BOLD)
 }
+
+// ---- scriptlets in the plan dialog -------------------------------------------
+//
+// A script is read here to decide whether it runs on a fleet, so what runs is
+// what stands out: the command word brightest. A comment is muted and italic —
+// distinct and readable, never the faint style, so nothing reads as deleted.
+
+/// The first word of a command: what runs.
+pub fn script_command() -> Style {
+    Style::new().fg(FG_BRIGHT).add_modifier(Modifier::BOLD)
+}
+
+/// `if`, `then`, `for`, `done`, `[[` …
+pub fn script_keyword() -> Style {
+    Style::new().fg(ORANGE_BRIGHT)
+}
+
+/// `|`, `&&`, `;`, redirections, and the delimiters of `$(…)`.
+pub fn script_operator() -> Style {
+    Style::new().fg(ORANGE)
+}
+
+/// Quoted text.
+pub fn script_string() -> Style {
+    Style::new().fg(GREEN)
+}
+
+/// `$x`, `${…}`, `$((…))`, backticks, and the names assignments set.
+pub fn script_expansion() -> Style {
+    Style::new().fg(YELLOW)
+}
+
+pub fn script_comment() -> Style {
+    Style::new().fg(FG_MUTED).add_modifier(Modifier::ITALIC)
+}
+
+/// A character the dialog shows by name — `^[`, `<U+202E>` — because the
+/// terminal would not show it as itself. An alarm, since a script has little
+/// honest use for one.
+pub fn script_hidden() -> Style {
+    Style::new().fg(RED).add_modifier(Modifier::BOLD)
+}

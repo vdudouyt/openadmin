@@ -5,6 +5,7 @@
 //! `app.regions` — hit-testing is a byproduct of layout, never a second
 //! hand-maintained table.
 
+pub mod bash;
 pub mod dialogs;
 pub mod header;
 pub mod screens;

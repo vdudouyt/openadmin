@@ -2386,6 +2386,167 @@ fn the_dialog_names_where_an_upload_lands() {
     );
 }
 
+/// The plan dialog showing `script`, drawn at `w`×`h`.
+fn plan_dialog(tag: &str, script: &str, w: u16, h: u16) -> (App, ratatui::buffer::Buffer) {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app(tag);
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(a_plan(script, vec![1]))));
+    app.function_key(2);
+    assert_eq!(app.mode, Mode::ConfirmPlan);
+    let buf = render_buf(&mut app, w, h);
+    (app, buf)
+}
+
+/// The cell where `needle` first appears on screen. ASCII needles only: a
+/// cell per character.
+fn cell_of<'b>(buf: &'b ratatui::buffer::Buffer, needle: &str) -> &'b ratatui::buffer::Cell {
+    let area = buf.area;
+    for y in area.y..area.bottom() {
+        let row: String = (area.x..area.right())
+            .map(|x| buf[(x, y)].symbol())
+            .collect();
+        if let Some(i) = row.find(needle) {
+            let x = row[..i].chars().count() as u16;
+            return &buf[(area.x + x, y)];
+        }
+    }
+    panic!("{needle:?} is not on screen");
+}
+
+fn screen_text(buf: &ratatui::buffer::Buffer) -> String {
+    let area = buf.area;
+    (area.y..area.bottom())
+        .map(|y| {
+            (area.x..area.right())
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The dialog shows what runs, character for character: indentation, and a
+/// run of spaces inside quotes — `echo "a    b"` runs differently from
+/// `echo "a b"`, which is what the word wrap used to show.
+#[test]
+fn the_plan_dialog_shows_a_script_character_for_character() {
+    let (_app, buf) = plan_dialog(
+        "scriptexact",
+        "if true; then\n    echo \"a    b\"\nfi",
+        120,
+        34,
+    );
+    let out = screen_text(&buf);
+    assert!(out.contains("│     echo \"a    b\""), "{out}");
+}
+
+/// A line too long for a row continues under a dashed gutter, so it cannot
+/// read as two commands; its rows put back together are the line.
+#[test]
+fn a_wrapped_line_continues_under_a_dashed_gutter() {
+    let line = (0..40)
+        .map(|i| format!("arg{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!("echo {line}");
+    let (_app, buf) = plan_dialog("scriptwrap", &script, 80, 40);
+    let out = screen_text(&buf);
+    let rows: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("│ ") || l.contains("┆ "))
+        .filter(|l| l.contains("arg") || l.contains("echo"))
+        .collect();
+    assert!(rows.len() >= 3, "{out}");
+    assert!(rows[0].contains("    │ echo"), "{out}");
+    let mut joined = Vec::new();
+    for (k, r) in rows.iter().enumerate() {
+        let gutter = if k == 0 { "│ " } else { "┆ " };
+        let at = r
+            .find(gutter)
+            .unwrap_or_else(|| panic!("row {k} has no {gutter:?}: {r}"));
+        let text = &r[at + gutter.len()..];
+        // Up to the dialog's right border.
+        let text = text.split('║').next().unwrap_or(text);
+        joined.push(text.trim_end().to_string());
+    }
+    assert_eq!(joined.join(" "), script, "{out}");
+}
+
+/// What runs stands out: the command word bright and bold, a string green.
+#[test]
+fn the_command_word_is_bright_and_a_string_green() {
+    use crate::ui::theme;
+    use ratatui::style::Modifier;
+    let (_app, buf) = plan_dialog("scriptcolour", "systemctl restart 'nginx'", 120, 34);
+    let cmd = cell_of(&buf, "systemctl");
+    assert_eq!(cmd.fg, theme::FG_BRIGHT);
+    assert!(cmd.modifier.contains(Modifier::BOLD));
+    assert_eq!(cell_of(&buf, "'nginx'").fg, theme::GREEN);
+    assert_eq!(
+        cell_of(&buf, "restart").fg,
+        theme::FG,
+        "an argument is plain"
+    );
+}
+
+/// A comment is muted and italic — distinct and readable, never faint.
+#[test]
+fn a_comment_is_muted_and_italic() {
+    use crate::ui::theme;
+    use ratatui::style::Modifier;
+    let (_app, buf) = plan_dialog("scriptcomment", "apt-get update # refresh", 120, 34);
+    let c = cell_of(&buf, "# refresh");
+    assert_eq!(c.fg, theme::FG_MUTED);
+    assert!(c.modifier.contains(Modifier::ITALIC));
+}
+
+/// The screen hides an escape sequence; bash does not. Here the `#` after one
+/// is inside a word — live — though with the sequence stripped it would read
+/// as a comment. The sequence is shown, and nothing after it is dressed as one.
+#[test]
+fn an_escape_sequence_cannot_dress_live_code_as_a_comment() {
+    use crate::ui::theme;
+    use ratatui::style::Modifier;
+    let (_app, buf) = plan_dialog("scriptesc", "echo x \u{1b}[0m# y; rm -rf /srv", 120, 34);
+    let out = screen_text(&buf);
+    assert!(out.contains("echo x ^[[0m# y; rm -rf /srv"), "{out}");
+    let hash = cell_of(&buf, "# y");
+    assert!(!hash.modifier.contains(Modifier::ITALIC), "not a comment");
+    assert_ne!(hash.fg, theme::FG_MUTED);
+    let rm = cell_of(&buf, "rm -rf");
+    assert_eq!(rm.fg, theme::FG_BRIGHT, "and what it runs is bright");
+    assert!(rm.modifier.contains(Modifier::BOLD));
+}
+
+/// A command hidden inside an escape sequence — which the dialog used to strip,
+/// showing `echo hello world` while bash ran `echo LIVE` — is on screen, with
+/// the sequence's control characters shown by name in the alarm style.
+#[test]
+fn a_hidden_command_is_shown_not_stripped() {
+    use crate::ui::theme;
+    let (_app, buf) = plan_dialog(
+        "scripthidden",
+        "echo hello \u{1b}]0; echo LIVE \u{7}world",
+        120,
+        34,
+    );
+    let out = screen_text(&buf);
+    assert!(out.contains("echo hello ^[]0; echo LIVE ^Gworld"), "{out}");
+    assert_eq!(cell_of(&buf, "^[").fg, theme::RED);
+    assert_eq!(cell_of(&buf, "^G").fg, theme::RED);
+}
+
+/// Counted in characters, a line of wide characters fitted a row and had its
+/// end clipped off screen — here, the `rm`. Counted in cells, it wraps.
+#[test]
+fn wide_characters_cannot_push_code_off_the_row() {
+    let script = format!("echo {} ; rm -rf ~", "日".repeat(60));
+    let (_app, buf) = plan_dialog("scriptwide", &script, 120, 34);
+    let out = screen_text(&buf);
+    assert!(out.contains("rm -rf ~"), "{out}");
+}
+
 #[test]
 fn unchecking_a_host_changes_what_would_run() {
     use crate::agent::AgentEvent;

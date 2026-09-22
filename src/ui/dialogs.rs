@@ -10,6 +10,7 @@ use crate::app::approve::Row;
 use crate::app::bulk::{self, BulkStep};
 use crate::app::form::FormField;
 use crate::app::{App, Click};
+use crate::ui::bash;
 use crate::ui::theme;
 use crate::ui::widgets::{centered, pad, sanitize, wrap};
 use ratatui::Frame;
@@ -504,14 +505,20 @@ pub fn confirm_plan(f: &mut Frame, app: &mut App) {
                 // What the step actually does, verbatim.
                 match &step.kind {
                     StepKind::Scriptlet { script } => {
-                        for l in script.lines().flat_map(|l| wrap(&sanitize(l), body_w)) {
-                            body.push((
-                                Line::from(vec![
-                                    Span::styled("    │ ", theme::border_idle()),
-                                    Span::styled(l, theme::muted()),
-                                ]),
-                                None,
-                            ));
+                        // Every character bash reads, coloured by what bash
+                        // makes of it — see `bash` for why that is held to
+                        // never making live code look inert.
+                        for row in bash::script_rows(script, body_w) {
+                            // A continuation is marked, so one wrapped command
+                            // cannot read as two.
+                            let gutter = if row.continuation {
+                                "    ┆ "
+                            } else {
+                                "    │ "
+                            };
+                            let mut spans = vec![Span::styled(gutter, theme::border_idle())];
+                            spans.extend(row.spans);
+                            body.push((Line::from(spans), None));
                         }
                     }
                     StepKind::Upload { artifact } => {
