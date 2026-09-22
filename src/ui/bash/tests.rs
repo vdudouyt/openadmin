@@ -595,3 +595,114 @@ fn script_rows_has_the_lines_that_lines_has() {
     assert_eq!(text("a\n\nb"), ["a", "", "b"]);
     assert_eq!(text("a\r\nb"), ["a^M", "b"]);
 }
+
+/// The words that are commands in `script`, in order.
+fn commands(script: &str) -> Vec<String> {
+    let classes = classify(script);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (b, c) in script.char_indices() {
+        if classes[b] == Class::Command {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// `sudo` runs its first word that is not an option or an option's value: in
+/// `sudo -u postgres psql` that is `psql`, not `postgres`.
+#[test]
+fn sudo_runs_the_command_after_its_options() {
+    assert_eq!(
+        commands("sudo systemctl restart nginx"),
+        ["sudo", "systemctl"]
+    );
+    assert_eq!(
+        commands("sudo -u postgres psql -c 'select 1'"),
+        ["sudo", "psql"]
+    );
+    assert_eq!(
+        commands("sudo -uroot id"),
+        ["sudo", "id"],
+        "a value attached"
+    );
+    assert_eq!(
+        commands("sudo -Eu root env"),
+        ["sudo", "env"],
+        "a cluster ending in -u"
+    );
+    assert_eq!(
+        commands("sudo -uEroot id"),
+        ["sudo", "id"],
+        "-u's value is the rest"
+    );
+    assert_eq!(commands("sudo --user root id"), ["sudo", "id"]);
+    assert_eq!(commands("sudo --user=root id"), ["sudo", "id"]);
+    assert_eq!(commands("sudo -n -H -- ls /root"), ["sudo", "ls"]);
+    let s = "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx";
+    assert_eq!(commands(s), ["sudo", "apt-get"]);
+    assert_eq!(
+        classes_of(s, "DEBIAN_FRONTEND"),
+        vec![Class::Expansion; 15],
+        "{}",
+        shadow(s)
+    );
+}
+
+/// `sudo -e` edits the files it names; nothing after it runs as a command.
+#[test]
+fn sudo_edit_names_files_not_a_command() {
+    assert_eq!(commands("sudo -e /etc/hosts"), ["sudo"]);
+}
+
+/// The other wrappers, by the same rule: each option table decides which word
+/// is the value and which the command; `timeout` takes a duration first.
+#[test]
+fn other_wrappers_run_the_command_after_their_options() {
+    assert_eq!(commands("env -i PATH=/bin sh -c 'x'"), ["env", "sh"]);
+    assert_eq!(commands("env -u HOME -C /tmp ls"), ["env", "ls"]);
+    assert_eq!(commands("nohup ./run.sh &"), ["nohup", "./run.sh"]);
+    assert_eq!(commands("nice -n 10 make -j4"), ["nice", "make"]);
+    assert_eq!(commands("nice -10 make"), ["nice", "make"]);
+    assert_eq!(commands("timeout 5s curl x"), ["timeout", "curl"]);
+    assert_eq!(
+        commands("timeout -s KILL 10 sleep 60"),
+        ["timeout", "sleep"]
+    );
+    assert_eq!(commands("exec -a name bash"), ["exec", "bash"]);
+    assert_eq!(commands("command -v git"), ["command", "git"]);
+    assert_eq!(commands("xargs -n 1 -I {} rm {}"), ["xargs", "rm"]);
+    assert_eq!(commands("doas -u www touch f"), ["doas", "touch"]);
+}
+
+/// A wrapper's command may be another wrapper, and so on down.
+#[test]
+fn wrappers_nest() {
+    assert_eq!(
+        commands("sudo env FOO=1 nice -n 5 timeout 30 ./job --fast"),
+        ["sudo", "env", "nice", "timeout", "./job"]
+    );
+}
+
+/// A redirection inside a wrapped command does not lose the wrapper's place,
+/// and a list operator or newline ends it.
+#[test]
+fn a_wrapper_keeps_its_place_across_redirections_and_ends_with_the_command() {
+    assert_eq!(commands("sudo -u root >/tmp/log ls"), ["sudo", "ls"]);
+    assert_eq!(commands("sudo 2>/dev/null ls"), ["sudo", "ls"]);
+    assert_eq!(commands("sudo -u && ls"), ["sudo", "ls"], "a new command");
+    assert_eq!(commands("sudo\nls"), ["sudo", "ls"]);
+    assert_eq!(commands("sudo ls | grep x"), ["sudo", "ls", "grep"]);
+}
+
+/// Only in command position: `sudo` as an argument wraps nothing.
+#[test]
+fn a_wrapper_named_as_an_argument_wraps_nothing() {
+    assert_eq!(commands("echo sudo ls"), ["echo"]);
+    assert_eq!(commands("which sudo env"), ["which"]);
+}

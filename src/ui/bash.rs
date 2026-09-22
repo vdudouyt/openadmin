@@ -163,8 +163,146 @@ enum Expect {
     LoopIn,
     /// After `function`.
     FuncName,
-    /// After a redirection: its target.
-    Target,
+    /// After a command that runs another, until that one is found.
+    Wrapped(Wrapped),
+}
+
+/// A command that runs another — `sudo systemctl …` runs `systemctl` — and
+/// which of its options take the next word as their value, which is what
+/// decides where the command it runs is: in `sudo -u postgres psql` it is
+/// `psql`, not `postgres`. Emphasis only; no comment is decided by this.
+struct Wrapper {
+    name: &'static str,
+    /// Short options whose value is the next word unless attached: `-u root`.
+    short: &'static str,
+    /// Long options whose value is the next word unless written `--opt=value`.
+    long: &'static [&'static str],
+    /// Short options after which no command follows: `sudo -e` edits files.
+    no_command: &'static str,
+    /// `VAR=value` may come before the command.
+    assignments: bool,
+    /// Words before the command that are not options: `timeout`'s duration.
+    positional: u8,
+}
+
+const WRAPPERS: &[Wrapper] = &[
+    Wrapper {
+        name: "sudo",
+        short: "CDgpRrTtUu",
+        long: &[
+            "chdir",
+            "chroot",
+            "close-from",
+            "command-timeout",
+            "group",
+            "other-user",
+            "prompt",
+            "role",
+            "type",
+            "user",
+        ],
+        no_command: "eKv",
+        assignments: true,
+        positional: 0,
+    },
+    Wrapper {
+        name: "doas",
+        short: "Cu",
+        long: &[],
+        no_command: "s",
+        assignments: false,
+        positional: 0,
+    },
+    Wrapper {
+        name: "env",
+        short: "CSu",
+        long: &["chdir", "split-string", "unset"],
+        no_command: "",
+        assignments: true,
+        positional: 0,
+    },
+    Wrapper {
+        name: "nohup",
+        short: "",
+        long: &[],
+        no_command: "",
+        assignments: false,
+        positional: 0,
+    },
+    Wrapper {
+        name: "nice",
+        short: "n",
+        long: &["adjustment"],
+        no_command: "",
+        assignments: false,
+        positional: 0,
+    },
+    Wrapper {
+        name: "exec",
+        short: "a",
+        long: &[],
+        no_command: "",
+        assignments: false,
+        positional: 0,
+    },
+    Wrapper {
+        name: "command",
+        short: "",
+        long: &[],
+        no_command: "",
+        assignments: false,
+        positional: 0,
+    },
+    Wrapper {
+        name: "timeout",
+        short: "ks",
+        long: &["kill-after", "signal"],
+        no_command: "",
+        assignments: false,
+        positional: 1,
+    },
+    Wrapper {
+        name: "xargs",
+        short: "adEILnPs",
+        long: &[
+            "arg-file",
+            "delimiter",
+            "max-args",
+            "max-chars",
+            "max-lines",
+            "max-procs",
+            "process-slot-var",
+        ],
+        no_command: "",
+        assignments: false,
+        positional: 0,
+    },
+];
+
+/// Where a wrapper's words have got to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Wrapped {
+    /// Index into `WRAPPERS`.
+    wrapper: usize,
+    /// The next word is an option's value.
+    value_next: bool,
+    /// After `--`.
+    options_done: bool,
+    positional: u8,
+    no_command: bool,
+}
+
+impl Wrapped {
+    fn of(word: &str) -> Option<Self> {
+        let wrapper = WRAPPERS.iter().position(|w| w.name == word)?;
+        Some(Wrapped {
+            wrapper,
+            value_next: false,
+            options_done: false,
+            positional: WRAPPERS[wrapper].positional,
+            no_command: false,
+        })
+    }
 }
 
 /// The word being read in a code context. Its own characters are coloured when
@@ -202,6 +340,10 @@ struct Ctx {
     cmd_pos: bool,
     word: Option<Word>,
     expect: Expect,
+    /// After a redirection: the next word is its target. Kept apart from
+    /// `expect`, so a redirection inside `sudo -u root >log cmd` leaves the
+    /// wrapper's place.
+    target: bool,
     case: Vec<CaseAt>,
     /// The `(` of `name()` has just been read.
     after_open_paren: bool,
@@ -210,6 +352,13 @@ struct Ctx {
 }
 
 impl Ctx {
+    /// After `&&`, `||`, `|`, `&`: a new command, expecting nothing yet.
+    fn new_command(&mut self) {
+        self.cmd_pos = true;
+        self.expect = Expect::Nothing;
+        self.target = false;
+    }
+
     fn new(kind: Kind, opener: usize) -> Self {
         Ctx {
             kind,
@@ -222,6 +371,7 @@ impl Ctx {
             cmd_pos: true,
             word: None,
             expect: Expect::Nothing,
+            target: false,
             case: Vec::new(),
             after_open_paren: false,
             cond_word: String::new(),
@@ -600,7 +750,8 @@ impl Lexer {
                 t.boundary = true;
                 t.cmd_pos = true;
                 t.after_open_paren = false;
-                if matches!(t.expect, Expect::LoopIn | Expect::Target) {
+                t.target = false;
+                if matches!(t.expect, Expect::LoopIn | Expect::Wrapped(_)) {
                     t.expect = Expect::Nothing;
                 }
                 if top && !self.heredocs.is_empty() {
@@ -623,6 +774,7 @@ impl Lexer {
                 let t = self.top();
                 t.boundary = true;
                 t.expect = Expect::Nothing;
+                t.target = false;
                 if (case_sep || amp) && t.case.last() == Some(&CaseAt::Body) {
                     *t.case.last_mut().expect("checked") = CaseAt::Pattern;
                     t.cmd_pos = false;
@@ -636,16 +788,16 @@ impl Lexer {
                 match self.la(0) {
                     Some('&') => {
                         self.take(Class::Operator);
-                        self.top().cmd_pos = true;
+                        self.top().new_command();
                     }
                     Some('>') => {
                         self.take(Class::Operator);
                         if self.la(0) == Some('>') {
                             self.take(Class::Operator);
                         }
-                        self.top().expect = Expect::Target;
+                        self.top().target = true;
                     }
-                    _ => self.top().cmd_pos = true,
+                    _ => self.top().new_command(),
                 }
                 self.top().boundary = true;
             }
@@ -658,7 +810,7 @@ impl Lexer {
                 let t = self.top();
                 t.boundary = true;
                 if t.case.last() != Some(&CaseAt::Pattern) {
-                    t.cmd_pos = true;
+                    t.new_command();
                 }
             }
             '(' => self.code_open_paren(),
@@ -850,7 +1002,7 @@ impl Lexer {
         }
         let t = self.top();
         t.boundary = true;
-        t.expect = Expect::Target;
+        t.target = true;
     }
 
     /// After `<<`: the optional `-`, then the delimiter. Anything this does not
@@ -1026,11 +1178,12 @@ impl Lexer {
             }
             _ => {}
         }
+        if t.target {
+            t.target = false;
+            return Class::Plain;
+        }
         match t.expect {
-            Expect::Target => {
-                t.expect = Expect::Nothing;
-                return Class::Plain;
-            }
+            Expect::Wrapped(st) => return Self::wrapped_word(t, st, pure, text),
             Expect::LoopName => {
                 t.expect = Expect::LoopIn;
                 return Class::Expansion;
@@ -1104,8 +1257,62 @@ impl Lexer {
             // An assignment before a command leaves room for the command.
             return Class::Expansion;
         }
-        // The command word.
+        // The command word — perhaps one that runs the next.
         t.cmd_pos = false;
+        if pure && let Some(w) = Wrapped::of(text) {
+            t.expect = Expect::Wrapped(w);
+        }
+        Class::Command
+    }
+
+    /// A word after a wrapper: an option, an option's value, an assignment, a
+    /// positional — or, the first word that is none of those, the command it
+    /// runs, which may wrap another in turn.
+    fn wrapped_word(t: &mut Ctx, mut st: Wrapped, pure: bool, text: &str) -> Class {
+        let spec = &WRAPPERS[st.wrapper];
+        let keep = |t: &mut Ctx, st: Wrapped, class: Class| {
+            t.expect = Expect::Wrapped(st);
+            class
+        };
+        if st.value_next {
+            st.value_next = false;
+            return keep(t, st, Class::Plain);
+        }
+        if !st.options_done && text.starts_with('-') && text.len() > 1 {
+            if text == "--" && pure {
+                st.options_done = true;
+            } else if let Some(long) = text.strip_prefix("--") {
+                st.value_next = pure && !long.contains('=') && spec.long.contains(&long);
+            } else {
+                // A cluster of short options; the first that takes a value
+                // takes the rest of the word, or else the next one.
+                let flags = &text[1..];
+                for (k, ch) in flags.char_indices() {
+                    if spec.no_command.contains(ch) {
+                        st.no_command = true;
+                    }
+                    if spec.short.contains(ch) {
+                        st.value_next = pure && k + ch.len_utf8() == flags.len();
+                        break;
+                    }
+                }
+            }
+            return keep(t, st, Class::Plain);
+        }
+        if spec.assignments && assignment_name(text).is_some() {
+            return keep(t, st, Class::Expansion);
+        }
+        if st.positional > 0 {
+            st.positional -= 1;
+            return keep(t, st, Class::Plain);
+        }
+        t.expect = Expect::Nothing;
+        if st.no_command {
+            return Class::Plain;
+        }
+        if pure && let Some(w) = Wrapped::of(text) {
+            t.expect = Expect::Wrapped(w);
+        }
         Class::Command
     }
 
