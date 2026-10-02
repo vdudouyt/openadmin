@@ -146,6 +146,67 @@ impl Store {
         Ok((real, rel))
     }
 
+    /// Resolve a name to a path to *write* into the store, containment-checked.
+    ///
+    /// The mirror of `resolve` for a file that does not exist yet — a download
+    /// destination. `canonicalize` cannot judge a path that is not there, so
+    /// the deepest ancestor that *does* exist is canonicalized instead and the
+    /// containment checked on it: a directory symlink leading out is caught
+    /// there, and the components below it are checked to be ordinary names by
+    /// the same component loop `resolve` uses. A target that already exists as
+    /// a directory is refused, since writing one would fail confusingly.
+    pub fn dest(&self, datadir: &Path, name: &str) -> Result<PathBuf> {
+        let noun = self.noun;
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("no {noun} named");
+        }
+        if name.contains('\\') || name.contains('\0') {
+            bail!("{noun} name must be a relative path with no backslash: {name:?}");
+        }
+        for c in Path::new(name).components() {
+            match c {
+                std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+                _ => bail!(
+                    "{noun} name must be a path relative to the {} directory, with no `..` \
+                      and no leading `/`: {name:?}",
+                    self.subdir
+                ),
+            }
+        }
+
+        let base = self.dir(datadir);
+        let base = base
+            .canonicalize()
+            .with_context(|| format!("no {} directory at {}", self.subdir, base.display()))?;
+        let candidate = base.join(name);
+
+        // Up from the target until something exists; the store directory
+        // itself always does, so this terminates. Whatever exists is followed
+        // to where it really is — this is where a symlink leading out is
+        // caught, at the first component that is one.
+        let mut probe = candidate.as_path();
+        let real = loop {
+            match probe.canonicalize() {
+                Ok(real) => break real,
+                Err(_) => match probe.parent() {
+                    Some(p) => probe = p,
+                    None => bail!("{noun} {name:?} cannot be made a path"),
+                },
+            }
+        };
+        if !real.starts_with(&base) {
+            bail!(
+                "{noun} {name:?} resolves outside the {} directory",
+                self.subdir
+            );
+        }
+        if candidate.is_dir() {
+            bail!("{noun} {name:?} is a directory, not a file to write");
+        }
+        Ok(candidate)
+    }
+
     /// Every resolvable file, recursively, sorted, bounded. `true` means the walk
     /// stopped on a limit rather than running out of files.
     ///
@@ -305,6 +366,52 @@ mod tests {
             // Neither symlink is advertised either.
             let (names, _) = store.walk(&data).unwrap();
             assert_eq!(names, vec!["ok.txt".to_string()], "{}", store.subdir);
+        }
+    }
+
+    /// A dest is a file that does not exist yet, so `canonicalize` cannot
+    /// judge the whole path: the deepest existing ancestor is judged instead,
+    /// which is what catches a symlink leading out even when the target
+    /// itself is not there to resolve.
+    #[test]
+    fn a_dest_is_containment_checked_before_it_exists() {
+        let data = scratch("dest");
+        for store in [&ARTIFACTS, &MANUALS] {
+            let d = store.ensure(&data).unwrap();
+            std::fs::create_dir_all(d.join("logs")).unwrap();
+            std::fs::create_dir_all(data.join("keys")).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(data.join("keys"), d.join("stash")).unwrap();
+
+            // A new file in a new subdirectory: nothing exists yet, and it is
+            // inside.
+            let p = store.dest(&data, "logs/new/x.log").unwrap();
+            assert!(p.starts_with(&d), "{}", p.display());
+            assert!(p.ends_with("logs/new/x.log"), "{}", p.display());
+
+            // The escapes.
+            for evil in ["../keys/web-01", "/abs/x.log", "..", ""] {
+                let e = store.dest(&data, evil).unwrap_err().to_string();
+                assert!(
+                    e.contains(store.noun),
+                    "{evil:?} refused without saying what it was about: {e}"
+                );
+            }
+            #[cfg(unix)]
+            {
+                // Through a directory symlink that leads out — the ancestor
+                // exists, canonicalizes outside, and the dest is refused even
+                // though `stash/new/x.log` itself does not exist.
+                let e = store
+                    .dest(&data, "stash/new/x.log")
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("outside the"), "{e}");
+            }
+
+            // And an existing directory is not a file to write.
+            let e = store.dest(&data, "logs").unwrap_err().to_string();
+            assert!(e.contains("directory"), "{e}");
         }
     }
 

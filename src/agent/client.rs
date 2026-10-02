@@ -103,14 +103,24 @@ impl LlmClient for HttpClient {
             stream: true,
             reasoning_effort: Some(self.reasoning_effort.as_str()).filter(|e| !e.is_empty()),
         };
+        // Debug-level, and headers never: the body is the conversation, the
+        // headers are the credential.
+        log::debug!("POST {}: {}", self.url, serde_json::to_string(&body)?);
 
         let mut req = self.agent.post(self.url.as_str());
         if let Some(auth) = &self.auth {
             req = req.header("Authorization", auth);
         }
-        let mut resp = req
-            .send_json(&body)
-            .with_context(|| format!("POST {}", self.url))?;
+        let mut resp = match req.send_json(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                let e = Err::<(), _>(e)
+                    .with_context(|| format!("POST {}", self.url))
+                    .unwrap_err();
+                log::error!("model request failed: {e:#}");
+                return Err(e);
+            }
+        };
 
         let status = resp.status();
         if !status.is_success() {
@@ -122,20 +132,31 @@ impl LlmClient for HttpClient {
                 .limit(64 * 1024)
                 .read_to_string()
                 .unwrap_or_default();
+            log::error!("model request failed: HTTP {}: {text}", status.as_u16());
             bail!("{}", describe_error(status.as_u16(), &text));
         }
 
         let mut acc = TurnAccumulator::default();
+        // The raw payloads, logged as one record when the stream ends — a
+        // record per line would make a long answer unscrollable in the log.
+        let mut seen: Vec<String> = Vec::new();
         // `as_reader` is deliberately unlimited — this is the stream.
         let reader = BufReader::new(resp.body_mut().as_reader());
         for line in reader.lines() {
             if cancel.load(Ordering::Relaxed) {
+                log::debug!("stream cancelled: {}", payload_log(&seen));
                 return Ok(TurnOutcome {
                     turn: acc,
                     cancelled: true,
                 });
             }
-            let line = line.context("read from the model stream")?;
+            let line = match line.context("read from the model stream") {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("model stream failed: {e:#}");
+                    return Err(e);
+                }
+            };
             match parse_sse_line(&line) {
                 SseLine::Ignore => continue,
                 SseLine::Done => break,
@@ -143,20 +164,53 @@ impl LlmClient for HttpClient {
                     // A chunk we cannot parse is worth reporting, not silently
                     // dropping: it means the endpoint is not speaking the
                     // schema we think it is.
-                    let chunk: ChatChunk = serde_json::from_str(&payload)
-                        .with_context(|| format!("parse stream chunk: {payload}"))?;
+                    let chunk: ChatChunk = match serde_json::from_str(&payload) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let e = Err::<(), _>(e)
+                                .with_context(|| format!("parse stream chunk: {payload}"))
+                                .unwrap_err();
+                            log::error!("model stream failed: {e:#}");
+                            return Err(e);
+                        }
+                    };
+                    seen.push(payload);
                     if let Some(text) = acc.push(&chunk) {
                         on_delta(&text);
                     }
                 }
             }
         }
+        log::debug!("stream ended: {}", payload_log(&seen));
 
         Ok(TurnOutcome {
             turn: acc,
             cancelled: false,
         })
     }
+}
+
+/// The raw SSE payloads as one string, bounded so a runaway stream cannot put
+/// an unbounded line in the log.
+fn payload_log(seen: &[String]) -> String {
+    const CAP: usize = 64 * 1024;
+    let joined = seen.join("\n");
+    if joined.len() <= CAP {
+        return joined;
+    }
+    format!(
+        "{}\n[{} more bytes of the stream were not logged]",
+        // Back up to a character boundary: a multi-byte character can straddle
+        // the cap, and a slice that cuts one is not a string.
+        {
+            let mut cut = CAP;
+            while !joined.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            &joined[..cut]
+        },
+        joined.len() - CAP
+    )
 }
 
 /// Turn an HTTP failure into something a person can act on.
@@ -348,6 +402,23 @@ pub mod scripted {
 mod tests {
     use super::*;
     use scripted::{ScriptedClient, ScriptedTurn};
+
+    #[test]
+    fn a_runaway_stream_logs_bounded_and_on_a_character_boundary() {
+        let small: Vec<String> = vec!["one".into(), "two".into()];
+        assert_eq!(payload_log(&small), "one\ntwo");
+
+        // Over the cap: bounded, says so, and does not panic by slicing
+        // through a multi-byte character.
+        let big = ["é".repeat(64 * 1024)]; // every char is two bytes
+        let logged = payload_log(&big);
+        assert!(logged.contains("more bytes of the stream were not logged"));
+        // Cut on a character boundary — a slice through the middle of an `é`
+        // would not be a string at all, so reaching here is the assertion —
+        // and bounded to something near the cap, not the whole stream.
+        assert!(logged.starts_with('é'));
+        assert!(logged.len() < 64 * 1024 + 200, "{}", logged.len());
+    }
 
     #[test]
     fn error_bodies_become_actionable_messages() {

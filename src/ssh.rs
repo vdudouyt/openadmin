@@ -142,10 +142,6 @@ pub fn quote_command(program: &str, args: &[String]) -> String {
     out
 }
 
-/// Run `remote` on `rec` over a single non-interactive ssh connection.
-///
-/// One connection per command means the exit status is unambiguous — the thing
-/// the PTY path cannot tell us.
 /// Copy a local file to `dir` on `rec`.
 ///
 /// Note the capital `-P`: scp's port flag differs from ssh's, and every other
@@ -190,6 +186,55 @@ pub fn scp_command(
     }
 }
 
+/// Copy `remote_path` from `rec` into the local directory `local_dir`.
+///
+/// The mirror of `scp_command`: same options, source and destination swapped.
+/// `remote_path` arrives validated — a whitelist of characters, so there is no
+/// quoting question on either side of the connection.
+pub fn scp_download_command(
+    rec: &HostRecord,
+    datadir: &Path,
+    cfg: &Config,
+    remote_path: &str,
+    local_dir: &Path,
+    proxy: Option<&HostRecord>,
+) -> Launch {
+    let mut args: Vec<String> = vec![
+        "--".into(),
+        "scp".into(),
+        "-P".into(),
+        rec.port.to_string(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=15".into(),
+    ];
+    if !rec.key_name.is_empty() {
+        args.push("-i".into());
+        args.push(key_path(datadir, &rec.key_name).display().to_string());
+    }
+    if let Some(p) = proxy.filter(|p| p.id != rec.id) {
+        let _ = p;
+        args.push("-o".into());
+        args.push(format!(
+            "ProxyCommand=nc -X 5 -x 127.0.0.1:{} %h %p",
+            cfg.proxy_port
+        ));
+    }
+    args.push(format!("{}:{remote_path}", rec.ssh_target()));
+    args.push(local_dir.display().to_string());
+
+    Launch {
+        program: helper_path().display().to_string(),
+        args,
+        env: secret_env(rec),
+    }
+}
+
+/// Run `remote` on `rec` over a single non-interactive ssh connection.
+///
+/// One connection per command means the exit status is unambiguous — the thing
+/// the PTY path cannot tell us.
 pub fn exec_command(
     rec: &HostRecord,
     datadir: &Path,

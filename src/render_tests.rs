@@ -2695,6 +2695,51 @@ fn unchecking_a_host_changes_what_would_run() {
     assert!(!out.contains("Run 1 step"), "{out}");
 }
 
+/// A download step shows both ends of the copy: where the file comes from and
+/// where it lands, with the host named as a placeholder since each host on the
+/// step gets a copy of its own.
+#[test]
+fn a_download_step_shows_source_and_destination() {
+    use crate::agent::AgentEvent;
+    let (mut app, _rx) = test_app("downloaddlg");
+    app.screen = Screen::Chat;
+    app.on_agent_event(AgentEvent::Proposed(Box::new(Plan {
+        id: 3,
+        title: "grab logs".into(),
+        steps: vec![
+            PlanStep {
+                summary: "fetch the nginx log".into(),
+                kind: StepKind::Download {
+                    path: "/var/log/x.log".into(),
+                    dest: String::new(),
+                },
+                hosts: vec![1],
+            },
+            PlanStep {
+                summary: "keep the db log by name".into(),
+                kind: StepKind::Download {
+                    path: "/var/log/pg.log".into(),
+                    dest: "logs/db.log".into(),
+                },
+                hosts: vec![2],
+            },
+        ],
+    })));
+    app.function_key(2);
+    let out = render(&mut app, 200, 34);
+    assert!(out.contains("(download)"), "the kind is named: {out}");
+    // Default: per-plan, per-host, remote path's shape.
+    assert!(
+        out.contains("/var/log/x.log → artifacts/downloads/plan-3/<host>/var/log/x.log"),
+        "{out}"
+    );
+    // Explicit: exactly where the model asked it to land.
+    assert!(
+        out.contains("/var/log/pg.log → artifacts/logs/db.log"),
+        "{out}"
+    );
+}
+
 /// Confirming with nothing selected must not close the dialog on a no-op.
 #[test]
 fn confirming_an_empty_selection_keeps_the_dialog() {

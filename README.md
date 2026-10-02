@@ -177,6 +177,14 @@ an encrypted database. Every setting is written to the file at startup —
 including ones added since it was created — so the knobs are discoverable
 without reading the source.
 
+**Every conversation with the model is logged** to `agent.log` under the data
+directory: your prompts, each tool call with its arguments and full result,
+the report of what a confirmed plan did, and any HTTP error with its body.
+Set `debug = true` in `[agent]` to log every HTTP request and response body
+as well — off by default, because the bodies replay the whole conversation
+each turn and the log would grow at the rate of the context window. The
+`Authorization` header is never logged.
+
 **The model may look, but it may not touch.** Reading is unattended so the agent
 can find out what is actually true before it suggests anything, and it reads
 through one tool per question rather than one tool that takes a command line:
@@ -269,10 +277,24 @@ uploaded by name whether it was listed or not. Nothing escapes: a name with `..`
 in it is refused, and so is a path that leads out through a symlink, because the
 check is on the canonicalized path.
 
-Changing anything goes through a **plan** — scripts and artifact uploads, with
-the hosts for each — which you review in a dialog with a checkbox per step and
-per host. The script is shown in full, never elided: a plan you cannot read end
-to end is one you cannot judge. Confirm runs exactly what is still checked.
+**A plan can copy in both directions.** A `download` step fetches an absolute
+path from each host into `~/.openadmin/artifacts/` — by default under
+`downloads/plan-<id>/<host>/…`, keeping the remote path's shape, so the same
+file from several hosts lands as several files; or at an explicit `dest` you can
+name, which the step's one host writes to directly (one dest is one file, so a
+dest names exactly one host — the default is what keeps many hosts apart).
+Either way it appears in `list_artifacts`, where a later plan can pick it up and
+upload it to another host. The remote path must be absolute, normalized and free
+of spaces and shell characters (`._-+=@/` and alphanumerics), because scp runs
+the remote side through a shell; a dest is containment-checked against the
+artifacts directory, symlinks included; and one cut off mid-transfer is removed
+rather than left as a half-copy that reads as complete.
+
+Changing anything goes through a **plan** — scripts, artifact uploads and
+downloads, with the hosts for each — which you review in a dialog with a
+checkbox per step and per host. The script is shown in full, never elided: a
+plan you cannot read end to end is one you cannot judge. Confirm runs exactly
+what is still checked.
 
 **Nothing halts on failure.** Every checked step runs on every checked host,
 and the report — each pair with its exit status — goes back to the model, which
@@ -350,10 +372,18 @@ Everything lives under `~/.openadmin`:
 ```
 openadmin.sqlite   SQLCipher-encrypted host database
 config.toml        settings (see below)
+agent.log          every prompt, tool call and HTTP error, with bodies
+system_prompt.md   the agent's instructions — written with the default on first
+                   run, and yours to edit from then on
 keys/<host>        ed25519 private keys, 0600
-artifacts/         files a plan may upload
+artifacts/         files a plan may upload — and where its downloads land
 manuals/           what you have written for the agent
 ```
+
+The prompt file carries a `{{manuals}}` line where the manual index for this
+session goes; edit around it, or delete it to run with no manuals section
+at all. A prompt file is used verbatim, so check it after a version upgrade
+that changes what the tools do.
 
 `artifacts/` and `manuals/` are created empty on every start, so they are there
 to put something in.
