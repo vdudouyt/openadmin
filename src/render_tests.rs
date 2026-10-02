@@ -233,7 +233,7 @@ fn with_no_shell_open_the_strip_is_hosts_and_chat() {
     assert_eq!(tabs, [Tab::Hosts, Tab::Chat], "{out}");
     let row0 = out.lines().next().unwrap();
     assert!(row0.starts_with(" OpenAdmin "), "the logo is tab 1: {out}");
-    assert!(row0.contains("2 Chat"), "{out}");
+    assert!(row0.contains("2 Agent"), "{out}");
     assert!(!row0.contains("Hosts"), "the logo stands for Hosts: {out}");
 
     app.on_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT));

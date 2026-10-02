@@ -82,7 +82,7 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Tab::Hosts => "Hosts",
-            Tab::Chat => "Chat",
+            Tab::Chat => "Agent",
             Tab::Shell(_) => "Shell",
         }
     }

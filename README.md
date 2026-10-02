@@ -30,12 +30,12 @@ On first run you are asked to create a database; after that, to unlock it.
 ## The tabs
 
 One strip along the header, from the left: the **`OpenAdmin` name, which is the
-Hosts tab**, then `2 Chat`, then one tab per open shell, `3`, `4`… in the order
+Hosts tab**, then `2 Agent`, then one tab per open shell, `3`, `4`… in the order
 they were opened. While Hosts is showing, `OpenAdmin` turns black on orange.
 `Alt+1`…`Alt+9` jump to a tab and `Alt+←` / `Alt+→` walk the strip, wrapping —
 from every screen, a focused shell included. `F9` goes to the next tab from
-Chat; on Hosts, `F9` is Mount. Tabs past the ninth have no digit, but `Alt+←` / `Alt+→` and a click
-still reach them.
+Agent; on Hosts, `F9` is Mount. Tabs past the ninth have no digit, but
+`Alt+←` / `Alt+→` and a click still reach them.
 
 **Errors open a dialog** on top of whatever is showing, and stay until you
 dismiss them — `Esc`, `Enter`, or the Dismiss button. Nothing behind the dialog
@@ -138,7 +138,7 @@ as you left it; an import closes both. Bulk add is not offered when editing a
 host: an import closes the dialog it came from, and would take an edit's unsaved
 changes with it.
 
-### 2 · Chat
+### 2 · Agent
 
 An agent that helps you diagnose and fix the fleet. It speaks the **OpenAI Chat
 Completions** API, which is also what vLLM, Ollama, llama.cpp, OpenRouter and
@@ -316,7 +316,7 @@ one title per pane, because there they tell the panes apart.
 That means **the mouse is how you drive the app while a pane is focused**:
 
 * a click on a header tab goes there, `OpenAdmin` to Hosts — `OpenAdmin`
-  shrinks to a plain `1` and `2 Chat` sheds its label before either disappears,
+  shrinks to a plain `1` and `2 Agent` sheds its label before either disappears,
   and shell tabs are never allowed to crowd them out, so a narrow terminal
   cannot strand you
 * a shell tab's `×` closes it; `‹` and `›` mark shell tabs scrolled out of view
@@ -367,7 +367,7 @@ to put something in.
 | `sshfs_options` | `[]` | extra options for every mount |
 | `mount_prefix` | `/net` | where derived mount points live |
 | `proxy_port` | `10000` | local SOCKS port for the proxy host |
-| `model` | `claude-sonnet-4.5` | label shown on the Chat screen |
+| `model` | `claude-sonnet-4.5` | label shown on the Agent screen |
 
 ### Credential storage — read this
 

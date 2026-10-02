@@ -34,7 +34,7 @@ fn logo_width(wordmark: bool) -> u16 {
     }
 }
 
-/// Columns the Chat tab occupies: `" 2 Chat "`, or `" 2 "` with its label shed.
+/// Columns the Agent tab occupies: `" 2 Agent "`, or `" 2 "` with its label shed.
 fn chat_width(label: bool) -> u16 {
     if label {
         3 + 1 + Tab::Chat.label().chars().count() as u16
