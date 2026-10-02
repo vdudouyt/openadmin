@@ -183,14 +183,6 @@ impl TerminalManager {
         }
     }
 
-    pub fn next_tab(&mut self) {
-        if let Some(i) = self.active
-            && !self.tabs.is_empty()
-        {
-            self.active = Some((i + 1) % self.tabs.len());
-        }
-    }
-
     pub fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = Some(index);
@@ -443,27 +435,6 @@ mod tests {
             m.write_focused(b"x").is_ok(),
             "input with no tabs is a no-op"
         );
-    }
-
-    #[test]
-    fn tab_cycling_wraps() {
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut m = TerminalManager::new();
-        for i in 0..3 {
-            m.open_tab(
-                vec![(format!("h{i}"), sleeper())],
-                (24, 80),
-                50,
-                "xterm",
-                &tx,
-            )
-            .unwrap();
-        }
-        m.select_tab(2);
-        m.next_tab();
-        assert_eq!(m.active, Some(0), "next wraps past the end");
-        m.next_tab();
-        assert_eq!(m.active, Some(1));
     }
 
     /// The renderer and the resizer must agree, so both go through pane_rects.

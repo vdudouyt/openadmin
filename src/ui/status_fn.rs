@@ -236,7 +236,7 @@ fn entries(app: &App) -> Vec<Entry> {
                 e(&cap(3), "Tab", 3, false),
                 e(&cap(4), "Close", 4, false),
                 e(&cap(5), "New shell", 5, false),
-                e(&cap(9), "Screen", 9, false),
+                e(&cap(9), "Next tab", 9, false),
                 e(&cap(10), "Quit", 10, false),
             ]
         }
@@ -253,7 +253,7 @@ fn entries(app: &App) -> Vec<Entry> {
                 caps.push(e("F2", "Review plan", 2, false));
             }
             caps.push(e("PgUp", "Scroll", 0xff, false));
-            caps.push(e("F9", "Screen", 9, false));
+            caps.push(e("F9", "Next tab", 9, false));
             caps.push(e("F10", "Quit", 10, false));
             caps
         }

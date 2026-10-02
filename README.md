@@ -27,11 +27,14 @@ openadmin [--datadir <dir>] [--password <value>]
 
 On first run you are asked to create a database; after that, to unlock it.
 
-## The three screens
+## The tabs
 
-`Alt+1` / `Alt+2` / `Alt+3` jump to a screen; `Alt+←` / `Alt+→` walk
-between them, wrapping; `F9` cycles forward from Shells and Chat. On Hosts, `F9`
-is Mount.
+One numbered strip on the right of the header: `1 Hosts`, `2 Chat`, then one tab
+per open shell, `3`, `4`… in the order they were opened. `Alt+1`…`Alt+9` jump to
+a tab and `Alt+←` / `Alt+→` walk the strip, wrapping — from every screen, a
+focused shell included. `F9` goes to the next tab from Chat; on Hosts, `F9` is
+Mount. Tabs past the ninth have no digit, but `Alt+←` / `Alt+→` and a click
+still reach them.
 
 **Errors open a dialog** on top of whatever is showing, and stay until you
 dismiss them — `Esc`, `Enter`, or the Dismiss button. Nothing behind the dialog
@@ -134,61 +137,7 @@ as you left it; an import closes both. Bulk add is not offered when editing a
 host: an import closes the dialog it came from, and would take an edit's unsaved
 changes with it.
 
-### 2 · Shells
-
-Open sessions as tabs. One host gives one full-width pane; several marked hosts
-give a single tab named `Group: <first host>` that stacks one pane per host.
-
-**A focused pane takes every key but one.** `F1`–`F10`, `Tab`, `Esc`,
-`Esc`+digit, `Alt`+letter, `Alt`+digit and every `Ctrl` chord go straight to the
-terminal. mc reads `Esc`+digit as its own F-key emulation and `Alt` as its menu
-shortcuts, so claiming any of them would quietly break it. GNU Screen keeps
-`Ctrl+A`, vim keeps a zero-latency `Esc`.
-
-The exception is **`Alt+←` / `Alt+→`**, which walk between screens — the one
-keyboard way out of a live terminal. mc, vim and GNU Screen bind neither by
-default; if you have bound `\e[1;3D`/`\e[1;3C` to word movement in your shell,
-that is what you give up.
-
-This screen spends **one row** on itself. There is no function bar and no
-status line — every key here belongs to the terminal, so neither would earn the
-line of your shell it costs. The shell tabs share the header row with the screen
-tabs — the brand stepping aside whenever there is a shell to name, and taking
-the space back when the last one closes — and a tab holding a single pane draws
-no title rule at all: its host name is already in its tab. A stacked group keeps
-one title per pane, because there they tell the panes apart.
-
-That means **the mouse is how you drive the app while a pane is focused**:
-
-* the `1 Hosts` / `2 Shells` / `3 Chat` tabs on the right of the header switch
-  screens — they shed their labels before they ever disappear, and shell tabs
-  are never allowed to crowd them out, so a narrow terminal cannot strand you
-* a shell tab selects itself on click, and its `×` closes it; `‹` and `›` mark
-  tabs scrolled out of view
-* to quit, switch to Hosts (`Alt+←`) and use `F10`, or click Quit there
-
-**The wheel scrolls a pane back** through what it has printed — up to
-`scrollback` lines each, 5000 by default — with a scrollbar in the pane's
-right-hand column showing where you are: drag its thumb, or click the bar to
-jump there. Output arriving meanwhile does not move what you are reading; typing
-or pasting returns you to the live prompt.
-Full-screen programs are left alone: mc, htop and anything else that asked for
-the mouse get the wheel themselves, and vim, less and their like draw on the
-alternate screen, which has no history to scroll. The scrollbar has a column of
-its own, so a pane tells its program it is one column narrower than it looks.
-It stays yours even when a program has the mouse: the program is never told
-about it, and a drag that starts on the bar stays the bar's until you let go.
-
-**Closing the last shell takes you back** to the screen you were on before
-Shells — Hosts, for the usual Enter on a host and `exit` — whether you closed it
-with `F4`, clicked its `×`, or it ended by itself. Only that last close moves
-you: a shell ending while you are on another screen changes nothing.
-
-With **no shell open** there is nothing to be transparent to, so the keyboard
-comes back: the F-keys work, and `Esc` returns to Hosts. An empty Shells screen
-you reached on purpose, with `Alt+2`, stays put.
-
-### 3 · Chat
+### 2 · Chat
 
 An agent that helps you diagnose and fix the fleet. It speaks the **OpenAI Chat
 Completions** API, which is also what vLLM, Ollama, llama.cpp, OpenRouter and
@@ -337,6 +286,60 @@ A model ignoring every word of its system prompt still has no function it can
 reach that accepts what it can make.
 
 `Ctrl+C` cancels a turn in flight. `PgUp`/`PgDn` scroll the transcript.
+
+### 3… · Shells
+
+Open sessions as tabs. One host gives one full-width pane; several marked hosts
+give a single tab named `Group: <first host>` that stacks one pane per host.
+
+**A focused pane takes every key but the tab keys.** `F1`–`F10`, `Tab`, `Esc`,
+`Esc` then a digit, `Alt`+letter, `Alt+0` and every `Ctrl` chord go straight to
+the terminal. mc reads `Esc`+digit as its own F-key emulation and `Alt` as its
+menu shortcuts, so claiming more of them would quietly break it. GNU Screen keeps
+`Ctrl+A`, vim keeps a zero-latency `Esc`.
+
+The exception is **`Alt+1`…`Alt+9` and `Alt+←` / `Alt+→`**, which switch tabs —
+the keyboard way out of a live terminal, and between shells. mc, vim and GNU
+Screen bind none of them by default. What you give up: readline's `Alt`+digit
+numeric argument, `Esc` and a digit typed fast enough to arrive as one chord
+(mc's F1–F9 emulation — type them apart, or use the real F-keys), and any
+binding of `\e[1;3D`/`\e[1;3C` to word movement in your shell.
+
+This screen spends **one row** on itself. There is no function bar and no
+status line — every key here belongs to the terminal, so neither would earn the
+line of your shell it costs. The shell tabs are part of the header's one strip —
+the brand giving up its room when there are many — and a tab holding a single
+pane draws
+no title rule at all: its host name is already in its tab. A stacked group keeps
+one title per pane, because there they tell the panes apart.
+
+That means **the mouse is how you drive the app while a pane is focused**:
+
+* a click on a header tab goes there — `1 Hosts` and `2 Chat` shed their labels
+  before they ever disappear, and shell tabs are never allowed to crowd them
+  out, so a narrow terminal cannot strand you
+* a shell tab's `×` closes it; `‹` and `›` mark shell tabs scrolled out of view
+* to quit, switch to Hosts (`Alt+1`) and use `F10`, or click Quit there
+
+**The wheel scrolls a pane back** through what it has printed — up to
+`scrollback` lines each, 5000 by default — with a scrollbar in the pane's
+right-hand column showing where you are: drag its thumb, or click the bar to
+jump there. Output arriving meanwhile does not move what you are reading; typing
+or pasting returns you to the live prompt.
+Full-screen programs are left alone: mc, htop and anything else that asked for
+the mouse get the wheel themselves, and vim, less and their like draw on the
+alternate screen, which has no history to scroll. The scrollbar has a column of
+its own, so a pane tells its program it is one column narrower than it looks.
+It stays yours even when a program has the mouse: the program is never told
+about it, and a drag that starts on the bar stays the bar's until you let go.
+
+**Closing the last shell takes you back** to the screen you were on before
+the shells — Hosts, for the usual Enter on a host and `exit` — whether you closed it
+with `F4`, clicked its `×`, or it ended by itself. Only that last close moves
+you: a shell ending while you are on another screen changes nothing.
+
+With **no shell open** there are no shell tabs, and nothing leads to an empty
+Shells screen.
 
 ## Data
 

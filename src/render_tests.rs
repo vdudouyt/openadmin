@@ -5,7 +5,7 @@
 //! over a `TestBackend`, and drive `on_mouse` with hand-set `regions` so no
 //! terminal is needed.
 
-use crate::app::{App, Click, Mode, Screen};
+use crate::app::{App, Click, Mode, Screen, Tab};
 use crate::config::Config;
 use crate::db::DataBase;
 use crate::db::model::HostRecord;
@@ -68,6 +68,28 @@ fn test_app(tag: &str) -> (App, Receiver<TermEvent>) {
     let (agent_tx, agent_rx) = channel();
     std::mem::forget(agent_rx);
     (App::new(db, Config::default(), dir, tx, agent_tx), rx)
+}
+
+/// The shell tabs the header drew, by shell tab index.
+fn shell_tabs(app: &App) -> Vec<(ratatui::layout::Rect, usize)> {
+    app.regions
+        .screen_tabs
+        .iter()
+        .filter_map(|(r, t)| match t {
+            Tab::Shell(i) => Some((*r, *i)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Hosts and Chat, as the header drew them.
+fn pinned_tabs(app: &App) -> Vec<(ratatui::layout::Rect, Tab)> {
+    app.regions
+        .screen_tabs
+        .iter()
+        .filter(|(_, t)| !matches!(t, Tab::Shell(_)))
+        .copied()
+        .collect()
 }
 
 fn render(app: &mut App, w: u16, h: u16) -> String {
@@ -201,31 +223,30 @@ fn every_dialog_renders() {
     }
 }
 
+/// With no shell open the strip is Hosts and Chat, and no key leads to an
+/// empty Shells screen.
 #[test]
-fn shells_screen_starts_with_an_empty_state_and_no_footer() {
+fn with_no_shell_open_the_strip_is_hosts_and_chat() {
     let (mut app, _rx) = test_app("shells");
-    app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
-    assert!(out.contains("No open shells."), "{out}");
-    // The Shells screen draws no function bar at all.
-    assert!(!out.contains("Help"), "no function bar here: {out}");
-    assert!(!out.contains("Esc-"), "and no stale chord captions: {out}");
+    let tabs: Vec<Tab> = app.regions.screen_tabs.iter().map(|(_, t)| *t).collect();
+    assert_eq!(tabs, [Tab::Hosts, Tab::Chat], "{out}");
+    let row0 = out.lines().next().unwrap();
+    assert!(row0.contains("1 Hosts") && row0.contains("2 Chat"), "{out}");
     assert!(
-        app.regions.fkeys.is_empty(),
-        "no F-key hitboxes are registered"
+        row0.contains("OpenAdmin"),
+        "the brand keeps its place: {out}"
     );
-    // The header tabs are still there — they are the way back out.
-    assert!(app.regions.screen_tabs.len() == 3);
-    // With nothing open there are no shell tabs to name, so the brand keeps
-    // the space it would otherwise yield.
-    assert!(
-        out.contains("OpenAdmin"),
-        "the brand shows on an empty Shells screen: {out}"
-    );
+
+    app.on_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Hosts, "there is no tab 3 yet");
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.screen, Screen::Hosts, "Alt+→ wraps over the two");
 }
 
-/// With no footer and no status line, the header's screen tabs are the whole
-/// escape route from a focused pane, so they must stay registered.
+/// The Shells screen draws no function bar, so the header's tabs are the
+/// whole mouse route off a focused pane and must stay registered.
 #[test]
 fn the_screen_tabs_survive_a_focused_pane() {
     use crate::term::session::Spawn;
@@ -244,14 +265,12 @@ fn the_screen_tabs_survive_a_focused_pane() {
     app.screen = Screen::Shells;
     let out = render(&mut app, 120, 30);
 
-    assert_eq!(app.regions.screen_tabs.len(), 3, "{out}");
-    // The brand steps aside for the shell tabs on this screen.
-    assert!(
-        !out.contains("OpenAdmin"),
-        "the wordmark is hidden here: {out}"
-    );
-    // The shell tab shares the header row with them.
-    assert!(out.lines().next().unwrap().contains("local"), "{out}");
+    assert!(!out.contains("Help"), "no function bar here: {out}");
+    assert!(app.regions.fkeys.is_empty(), "no F-key hitboxes");
+    assert_eq!(pinned_tabs(&app).len(), 2, "{out}");
+    assert_eq!(shell_tabs(&app).len(), 1, "{out}");
+    // The shell is tab 3 of the same strip.
+    assert!(out.lines().next().unwrap().contains("3 ● local"), "{out}");
     app.term.shutdown();
 }
 
@@ -288,7 +307,7 @@ fn the_help_dialog_explains_the_shells_keyboard() {
     // status bar also says — that is how a help cut off eight lines short
     // passed this test.
     assert!(
-        out.contains("the 1/2/3 tabs switch screens"),
+        out.contains("a header tab goes there"),
         "the mouse way out is documented: {out}"
     );
     assert!(out.contains("scroll back"), "and the wheel: {out}");
@@ -369,23 +388,31 @@ fn open_shells(app: &mut App, names: &[&str]) {
     app.screen = Screen::Shells;
 }
 
-/// The brand yields the header only while there are tabs to put there, and
-/// takes the space back when the last shell closes.
+/// A shell's tab goes from the strip with it; Hosts and Chat stay.
 #[test]
-fn the_brand_returns_when_the_last_shell_closes() {
+fn the_shell_tab_goes_when_its_shell_closes() {
     let (mut app, _rx) = test_app("brandback");
     open_shells(&mut app, &["web-01"]);
 
     let out = render(&mut app, 120, 20);
-    assert!(!out.contains("OpenAdmin"), "the tab takes the space: {out}");
     assert!(out.contains("web-01"), "{out}");
+    assert!(out.contains("OpenAdmin"), "room for the brand too: {out}");
 
     app.term.close_active_tab();
     let out = render(&mut app, 120, 20);
-    assert!(out.contains("OpenAdmin"), "the brand comes back: {out}");
     assert!(!out.contains("web-01"), "{out}");
-    // And the way out is registered either way.
-    assert_eq!(app.regions.screen_tabs.len(), 3);
+    assert_eq!(app.regions.screen_tabs.len(), 2);
+}
+
+/// Many shells take the brand's room before any of theirs.
+#[test]
+fn the_brand_yields_to_shell_tabs() {
+    let (mut app, _rx) = test_app("brandyield");
+    open_shells(&mut app, &["alpha", "bravo", "charlie", "delta", "echo"]);
+    let out = render(&mut app, 80, 20);
+    assert!(!out.contains("OpenAdmin"), "{out}");
+    assert!(out.lines().next().unwrap().contains("echo"), "{out}");
+    app.term.shutdown();
 }
 
 /// A lone pane needs no title: the header tab already names the host.
@@ -496,15 +523,11 @@ fn shell_tab_hitboxes_land_on_the_tabs_that_were_drawn() {
     open_shells(&mut app, &["alpha", "bravo", "charlie"]);
     let _ = render(&mut app, 120, 20);
 
-    assert_eq!(
-        app.regions.shell_tabs.len(),
-        3,
-        "all three tabs are registered"
-    );
+    assert_eq!(shell_tabs(&app).len(), 3, "all three tabs are registered");
     let header = render(&mut app, 120, 20);
     let row0 = header.lines().next().unwrap().chars().collect::<Vec<_>>();
 
-    for (rect, i) in app.regions.shell_tabs.clone() {
+    for (rect, i) in shell_tabs(&app) {
         let name = ["alpha", "bravo", "charlie"][i];
         let drawn: String = row0[rect.x as usize..(rect.x + rect.width) as usize]
             .iter()
@@ -515,8 +538,16 @@ fn shell_tab_hitboxes_land_on_the_tabs_that_were_drawn() {
         );
     }
 
+    // The showing tab's × is drawn where its hitbox is.
+    let (close, i) = app.regions.shell_closes[0];
+    assert_eq!(i, 2, "charlie, the last opened, is showing");
+    let drawn: String = row0[close.x as usize..(close.x + close.width) as usize]
+        .iter()
+        .collect();
+    assert_eq!(drawn, " ×");
+
     // And clicking the third one selects the third one.
-    let (rect, _) = app.regions.shell_tabs[2];
+    let (rect, _) = shell_tabs(&app)[2];
     click(&mut app, rect.x + 2, rect.y);
     assert_eq!(app.term.active, Some(2));
     app.term.shutdown();
@@ -535,13 +566,14 @@ fn screen_tabs_outrank_shell_tabs_at_every_width() {
     for w in [120u16, 90, 70, 50, 40, 32] {
         let _ = render(&mut app, w, 20);
         assert_eq!(
-            app.regions.screen_tabs.len(),
-            3,
+            pinned_tabs(&app).len(),
+            2,
             "width {w}: the way out must survive"
         );
-        // Shell tabs never overlap the screen tabs.
-        for (srect, _) in &app.regions.screen_tabs {
-            for (trect, i) in &app.regions.shell_tabs {
+        // Shell tabs never overlap Hosts or Chat, nor run off the screen.
+        for (srect, _) in &pinned_tabs(&app) {
+            for (trect, i) in &shell_tabs(&app) {
+                assert!(trect.x + trect.width <= w, "width {w}: tab {i} {trect:?}");
                 assert!(
                     trect.x + trect.width <= srect.x || trect.x >= srect.x + srect.width,
                     "width {w}: shell tab {i} {trect:?} overlaps a screen tab {srect:?}"
@@ -564,7 +596,7 @@ fn the_tab_window_follows_the_active_tab() {
         app.term.select_tab(i);
         let _ = render(&mut app, 60, 20);
         assert!(
-            app.regions.shell_tabs.iter().any(|(_, t)| *t == i),
+            shell_tabs(&app).iter().any(|(_, t)| *t == i),
             "tab {i} is active but was not rendered"
         );
     }
@@ -580,13 +612,17 @@ fn the_tab_window_follows_the_active_tab() {
 #[test]
 fn the_screen_tabs_shed_labels_rather_than_disappear() {
     let (mut app, _rx) = test_app("narrowtabs");
-    app.screen = Screen::Shells;
+    open_shells(&mut app, &["a-rather-long-host-name"]);
     for w in [120u16, 80, 60, 44, 36, 30] {
         let _ = render(&mut app, w, 20);
         assert_eq!(
-            app.regions.screen_tabs.len(),
-            3,
+            pinned_tabs(&app).len(),
+            2,
             "width {w}: every screen must stay clickable"
+        );
+        assert!(
+            shell_tabs(&app).len() == 1,
+            "width {w}: the showing shell keeps its tab"
         );
         for (rect, _) in &app.regions.screen_tabs {
             assert!(
@@ -595,6 +631,7 @@ fn the_screen_tabs_shed_labels_rather_than_disappear() {
             );
         }
     }
+    app.term.shutdown();
 }
 
 /// Even a terminal too small for the full chrome keeps the header: it is the
@@ -606,8 +643,8 @@ fn a_tiny_terminal_keeps_the_screen_tabs() {
     for (w, h) in [(29u16, 12u16), (40, 5), (25, 3)] {
         let _ = render(&mut app, w, h);
         assert_eq!(
-            app.regions.screen_tabs.len(),
-            3,
+            pinned_tabs(&app).len(),
+            2,
             "{w}x{h}: the escape route must survive"
         );
     }
@@ -724,9 +761,9 @@ fn clicking_a_header_tab_switches_screens() {
         .regions
         .screen_tabs
         .iter()
-        .find(|(_, s)| *s == Screen::Chat)
+        .find(|(_, s)| *s == Tab::Chat)
         .unwrap();
-    assert_eq!(screen, Screen::Chat);
+    assert_eq!(screen, Tab::Chat);
     click(&mut app, rect.x + 1, rect.y);
     assert_eq!(app.screen, Screen::Chat);
 }
@@ -1145,66 +1182,85 @@ fn marks_are_dropped_when_their_host_disappears() {
 
 // ---- key routing ---------------------------------------------------------
 
-#[test]
-fn alt_digits_switch_screens_away_from_the_terminal() {
-    let (mut app, _rx) = test_app("altdigit");
-    app.on_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Chat);
-    app.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Shells);
+fn alt(app: &mut App, code: KeyCode) {
+    app.on_key(KeyEvent::new(code, KeyModifiers::ALT));
 }
 
-/// Alt+←/→ walk the screens, wrapping in both directions.
+/// One strip, one way to count it: Alt+1 Hosts, Alt+2 Chat, Alt+3… the shells
+/// in the order they were opened.
 #[test]
-fn alt_arrows_walk_the_screens() {
-    let (mut app, _rx) = test_app("altarrows");
+fn alt_digits_reach_every_tab() {
+    let (mut app, _rx) = test_app("altdigit");
+    open_shells(&mut app, &["alpha", "bravo"]);
+    app.set_screen(Screen::Hosts);
+
+    alt(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.screen, Screen::Chat);
+    alt(&mut app, KeyCode::Char('4'));
+    assert_eq!(app.screen, Screen::Shells);
+    assert_eq!(app.term.active, Some(1), "bravo");
+    alt(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.term.active, Some(0), "alpha");
+    alt(&mut app, KeyCode::Char('1'));
     assert_eq!(app.screen, Screen::Hosts);
 
-    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Shells);
-    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Chat);
-    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Hosts, "wraps forward");
-
-    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Chat, "wraps backward");
-    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Shells);
+    // Past the last tab nothing happens.
+    alt(&mut app, KeyCode::Char('5'));
+    assert_eq!(app.screen, Screen::Hosts);
+    app.term.shutdown();
 }
 
-/// The single exception to the Shells screen's keyboard transparency: it is
-/// the only key that gets you out of a live terminal without a mouse.
+/// Alt+←/→ walk the whole strip, shells included, wrapping both ways.
 #[test]
-fn alt_arrows_escape_a_focused_pane() {
-    use crate::term::session::Spawn;
+fn alt_arrows_walk_hosts_chat_and_shells() {
+    let (mut app, _rx) = test_app("altarrows");
+    open_shells(&mut app, &["alpha", "bravo"]);
+    app.set_screen(Screen::Hosts);
+
+    let mut walk = |code| {
+        alt(&mut app, code);
+        app.current_tab()
+    };
+    assert_eq!(walk(KeyCode::Right), 1, "Chat");
+    assert_eq!(walk(KeyCode::Right), 2, "alpha");
+    assert_eq!(walk(KeyCode::Right), 3, "bravo");
+    assert_eq!(walk(KeyCode::Right), 0, "wraps forward to Hosts");
+    assert_eq!(walk(KeyCode::Left), 3, "wraps backward to bravo");
+    assert_eq!(walk(KeyCode::Left), 2);
+    assert_eq!(app.screen, Screen::Shells);
+    assert_eq!(app.term.active, Some(0));
+    app.term.shutdown();
+}
+
+/// The tab keys are the exception to the Shells screen's keyboard
+/// transparency: they get you out of a live terminal, and between shells,
+/// without a mouse.
+#[test]
+fn the_tab_keys_escape_a_focused_pane() {
     let (mut app, _rx) = test_app("altescape");
-    let mut spawn = Spawn::new("/bin/sh");
-    spawn.args = vec!["-c".into(), "sleep 30".into()];
-    app.term
-        .open_tab(
-            vec![("local".into(), spawn)],
-            (24, 80),
-            50,
-            "xterm",
-            &app.term_tx,
-        )
-        .unwrap();
-    app.screen = Screen::Shells;
+    open_shells(&mut app, &["alpha", "bravo"]);
     assert!(app.term.focused_session().is_some());
 
-    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Hosts, "Alt+← leaves a focused pane");
+    alt(&mut app, KeyCode::Left);
+    assert_eq!(app.screen, Screen::Shells, "Alt+← from bravo is alpha");
+    assert_eq!(app.term.active, Some(0));
+    alt(&mut app, KeyCode::Left);
+    assert_eq!(app.screen, Screen::Chat, "and then Chat");
 
-    app.screen = Screen::Shells;
-    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-    assert_eq!(app.screen, Screen::Chat, "Alt+→ too");
+    alt(&mut app, KeyCode::Char('4'));
+    alt(&mut app, KeyCode::Right);
+    assert_eq!(app.screen, Screen::Hosts, "Alt+→ from the last wraps");
+
+    alt(&mut app, KeyCode::Char('4'));
+    alt(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.screen, Screen::Hosts, "Alt+digit leaves a focused pane");
 
     // Everything else still belongs to the terminal.
-    app.screen = Screen::Shells;
+    alt(&mut app, KeyCode::Char('3'));
     for code in [KeyCode::Up, KeyCode::Down, KeyCode::Tab, KeyCode::Esc] {
-        app.on_key(KeyEvent::new(code, KeyModifiers::ALT));
+        alt(&mut app, code);
         assert_eq!(app.screen, Screen::Shells, "{code:?} must reach the pty");
+        assert_eq!(app.term.active, Some(0));
     }
     for n in 1..=10u8 {
         app.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::empty()));
@@ -1223,9 +1279,10 @@ fn key_releases_are_ignored() {
     assert_eq!(app.cursor, 0, "a release must not move the cursor");
 }
 
-/// The rule for the Shells screen: a focused pane takes every key. Nothing —
-/// no F-key, no Esc+digit, no Alt chord — is reserved by the app, because mc
-/// reads Esc+digit as its own F-key emulation and Alt as its menu shortcuts.
+/// The rule for the Shells screen: a focused pane takes every key but the tab
+/// keys, Alt+1…9 and Alt+←/→. No F-key, no Esc then digit, no other Alt chord
+/// is reserved by the app, because mc reads Esc+digit as its own F-key
+/// emulation and Alt as its menu shortcuts.
 #[test]
 fn a_focused_pane_takes_every_key() {
     use crate::term::session::Spawn;
@@ -1261,13 +1318,11 @@ fn a_focused_pane_takes_every_key() {
         assert_eq!(app.screen, Screen::Shells, "Esc {d} must not change screen");
     }
 
-    // Alt+digit, which is how a quickly typed Esc+digit arrives.
-    for d in '0'..='9' {
-        app.on_key(KeyEvent::new(KeyCode::Char(d), KeyModifiers::ALT));
-        assert!(!app.should_quit, "Alt+{d} must not quit");
-        assert_eq!(app.mode, Mode::Normal, "Alt+{d} must not open a dialog");
-        assert_eq!(app.screen, Screen::Shells, "Alt+{d} must not change screen");
-    }
+    // Alt+0, which is how a quickly typed Esc+0 — mc's F10 — arrives. It is
+    // Quit on the other screens, but not here.
+    app.on_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::ALT));
+    assert!(!app.should_quit, "Alt+0 must not quit");
+    assert_eq!(app.screen, Screen::Shells, "Alt+0 must not change screen");
 
     // Alt+letter, Tab and Ctrl chords belong to the terminal too.
     for c in ['o', 't', 'h', '?'] {
@@ -1305,7 +1360,7 @@ fn the_header_tabs_escape_a_focused_pane() {
         .regions
         .screen_tabs
         .iter()
-        .find(|(_, s)| *s == Screen::Hosts)
+        .find(|(_, s)| *s == Tab::Hosts)
         .expect("a Hosts tab");
     click(&mut app, rect.x + 1, rect.y);
     assert_eq!(
@@ -3898,8 +3953,7 @@ fn a_last_shell_that_ends_by_itself_goes_back() {
 }
 
 /// Only the transition moves anyone. A shell ending while the operator is on
-/// another screen changes nothing, and an empty Shells screen visited on
-/// purpose stays where it is.
+/// another screen changes nothing.
 #[test]
 fn nobody_is_moved_who_was_not_on_the_last_shell() {
     let (mut app, _rx) = test_app("nomove");
@@ -3914,15 +3968,6 @@ fn nobody_is_moved_who_was_not_on_the_last_shell() {
     }
     assert!(app.term.is_empty());
     assert_eq!(app.screen, Screen::Chat, "not on Shells, so not moved");
-
-    app.set_screen(Screen::Shells);
-    app.reap_shells();
-    app.function_key(4); // Close, with nothing to close
-    assert_eq!(
-        app.screen,
-        Screen::Shells,
-        "visited empty on purpose, stays"
-    );
 }
 
 /// The screen remembered is the one before Shells, never Shells itself, and
@@ -3930,19 +3975,22 @@ fn nobody_is_moved_who_was_not_on_the_last_shell() {
 #[test]
 fn every_route_onto_shells_remembers_where_it_came_from() {
     let (mut app, _rx) = test_app("routes");
+    spawn_tab(&mut app, "web-01", "sleep 30");
+    spawn_tab(&mut app, "db-main", "sleep 30");
     app.set_screen(Screen::Chat);
-    // Alt+2.
-    app.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT));
+    // Alt+3.
+    alt(&mut app, KeyCode::Char('3'));
     assert_eq!(app.screen, Screen::Shells);
     assert_eq!(app.prev_screen, Screen::Chat);
-    // Shells to Shells changes nothing.
-    app.set_screen(Screen::Shells);
+    // Shell to shell changes nothing.
+    alt(&mut app, KeyCode::Char('4'));
     assert_eq!(app.prev_screen, Screen::Chat);
-    // Alt+← back to Hosts, then Alt+→ onto Shells.
+    // From Hosts, Alt+← wraps onto the last shell.
     app.set_screen(Screen::Hosts);
-    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    alt(&mut app, KeyCode::Left);
     assert_eq!(app.screen, Screen::Shells);
     assert_eq!(app.prev_screen, Screen::Hosts);
+    app.term.shutdown();
 }
 
 // ---- bulk import -----------------------------------------------------------

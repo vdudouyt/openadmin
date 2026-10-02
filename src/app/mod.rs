@@ -57,26 +57,34 @@ pub const BAR_SHELL: u8 = 0xfe;
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
+/// What the body shows. `Shells` shows the manager's active shell tab, so
+/// there is one `Shells` screen however many shells are open — the header
+/// strip is where they are told apart (`Tab`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Hosts,
-    Shells,
     Chat,
+    Shells,
 }
 
-impl Screen {
-    pub const ALL: [Screen; 3] = [Screen::Hosts, Screen::Shells, Screen::Chat];
+/// One entry of the header's tab strip: Hosts, Chat, then one per open shell
+/// tab, in that order. `Alt`+digit and `Alt+←/→` count along this, so a shell
+/// is reached the same way as a screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Hosts,
+    Chat,
+    /// An index into `TerminalManager::tabs`.
+    Shell(usize),
+}
 
+impl Tab {
     pub fn label(self) -> &'static str {
         match self {
-            Screen::Hosts => "Hosts",
-            Screen::Shells => "Shells",
-            Screen::Chat => "Chat",
+            Tab::Hosts => "Hosts",
+            Tab::Chat => "Chat",
+            Tab::Shell(_) => "Shell",
         }
-    }
-
-    fn index(self) -> usize {
-        Screen::ALL.iter().position(|s| *s == self).unwrap_or(0)
     }
 }
 
@@ -117,7 +125,7 @@ pub struct Status {
 impl Default for Status {
     fn default() -> Self {
         Status {
-            text: "Alt+1/2/3 switch screens · Insert marks hosts · F1 help".to_string(),
+            text: "Alt+1…9 switch tabs · Insert marks hosts · F1 help".to_string(),
             kind: StatusKind::Idle,
             set_at: Instant::now(),
         }
@@ -171,13 +179,12 @@ pub struct Regions {
     /// Host table data rows, and the host index drawn on the first of them.
     pub rows: Rect,
     pub row_start: usize,
-    /// Header screen tabs.
-    pub screen_tabs: Vec<(Rect, Screen)>,
+    /// The header's tabs: Hosts, Chat and every shell tab drawn.
+    pub screen_tabs: Vec<(Rect, Tab)>,
     /// Function-bar row and the `(x_start, x_end, fkey)` of each cap.
     pub fn_bar_y: u16,
     pub fkeys: Vec<(u16, u16, u8)>,
-    /// Shell tab labels and their `×` buttons, by tab index.
-    pub shell_tabs: Vec<(Rect, usize)>,
+    /// Shell tabs' `×` buttons, by shell tab index.
     pub shell_closes: Vec<(Rect, usize)>,
     /// Terminal panes of the active tab, by pane index.
     pub panes: Vec<(Rect, usize)>,
@@ -200,7 +207,6 @@ impl Regions {
         // cannot inherit the previous one's row.
         self.fn_bar_y = u16::MAX;
         self.fkeys.clear();
-        self.shell_tabs.clear();
         self.shell_closes.clear();
         self.panes.clear();
         self.plan_card = None;
@@ -1452,8 +1458,8 @@ impl App {
                 }
             }
             Mode::Normal => match self.screen {
-                // The Shells screen hands every key to the terminal; the app
-                // is reachable only with the mouse, via the header tabs.
+                // The Shells screen hands every key to the terminal but the
+                // tab keys; the rest of the app is a click on the header away.
                 Screen::Shells => self.key_shells(key),
                 Screen::Hosts => self.key_hosts(key),
                 Screen::Chat => self.key_chat(key),
@@ -1461,32 +1467,15 @@ impl App {
         }
     }
 
-    /// Keys shared by the Hosts and Chat screens: real F-keys, Alt+digit, and
-    /// the mc-style Esc+digit prefix.
+    /// Keys shared by the Hosts and Chat screens: the tab keys, real F-keys,
+    /// and the mc-style Esc+0 for Quit.
     fn key_global(&mut self, key: KeyEvent) -> bool {
-        // Alt+←/→ walk the screens, wrapping in both directions.
-        if key.modifiers.contains(KeyModifiers::ALT) {
-            match key.code {
-                KeyCode::Left => {
-                    self.prev_screen();
-                    return true;
-                }
-                KeyCode::Right => {
-                    self.cycle_screen();
-                    return true;
-                }
-                _ => {}
-            }
+        if self.key_tabs(key) {
+            return true;
         }
-        if key.modifiers.contains(KeyModifiers::ALT)
-            && let KeyCode::Char(c) = key.code
-            && let Some(d) = c.to_digit(10)
-        {
-            if (1..=3).contains(&d) {
-                self.set_screen(Screen::ALL[d as usize - 1]);
-            } else {
-                self.function_key(d as u8);
-            }
+        // Esc+0, which arrives as Alt+0, is Quit as in mc.
+        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('0') {
+            self.function_key(0);
             return true;
         }
         if let KeyCode::F(n) = key.code {
@@ -1568,37 +1557,27 @@ impl App {
         }
     }
 
-    /// The Shells screen: nothing is reserved except the Esc prefix, so mc,
-    /// GNU Screen and vim all keep their full keyboard.
+    /// The Shells screen: nothing is reserved but the tab keys, so mc, GNU
+    /// Screen and vim keep the rest of their keyboard.
     fn key_shells(&mut self, key: KeyEvent) {
-        // With no pane to type into there is nothing to be transparent to, and
-        // capturing here is the difference between "no shells open" and "no way
-        // out without a mouse" — so the normal app keys work in the empty state.
-        // The one exception to the rule below: Alt+←/→ walk the screens, so
-        // there is a keyboard way out of a terminal and not only a click.
-        // mc, vim and GNU Screen bind neither chord by default.
-        if key.modifiers.contains(KeyModifiers::ALT) {
-            match key.code {
-                KeyCode::Left => {
-                    self.prev_screen();
-                    return;
-                }
-                KeyCode::Right => {
-                    self.cycle_screen();
-                    return;
-                }
-                _ => {}
-            }
+        // The exception to the rule below: Alt+1…9 and Alt+←/→ walk the tabs,
+        // so there is a keyboard way out of a terminal and between shells, not
+        // only a click. mc, vim and GNU Screen bind none of them by default;
+        // readline's Alt+digit numeric argument is what this costs.
+        if self.key_tabs(key) {
+            return;
         }
 
+        // With no pane to type into there is nothing to be transparent to, so
+        // the normal app keys work there.
         let Some(id) = self.term.focused_session() else {
             self.key_hosts_or_global(key);
             return;
         };
 
-        // Otherwise a focused pane takes every key: F1-F10, Tab, Ctrl+A,
-        // Alt+letter, Alt+digit and Esc. mc reads Esc+digit as its own F-key
-        // emulation and Alt as its menu shortcuts, so reserving any of them
+        // Otherwise a focused pane takes every other key: F1-F10, Tab, Ctrl+A,
+        // Alt+letter, Alt+0 and Esc. mc reads Esc+digit as its own F-key
+        // emulation and Alt as its menu shortcuts, so reserving more of them
         // here would quietly break it. The app is otherwise reachable with the
         // mouse — the header tabs are clickable.
         let app_cursor = self
@@ -1613,6 +1592,22 @@ impl App {
             .unwrap_or(false);
         let bytes = crate::term::keys::encode(key, app_cursor);
         self.write_terminal(&bytes);
+    }
+
+    /// Alt+1…9 jump to that tab of the header strip; Alt+←/→ walk it,
+    /// wrapping in both directions. The same on every screen, a focused
+    /// terminal included. Returns whether the key was one of them.
+    fn key_tabs(&mut self, key: KeyEvent) -> bool {
+        if !key.modifiers.contains(KeyModifiers::ALT) {
+            return false;
+        }
+        match key.code {
+            KeyCode::Left => self.prev_tab(),
+            KeyCode::Right => self.next_tab(),
+            KeyCode::Char(c @ '1'..='9') => self.goto_index(c as usize - '1' as usize),
+            _ => return false,
+        }
+        true
     }
 
     /// The keyboard the Shells screen falls back to when no pane is focused.
@@ -1699,7 +1694,7 @@ impl App {
         }
     }
 
-    /// One entry point for real F-keys, Alt+digit and function-bar clicks, so
+    /// One entry point for real F-keys, Alt+0 and function-bar clicks, so
     /// all three share the same behavior. On the Shells screen only the clicks
     /// reach it: a focused terminal keeps the whole keyboard.
     pub fn function_key(&mut self, n: u8) {
@@ -1728,8 +1723,8 @@ impl App {
             return;
         }
         match self.screen {
-            // F9 is Mount here rather than the screen cycle it is on the other two
-            // screens; Alt+←/→ and Alt+1…3 still switch from Hosts.
+            // F9 is Mount here rather than the tab cycle it is on the other
+            // screens; Alt+←/→ and Alt+1…9 still switch from Hosts.
             Screen::Hosts => match n {
                 2 => self.open_add(),
                 4 => self.open_edit(),
@@ -1740,7 +1735,7 @@ impl App {
             },
             Screen::Shells => match n {
                 2 => self.term.next_pane(),
-                3 => self.term.next_tab(),
+                3 => self.next_tab(),
                 4 => {
                     if !self.term.is_empty() {
                         self.term.close_active_tab();
@@ -1749,12 +1744,12 @@ impl App {
                     }
                 }
                 5 => self.set_screen(Screen::Hosts),
-                9 => self.cycle_screen(),
+                9 => self.next_tab(),
                 _ => {}
             },
             Screen::Chat => match n {
                 2 => self.open_plan(),
-                9 => self.cycle_screen(),
+                9 => self.next_tab(),
                 _ => {}
             },
         }
@@ -1776,8 +1771,7 @@ impl App {
     /// An empty Shells screen is somewhere to be only on purpose. Closing the
     /// last shell left the operator staring at "no shell open" and reaching for
     /// Alt+← to get back to where they started — which, for the usual Enter on
-    /// a host, `exit`, is exactly where they wanted to be. Only the transition
-    /// moves anyone: visiting an empty Shells screen with Alt+2 stays put.
+    /// a host, `exit`, is exactly where they wanted to be.
     fn after_shell_closed(&mut self) {
         if self.term.is_empty() && self.screen == Screen::Shells {
             self.set_screen(self.prev_screen);
@@ -1796,13 +1790,58 @@ impl App {
         }
     }
 
-    fn cycle_screen(&mut self) {
-        self.set_screen(Screen::ALL[(self.screen.index() + 1) % Screen::ALL.len()]);
+    /// How many tabs the header strip has: Hosts, Chat and the shells.
+    pub fn tab_count(&self) -> usize {
+        2 + self.term.tab_count()
     }
 
-    fn prev_screen(&mut self) {
-        let n = Screen::ALL.len();
-        self.set_screen(Screen::ALL[(self.screen.index() + n - 1) % n]);
+    /// The strip's tab at `i`, counting from 0.
+    pub fn tab_at(&self, i: usize) -> Option<Tab> {
+        match i {
+            0 => Some(Tab::Hosts),
+            1 => Some(Tab::Chat),
+            _ if i - 2 < self.term.tab_count() => Some(Tab::Shell(i - 2)),
+            _ => None,
+        }
+    }
+
+    /// Where the showing tab is in the strip.
+    pub fn current_tab(&self) -> usize {
+        match self.screen {
+            Screen::Hosts => 0,
+            Screen::Chat => 1,
+            Screen::Shells => 2 + self.term.active.unwrap_or(0),
+        }
+    }
+
+    /// Show `tab`. A shell tab that has gone is ignored rather than leaving
+    /// an empty Shells screen up.
+    pub fn goto(&mut self, tab: Tab) {
+        match tab {
+            Tab::Hosts => self.set_screen(Screen::Hosts),
+            Tab::Chat => self.set_screen(Screen::Chat),
+            Tab::Shell(i) if i < self.term.tab_count() => {
+                self.term.select_tab(i);
+                self.set_screen(Screen::Shells);
+            }
+            Tab::Shell(_) => {}
+        }
+    }
+
+    /// Show the strip's tab at `i`; past the end does nothing.
+    fn goto_index(&mut self, i: usize) {
+        if let Some(t) = self.tab_at(i) {
+            self.goto(t);
+        }
+    }
+
+    fn next_tab(&mut self) {
+        self.goto_index((self.current_tab() + 1) % self.tab_count());
+    }
+
+    fn prev_tab(&mut self) {
+        let n = self.tab_count();
+        self.goto_index((self.current_tab() % n + n - 1) % n);
     }
 
     fn key_host_form(&mut self, key: KeyEvent) {
@@ -2299,15 +2338,28 @@ impl App {
             return;
         }
 
-        // Header screen tabs.
-        if let Some((_, screen)) = self
+        // A shell tab's `×` before the tab it sits in.
+        if let Some((_, i)) = self
+            .regions
+            .shell_closes
+            .iter()
+            .find(|(r, _)| r.contains(at))
+            .copied()
+        {
+            self.term.close_tab(i);
+            self.after_shell_closed();
+            return;
+        }
+
+        // Header tabs.
+        if let Some((_, tab)) = self
             .regions
             .screen_tabs
             .iter()
             .find(|(r, _)| r.contains(at))
             .copied()
         {
-            self.set_screen(screen);
+            self.goto(tab);
             return;
         }
 
@@ -2357,27 +2409,6 @@ impl App {
     }
 
     fn click_shells(&mut self, at: Position) {
-        if let Some((_, i)) = self
-            .regions
-            .shell_closes
-            .iter()
-            .find(|(r, _)| r.contains(at))
-            .copied()
-        {
-            self.term.close_tab(i);
-            self.after_shell_closed();
-            return;
-        }
-        if let Some((_, i)) = self
-            .regions
-            .shell_tabs
-            .iter()
-            .find(|(r, _)| r.contains(at))
-            .copied()
-        {
-            self.term.select_tab(i);
-            return;
-        }
         if let Some((_, pane)) = self
             .regions
             .panes

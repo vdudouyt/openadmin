@@ -1321,10 +1321,11 @@ pub fn help(f: &mut Frame, app: &App) {
     let head = |t: &str| Line::styled(t.to_string(), theme::col_header());
 
     let mut lines = vec![
-        head("SCREENS"),
-        k("Alt+1/2/3", "Hosts · Shells · Chat"),
-        k("Alt+← →", "previous · next screen"),
-        k("F9", "cycle screen (Shells, Chat)"),
+        head("TABS"),
+        k("Alt+1 · 2", "Hosts · Chat"),
+        k("Alt+3…9", "the open shells, in the order opened"),
+        k("Alt+← →", "previous · next tab"),
+        k("F9", "next tab (Chat)"),
         Line::default(),
         head("HOSTS"),
         k("↑ ↓", "move cursor"),
@@ -1350,13 +1351,12 @@ pub fn help(f: &mut Frame, app: &App) {
         theme::faint(),
     ));
     lines.push(Line::styled(
-        "unimpaired — bar one chord that gets you out:",
+        "unimpaired — bar the tab keys that get you out:",
         theme::faint(),
     ));
-    lines.push(k("Alt+← →", "previous · next screen"));
+    lines.push(k("Alt+1…9 ← →", "go to a tab · previous · next"));
     lines.push(Line::default());
-    lines.push(k("click", "the 1/2/3 tabs switch screens — the way out"));
-    lines.push(k("click", "a shell tab selects it, its × closes it"));
+    lines.push(k("click", "a header tab goes there, a shell's × closes it"));
     lines.push(k("wheel", "scroll back; typing returns — not in mc, vim"));
     lines.push(k("quit", "switch to Hosts, then F10"));
     lines.push(Line::styled(
