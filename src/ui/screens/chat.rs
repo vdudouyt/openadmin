@@ -33,13 +33,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         " no model set · see [agent] in config.toml ".to_string()
     };
+    // No title: the header's tab already says this is the agent.
     let block = Block::bordered()
         .border_style(theme::border_idle())
         .style(Style::new().bg(theme::BG_BASE))
-        .title_top(Line::styled(
-            " Agent ",
-            theme::bright().add_modifier(Modifier::BOLD),
-        ))
         .title_bottom(Line::styled(right, theme::muted()).right_aligned());
     let inner = block.inner(body);
     f.render_widget(block, body);

@@ -148,7 +148,10 @@ fn hosts_screen_shows_the_table_and_function_bar() {
     let (mut app, _rx) = test_app("hosts");
     let out = render(&mut app, 120, 30);
     assert!(out.contains("OpenAdmin"), "{out}");
-    assert!(out.contains("Known Hosts"));
+    assert!(
+        !out.contains("Known Hosts"),
+        "the tab names the pane: {out}"
+    );
     assert!(out.contains("NAME") && out.contains("MOUNT POINT") && out.contains("PRX"));
     assert!(out.contains("web-01") && out.contains("db-main"));
     // The keymap, as the bar advertises it: the letter twin beside each F-key,
@@ -277,7 +280,8 @@ fn chat_screen_renders_the_transcript_and_composer() {
     let (mut app, _rx) = test_app("chat");
     app.screen = Screen::Chat;
     let out = render(&mut app, 120, 34);
-    assert!(out.contains("Agent"), "{out}");
+    // The tab names the pane; the frame does not repeat it.
+    assert_eq!(out.matches("Agent").count(), 1, "{out}");
     // No model is guessed, so the panel says so instead of showing a blank.
     assert!(out.contains("no model set"), "{out}");
     // The composer is a text area in its own orange box now, so it says what
@@ -714,7 +718,7 @@ fn a_tiny_terminal_shows_the_active_screen() {
     app.screen = Screen::Hosts;
     let out = render(&mut app, 28, 12);
     assert!(
-        out.contains("Known Hosts"),
+        out.contains(" 3 hosts "),
         "Hosts must render its own body: {out}"
     );
     assert!(!out.contains("No open shells"), "{out}");
@@ -1769,7 +1773,7 @@ fn resizing_between_frames_keeps_the_table_intact() {
     let (mut app, _rx) = test_app("resize");
     for (w, h) in [(120u16, 30u16), (60, 12), (200, 50), (40, 10)] {
         let out = render(&mut app, w, h);
-        assert!(out.contains("Known Hosts") || w < 30, "width {w}:\n{out}");
+        assert!(out.contains("NAME") || w < 30, "width {w}:\n{out}");
         // Every rendered line is exactly the terminal width — no ragged rows.
         for line in out.lines() {
             assert_eq!(line.chars().count(), w as usize);
@@ -4493,7 +4497,7 @@ fn ctrl_f_filters_by_name_or_address_in_any_case() {
     assert_eq!(app.filter.as_deref(), Some("WEB"));
     assert_eq!(listed(&app), ["web-01"]);
     let out = render(&mut app, 120, 30);
-    assert!(out.contains("Known Hosts · WEB"), "{out}");
+    assert!(out.contains("Filter · WEB"), "{out}");
     assert!(out.contains(" 1 of 3 hosts "), "{out}");
     assert!(!out.contains("db-main"), "{out}");
 

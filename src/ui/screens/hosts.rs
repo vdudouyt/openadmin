@@ -101,24 +101,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         (true, Some(_)) => format!(" {listed} of {} hosts ", app.hosts.len()),
         (false, _) => format!(" {} marked of {listed} ", app.marked.len()),
     };
-    // The filter is named in the title, so a short list is never mistaken for
+    // No title of its own — the header's tab already says this is Hosts —
+    // but the filter is named there, so a short list is never mistaken for
     // the whole of it.
-    let title = match &app.filter {
-        None => " Known Hosts ".to_string(),
-        Some(needle) => {
-            let room = (area.width as usize / 3).max(8);
-            let shown = pad(&sanitize(needle), room.min(needle.chars().count().max(1)));
-            format!(" Known Hosts · {} ", shown.trim_end())
-        }
-    };
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_style(theme::border_focused())
         .style(Style::new().bg(theme::BG_BASE))
-        .title_top(Line::styled(
-            title,
-            theme::bright().add_modifier(Modifier::BOLD),
-        ))
         .title_bottom(Line::styled(right, theme::muted()).right_aligned());
+    if let Some(needle) = &app.filter {
+        let room = (area.width as usize / 3).max(8);
+        let shown = pad(&sanitize(needle), room.min(needle.chars().count().max(1)));
+        block = block.title_top(Line::styled(
+            format!(" Filter · {} ", shown.trim_end()),
+            theme::bright().add_modifier(Modifier::BOLD),
+        ));
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
 
