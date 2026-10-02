@@ -29,8 +29,9 @@ On first run you are asked to create a database; after that, to unlock it.
 
 ## The tabs
 
-One numbered strip on the right of the header: `1 Hosts`, `2 Chat`, then one tab
-per open shell, `3`, `4`… in the order they were opened. `Alt+1`…`Alt+9` jump to
+One strip along the header, from the left: the **OpenAdmin logo, which is the
+Hosts tab**, then `2 Chat`, then one tab per open shell, `3`, `4`… in the order
+they were opened. The logo is highlighted like any tab while Hosts is showing. `Alt+1`…`Alt+9` jump to
 a tab and `Alt+←` / `Alt+→` walk the strip, wrapping — from every screen, a
 focused shell included. `F9` goes to the next tab from Chat; on Hosts, `F9` is
 Mount. Tabs past the ninth have no digit, but `Alt+←` / `Alt+→` and a click
@@ -307,19 +308,19 @@ binding of `\e[1;3D`/`\e[1;3C` to word movement in your shell.
 
 This screen spends **one row** on itself. There is no function bar and no
 status line — every key here belongs to the terminal, so neither would earn the
-line of your shell it costs. The shell tabs are part of the header's one strip —
-the brand giving up its room when there are many — and a tab holding a single
-pane draws
-no title rule at all: its host name is already in its tab. A stacked group keeps
+line of your shell it costs. The shell tabs are part of the header's one strip,
+and a tab holding a single pane draws no title rule at all: its host name is
+already in its tab. A stacked group keeps
 one title per pane, because there they tell the panes apart.
 
 That means **the mouse is how you drive the app while a pane is focused**:
 
-* a click on a header tab goes there — `1 Hosts` and `2 Chat` shed their labels
-  before they ever disappear, and shell tabs are never allowed to crowd them
-  out, so a narrow terminal cannot strand you
+* a click on a header tab goes there, the logo to Hosts — the logo sheds its
+  wordmark and `2 Chat` its label before either disappears, and shell tabs are
+  never allowed to crowd them out, so a narrow terminal cannot strand you
 * a shell tab's `×` closes it; `‹` and `›` mark shell tabs scrolled out of view
-* to quit, switch to Hosts (`Alt+1`) and use `F10`, or click Quit there
+* to quit, switch to Hosts (`Alt+1`, or click the logo) and use `F10`, or
+  click Quit there
 
 **The wheel scrolls a pane back** through what it has printed — up to
 `scrollback` lines each, 5000 by default — with a scrollbar in the pane's

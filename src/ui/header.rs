@@ -1,9 +1,10 @@
-//! Header band: the brand on the left, and on the right one numbered tab strip
-//! — `1 Hosts`, `2 Chat`, then one tab per open shell. All on a single row, so
-//! the chrome costs as little of the terminal as possible.
+//! Header band: one tab strip from the left edge — the OpenAdmin logo, which
+//! is the Hosts tab, then `2 Chat`, then one tab per open shell. All on a
+//! single row, so the chrome costs as little of the terminal as possible.
 //!
 //! One strip rather than screen tabs plus a shell-tab strip, so `Alt`+digit
-//! and `Alt+←/→` reach a shell the same way they reach a screen.
+//! and `Alt+←/→` reach a shell the same way they reach a screen. The logo
+//! carries no digit: it is the first tab, and `Alt+1` is Hosts.
 //!
 //! The design's mark is a solid orange block two rows tall
 //! (`design/assets/cloudflare-ascii-logo.txt`); at this height it is the same
@@ -17,54 +18,33 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
-    // Draw the tabs first: they own the right edge, and how much room they
-    // leave decides what fits beside them. They are also the only mouse route
-    // off a focused pane, so they never yield.
-    let used = render_tabs(f, area, app);
-    // A column between the brand and the strip.
-    let room = area.width.saturating_sub(used).saturating_sub(1);
-    let left = Rect::new(area.x, area.y, room, area.height);
-
-    // Shed the wordmark whole rather than truncating it mid-word; the mark
-    // alone still reads as the brand.
-    let brand: Vec<Span> = if room >= 14 {
-        vec![
-            Span::styled("███ ", theme::proxied()),
-            Span::styled("OpenAdmin", theme::bright().add_modifier(Modifier::BOLD)),
-        ]
-    } else if room >= 3 {
-        vec![Span::styled("███", theme::proxied())]
-    } else {
-        Vec::new()
-    };
-    if !brand.is_empty() {
-        // Clip to the room the tabs left. A Paragraph does not erase what is
-        // under it, but it does patch its style across its whole rect, so a
-        // styled one drawn into `area` would recolour the strip.
-        f.render_widget(Paragraph::new(Line::from(brand)), left);
-    }
-}
-
 /// Columns between two tabs.
 const GAP: u16 = 1;
+
+const WORDMARK: &str = "OpenAdmin";
 
 /// Columns `n` takes written out.
 fn digits(n: usize) -> u16 {
     n.to_string().chars().count() as u16
 }
 
-/// Columns a Hosts or Chat tab occupies: `" 1 Hosts 12 "`, or `" 1 "` with
-/// the labels shed.
-fn pinned_width(number: usize, label: &str, count: Option<usize>, labels: bool) -> u16 {
-    let mut w = 1 + digits(number) + 1;
-    if labels {
-        w += 1 + label.chars().count() as u16;
-        if let Some(n) = count {
-            w += 1 + digits(n);
-        }
+/// Columns the logo tab occupies: `" ███ OpenAdmin "`, or `" ███ "` with the
+/// wordmark shed.
+fn logo_width(wordmark: bool) -> u16 {
+    if wordmark {
+        5 + 1 + WORDMARK.chars().count() as u16
+    } else {
+        5
     }
-    w
+}
+
+/// Columns the Chat tab occupies: `" 2 Chat "`, or `" 2 "` with its label shed.
+fn chat_width(label: bool) -> u16 {
+    if label {
+        3 + 1 + Tab::Chat.label().chars().count() as u16
+    } else {
+        3
+    }
 }
 
 /// Columns one shell tab occupies: `" 3 ● title 2 × "`.
@@ -82,26 +62,13 @@ fn shell_width(number: usize, tab: &crate::term::manager::Tab) -> u16 {
     1 + digits(number) + (6 + tab.title.chars().count() + count) as u16
 }
 
-/// The strip, right-aligned, each tab registering its own hitbox. Returns the
-/// columns it took.
+/// The strip, from the left edge, each tab registering its own hitbox.
 ///
-/// Hosts and Chat are always drawn — they are the way back from anywhere — and
-/// shed their labels before anything else goes. The shell tabs get what is
+/// The logo and Chat are always drawn — they are the way back from anywhere.
+/// When room runs short the shells go first, down to the active one; then the
+/// wordmark, leaving the mark; then Chat's label. The shell tabs get what is
 /// left, as a window around the active one with `‹ ›` marking what fell off.
-fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
-    let pinned = [
-        (Tab::Hosts, Some(app.hosts.len())),
-        (Tab::Chat, None::<usize>),
-    ];
-    let pinned_total = |labels: bool| -> u16 {
-        pinned
-            .iter()
-            .enumerate()
-            .map(|(i, (t, n))| pinned_width(i + 1, t.label(), *n, labels))
-            .sum::<u16>()
-            + GAP
-    };
-
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let shell_widths: Vec<u16> = app
         .term
         .tabs
@@ -114,15 +81,15 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
     // The least the shells need: the active one.
     let shells_min = shell_widths.get(active).copied().unwrap_or(0);
 
-    // The labels go first when the active shell would not fit beside them.
-    let mut labels = true;
-    if pinned_total(true) + shells_min > area.width {
-        labels = false;
-        if pinned_total(false) > area.width {
-            return 0;
-        }
-    }
-    let pinned_w = pinned_total(labels);
+    let pinned_total = |wordmark: bool, label: bool| logo_width(wordmark) + GAP + chat_width(label);
+    let Some((wordmark, label)) = [(true, true), (false, true), (false, false)]
+        .into_iter()
+        .find(|&(w, l)| pinned_total(w, l) + shells_min <= area.width)
+        .or(Some((false, false)).filter(|&(w, l)| pinned_total(w, l) <= area.width))
+    else {
+        return;
+    };
+    let pinned_w = pinned_total(wordmark, label);
     let avail = area.width - pinned_w;
     let (start, end) = if n == 0 || avail == 0 {
         (0, 0)
@@ -134,35 +101,51 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
     let shells_w = (shell_widths[start..end].iter().sum::<u16>() + mark_l + mark_r).min(avail);
     let total = pinned_w + shells_w;
 
-    let x0 = area.x + area.width - total;
     let right = area.x + area.width;
     let y = area.y;
     let current = app.current_tab();
     let mut spans: Vec<Span> = Vec::new();
-    let mut x = x0;
+    let mut x = area.x;
 
-    for (i, (tab, count)) in pinned.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" ".repeat(GAP as usize)));
-            x += GAP;
-        }
-        let w = pinned_width(i + 1, tab.label(), *count, labels);
-        let rect = Rect::new(x, y, w, 1);
-        app.regions.screen_tabs.push((rect, *tab));
-        let (num_style, lab_style) = tab_styles(current == i, app.is_hovered(rect));
-        spans.push(Span::styled(format!(" {}", i + 1), num_style));
-        if labels {
-            spans.push(Span::styled(format!(" {}", tab.label()), lab_style));
-            if let Some(n) = count {
-                spans.push(Span::styled(
-                    format!(" {n}"),
-                    lab_style.patch(theme::faint()),
-                ));
-            }
-        }
-        spans.push(Span::styled(" ", lab_style));
-        x += w;
+    // The logo, which is the Hosts tab. On the orange of the showing tab the
+    // mark turns light, or it would vanish into its own background.
+    let w = logo_width(wordmark);
+    let rect = Rect::new(x, y, w, 1);
+    app.regions.screen_tabs.push((rect, Tab::Hosts));
+    let (mark, word) = if current == 0 {
+        let on = theme::primary_btn();
+        (on.fg(theme::FG_BRIGHT), on)
+    } else if app.is_hovered(rect) {
+        (
+            theme::hover().fg(theme::ORANGE),
+            theme::hover().add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            theme::proxied(),
+            theme::bright().add_modifier(Modifier::BOLD),
+        )
+    };
+    spans.push(Span::styled(" ", word));
+    spans.push(Span::styled("███", mark));
+    if wordmark {
+        spans.push(Span::styled(format!(" {WORDMARK}"), word));
     }
+    spans.push(Span::styled(" ", word));
+    x += w;
+
+    spans.push(Span::raw(" ".repeat(GAP as usize)));
+    x += GAP;
+    let w = chat_width(label);
+    let rect = Rect::new(x, y, w, 1);
+    app.regions.screen_tabs.push((rect, Tab::Chat));
+    let (num_style, lab_style) = tab_styles(current == 1, app.is_hovered(rect));
+    spans.push(Span::styled(" 2", num_style));
+    if label {
+        spans.push(Span::styled(format!(" {}", Tab::Chat.label()), lab_style));
+    }
+    spans.push(Span::styled(" ", lab_style));
+    x += w;
 
     if mark_l > 0 {
         spans.push(Span::styled("‹", theme::faint()));
@@ -226,11 +209,10 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &mut App) -> u16 {
         spans.push(Span::styled("›", theme::faint()));
     }
 
-    // Draw into exactly the columns measured, so the strip and the brand are
-    // provably disjoint instead of merely drawn in the right order.
-    let strip = Rect::new(x0, area.y, total, area.height);
+    // Draw into exactly the columns measured: a Paragraph patches its style
+    // across its whole rect.
+    let strip = Rect::new(area.x, area.y, total, area.height);
     f.render_widget(Paragraph::new(Line::from(spans)), strip);
-    total
 }
 
 /// `(number, label)` styles for a tab that is showing, hovered, or neither.

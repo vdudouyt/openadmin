@@ -232,11 +232,12 @@ fn with_no_shell_open_the_strip_is_hosts_and_chat() {
     let tabs: Vec<Tab> = app.regions.screen_tabs.iter().map(|(_, t)| *t).collect();
     assert_eq!(tabs, [Tab::Hosts, Tab::Chat], "{out}");
     let row0 = out.lines().next().unwrap();
-    assert!(row0.contains("1 Hosts") && row0.contains("2 Chat"), "{out}");
     assert!(
-        row0.contains("OpenAdmin"),
-        "the brand keeps its place: {out}"
+        row0.starts_with(" ███ OpenAdmin "),
+        "the logo is tab 1: {out}"
     );
+    assert!(row0.contains("2 Chat"), "{out}");
+    assert!(!row0.contains("Hosts"), "the logo stands for Hosts: {out}");
 
     app.on_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT));
     assert_eq!(app.screen, Screen::Hosts, "there is no tab 3 yet");
@@ -396,7 +397,6 @@ fn the_shell_tab_goes_when_its_shell_closes() {
 
     let out = render(&mut app, 120, 20);
     assert!(out.contains("web-01"), "{out}");
-    assert!(out.contains("OpenAdmin"), "room for the brand too: {out}");
 
     app.term.close_active_tab();
     let out = render(&mut app, 120, 20);
@@ -404,14 +404,67 @@ fn the_shell_tab_goes_when_its_shell_closes() {
     assert_eq!(app.regions.screen_tabs.len(), 2);
 }
 
-/// Many shells take the brand's room before any of theirs.
+/// The logo is a tab, so it is always drawn at the left edge; where room is
+/// short it sheds its wordmark, never the mark.
 #[test]
-fn the_brand_yields_to_shell_tabs() {
+fn the_logo_stays_when_shells_crowd_the_strip() {
     let (mut app, _rx) = test_app("brandyield");
     open_shells(&mut app, &["alpha", "bravo", "charlie", "delta", "echo"]);
     let out = render(&mut app, 80, 20);
-    assert!(!out.contains("OpenAdmin"), "{out}");
-    assert!(out.lines().next().unwrap().contains("echo"), "{out}");
+    let row0 = out.lines().next().unwrap();
+    assert!(row0.starts_with(" ███ OpenAdmin "), "{out}");
+    assert!(row0.contains("echo"), "the showing shell is drawn: {out}");
+
+    let out = render(&mut app, 34, 20);
+    let row0 = out.lines().next().unwrap();
+    assert!(row0.starts_with(" ███ "), "{out}");
+    assert!(
+        !row0.contains("OpenAdmin"),
+        "the wordmark goes first: {out}"
+    );
+    assert!(row0.contains("echo"), "{out}");
+    app.term.shutdown();
+}
+
+/// The logo is the Hosts tab: at column 0, clickable, and highlighted like
+/// any tab while Hosts is showing.
+#[test]
+fn the_logo_is_the_hosts_tab() {
+    let (mut app, _rx) = test_app("logotab");
+    app.set_screen(Screen::Chat);
+    let _ = render(&mut app, 120, 30);
+    let (logo, _) = *app
+        .regions
+        .screen_tabs
+        .iter()
+        .find(|(_, t)| *t == Tab::Hosts)
+        .unwrap();
+    assert_eq!((logo.x, logo.y), (0, 0));
+    click(&mut app, logo.x + 6, logo.y);
+    assert_eq!(app.screen, Screen::Hosts);
+
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let (chat, _) = pinned_tabs(&app)[1];
+    let on = crate::ui::theme::ORANGE;
+    assert_eq!(buf[(logo.x + 6, 0)].bg, on, "the logo is the showing tab");
+    assert_ne!(buf[(1, 0)].fg, on, "its mark stays visible on the orange");
+    assert_ne!(buf[(chat.x + 1, 0)].bg, on, "Chat is not showing");
+}
+
+/// The tabs sit beside the logo: Chat one gap after it, the first shell one
+/// gap after Chat.
+#[test]
+fn the_tabs_sit_beside_the_logo() {
+    let (mut app, _rx) = test_app("besidelogo");
+    open_shells(&mut app, &["web-01"]);
+    let _ = render(&mut app, 120, 20);
+    let (logo, _) = pinned_tabs(&app)[0];
+    let (chat, _) = pinned_tabs(&app)[1];
+    let (shell, _) = shell_tabs(&app)[0];
+    assert_eq!(chat.x, logo.x + logo.width + 1);
+    assert_eq!(shell.x, chat.x + chat.width + 1);
     app.term.shutdown();
 }
 

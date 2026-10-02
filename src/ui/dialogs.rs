@@ -1322,7 +1322,7 @@ pub fn help(f: &mut Frame, app: &App) {
 
     let mut lines = vec![
         head("TABS"),
-        k("Alt+1 · 2", "Hosts · Chat"),
+        k("Alt+1 · 2", "Hosts (the logo) · Chat"),
         k("Alt+3…9", "the open shells, in the order opened"),
         k("Alt+← →", "previous · next tab"),
         k("F9", "next tab (Chat)"),
