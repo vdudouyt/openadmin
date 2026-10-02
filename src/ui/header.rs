@@ -1,14 +1,10 @@
-//! Header band: one tab strip from the left edge — the OpenAdmin logo, which
-//! is the Hosts tab, then `2 Chat`, then one tab per open shell. All on a
-//! single row, so the chrome costs as little of the terminal as possible.
+//! Header band: one tab strip from the left edge — the `OpenAdmin` wordmark,
+//! which is the Hosts tab, then `2 Chat`, then one tab per open shell. All on
+//! a single row, so the chrome costs as little of the terminal as possible.
 //!
 //! One strip rather than screen tabs plus a shell-tab strip, so `Alt`+digit
-//! and `Alt+←/→` reach a shell the same way they reach a screen. The logo
+//! and `Alt+←/→` reach a shell the same way they reach a screen. The wordmark
 //! carries no digit: it is the first tab, and `Alt+1` is Hosts.
-//!
-//! The design's mark is a solid orange block two rows tall
-//! (`design/assets/cloudflare-ascii-logo.txt`); at this height it is the same
-//! honest primitive drawn once.
 
 use crate::app::{App, Tab};
 use crate::ui::theme;
@@ -28,13 +24,13 @@ fn digits(n: usize) -> u16 {
     n.to_string().chars().count() as u16
 }
 
-/// Columns the logo tab occupies: `" ███ OpenAdmin "`, or `" ███ "` with the
+/// Columns the Hosts tab occupies: `" OpenAdmin "`, or `" 1 "` with the
 /// wordmark shed.
 fn logo_width(wordmark: bool) -> u16 {
     if wordmark {
-        5 + 1 + WORDMARK.chars().count() as u16
+        2 + WORDMARK.chars().count() as u16
     } else {
-        5
+        3
     }
 }
 
@@ -66,7 +62,7 @@ fn shell_width(number: usize, tab: &crate::term::manager::Tab) -> u16 {
 ///
 /// The logo and Chat are always drawn — they are the way back from anywhere.
 /// When room runs short the shells go first, down to the active one; then the
-/// wordmark, leaving the mark; then Chat's label. The shell tabs get what is
+/// wordmark, for a plain `1`; then Chat's label. The shell tabs get what is
 /// left, as a window around the active one with `‹ ›` marking what fell off.
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let shell_widths: Vec<u16> = app
@@ -107,31 +103,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x;
 
-    // The logo, which is the Hosts tab. On the orange of the showing tab the
-    // mark turns light, or it would vanish into its own background.
+    // The wordmark, which is the Hosts tab: bright and bold when idle, black
+    // on orange when showing, like any tab. Shed, it is a plain `1`.
     let w = logo_width(wordmark);
     let rect = Rect::new(x, y, w, 1);
     app.regions.screen_tabs.push((rect, Tab::Hosts));
-    let (mark, word) = if current == 0 {
-        let on = theme::primary_btn();
-        (on.fg(theme::FG_BRIGHT), on)
-    } else if app.is_hovered(rect) {
-        (
-            theme::hover().fg(theme::ORANGE),
-            theme::hover().add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            theme::proxied(),
-            theme::bright().add_modifier(Modifier::BOLD),
-        )
-    };
-    spans.push(Span::styled(" ", word));
-    spans.push(Span::styled("███", mark));
+    let hovered = app.is_hovered(rect);
     if wordmark {
-        spans.push(Span::styled(format!(" {WORDMARK}"), word));
+        let style = if current == 0 {
+            theme::primary_btn()
+        } else if hovered {
+            theme::hover().add_modifier(Modifier::BOLD)
+        } else {
+            theme::bright().add_modifier(Modifier::BOLD)
+        };
+        spans.push(Span::styled(format!(" {WORDMARK} "), style));
+    } else {
+        let (num_style, pad) = tab_styles(current == 0, hovered);
+        spans.push(Span::styled(" 1", num_style));
+        spans.push(Span::styled(" ", pad));
     }
-    spans.push(Span::styled(" ", word));
     x += w;
 
     spans.push(Span::raw(" ".repeat(GAP as usize)));

@@ -232,10 +232,7 @@ fn with_no_shell_open_the_strip_is_hosts_and_chat() {
     let tabs: Vec<Tab> = app.regions.screen_tabs.iter().map(|(_, t)| *t).collect();
     assert_eq!(tabs, [Tab::Hosts, Tab::Chat], "{out}");
     let row0 = out.lines().next().unwrap();
-    assert!(
-        row0.starts_with(" ███ OpenAdmin "),
-        "the logo is tab 1: {out}"
-    );
+    assert!(row0.starts_with(" OpenAdmin "), "the logo is tab 1: {out}");
     assert!(row0.contains("2 Chat"), "{out}");
     assert!(!row0.contains("Hosts"), "the logo stands for Hosts: {out}");
 
@@ -405,19 +402,19 @@ fn the_shell_tab_goes_when_its_shell_closes() {
 }
 
 /// The logo is a tab, so it is always drawn at the left edge; where room is
-/// short it sheds its wordmark, never the mark.
+/// short it sheds its wordmark for a plain `1`.
 #[test]
 fn the_logo_stays_when_shells_crowd_the_strip() {
     let (mut app, _rx) = test_app("brandyield");
     open_shells(&mut app, &["alpha", "bravo", "charlie", "delta", "echo"]);
     let out = render(&mut app, 80, 20);
     let row0 = out.lines().next().unwrap();
-    assert!(row0.starts_with(" ███ OpenAdmin "), "{out}");
+    assert!(row0.starts_with(" OpenAdmin "), "{out}");
     assert!(row0.contains("echo"), "the showing shell is drawn: {out}");
 
-    let out = render(&mut app, 34, 20);
+    let out = render(&mut app, 30, 20);
     let row0 = out.lines().next().unwrap();
-    assert!(row0.starts_with(" ███ "), "{out}");
+    assert!(row0.starts_with(" 1 "), "{out}");
     assert!(
         !row0.contains("OpenAdmin"),
         "the wordmark goes first: {out}"
@@ -448,8 +445,11 @@ fn the_logo_is_the_hosts_tab() {
     let buf = term.backend().buffer().clone();
     let (chat, _) = pinned_tabs(&app)[1];
     let on = crate::ui::theme::ORANGE;
-    assert_eq!(buf[(logo.x + 6, 0)].bg, on, "the logo is the showing tab");
-    assert_ne!(buf[(1, 0)].fg, on, "its mark stays visible on the orange");
+    // Showing, the wordmark is black on orange, ends included.
+    for x in [logo.x, logo.x + 5, logo.x + logo.width - 1] {
+        assert_eq!(buf[(x, 0)].bg, on, "column {x} is highlighted");
+        assert_eq!(buf[(x, 0)].fg, crate::ui::theme::ORANGE_INK);
+    }
     assert_ne!(buf[(chat.x + 1, 0)].bg, on, "Chat is not showing");
 }
 
