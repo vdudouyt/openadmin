@@ -271,7 +271,7 @@ fn the_screen_tabs_survive_a_focused_pane() {
     assert_eq!(pinned_tabs(&app).len(), 2, "{out}");
     assert_eq!(shell_tabs(&app).len(), 1, "{out}");
     // The shell is tab 3 of the same strip.
-    assert!(out.lines().next().unwrap().contains("3 ● local"), "{out}");
+    assert!(out.lines().next().unwrap().contains("3 local ×"), "{out}");
     app.term.shutdown();
 }
 
@@ -595,18 +595,29 @@ fn shell_tab_hitboxes_land_on_the_tabs_that_were_drawn() {
         );
     }
 
-    // The showing tab's × is drawn where its hitbox is.
-    let (close, i) = app.regions.shell_closes[0];
-    assert_eq!(i, 2, "charlie, the last opened, is showing");
-    let drawn: String = row0[close.x as usize..(close.x + close.width) as usize]
-        .iter()
-        .collect();
-    assert_eq!(drawn, " ×");
+    // Every tab has its ×, showing or not, drawn where its hitbox is.
+    let closes: Vec<usize> = app.regions.shell_closes.iter().map(|(_, i)| *i).collect();
+    assert_eq!(closes, [0, 1, 2], "{header}");
+    for (close, i) in app.regions.shell_closes.clone() {
+        let drawn: String = row0[close.x as usize..(close.x + close.width) as usize]
+            .iter()
+            .collect();
+        assert_eq!(drawn, " ×", "tab {i}");
+    }
+    // No bullet before the names any more.
+    assert!(!header.lines().next().unwrap().contains('●'), "{header}");
 
-    // And clicking the third one selects the third one.
-    let (rect, _) = shell_tabs(&app)[2];
+    // An idle tab's × closes that tab, not the one showing.
+    let (close, _) = app.regions.shell_closes[0];
+    click(&mut app, close.x + 1, close.y);
+    assert_eq!(app.term.tab_count(), 2);
+    assert_eq!(app.term.tabs[0].title, "bravo");
+    let _ = render(&mut app, 120, 20);
+
+    // And clicking a tab selects it.
+    let (rect, _) = shell_tabs(&app)[0];
     click(&mut app, rect.x + 2, rect.y);
-    assert_eq!(app.term.active, Some(2));
+    assert_eq!(app.term.active, Some(0));
     app.term.shutdown();
 }
 

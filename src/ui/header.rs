@@ -43,7 +43,7 @@ fn chat_width(label: bool) -> u16 {
     }
 }
 
-/// Columns one shell tab occupies: `" 3 ● title 2 × "`.
+/// Columns one shell tab occupies: `" 3 title 2 × "`.
 ///
 /// Counts chars, not display cells, so a CJK nickname measures narrow. The
 /// strip is clipped to its band, so the consequence is a truncated tab rather
@@ -54,8 +54,8 @@ fn shell_width(number: usize, tab: &crate::term::manager::Tab) -> u16 {
     } else {
         0
     };
-    // " N" + " ●" + " title" + count + " ×" + " "
-    1 + digits(number) + (6 + tab.title.chars().count() + count) as u16
+    // " N" + " title" + count + " ×" + " "
+    1 + digits(number) + (4 + tab.title.chars().count() + count) as u16
 }
 
 /// The strip, from the left edge, each tab registering its own hitbox.
@@ -159,17 +159,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         app.regions.screen_tabs.push((rect, Tab::Shell(i)));
         let (num_style, base) = tab_styles(is_active, hovered);
 
-        // Green dot for a single host, yellow for a group.
-        let dot_fg = if tab.group {
-            theme::YELLOW_MARK
-        } else {
-            theme::GREEN
-        };
-        let dot = if is_active { base } else { base.fg(dot_fg) };
-
         spans.push(Span::styled(format!(" {}", i + 3), num_style));
-        spans.push(Span::styled(" ", base));
-        spans.push(Span::styled("●", dot));
         spans.push(Span::styled(format!(" {}", tab.title), base));
         if tab.group {
             spans.push(Span::styled(
@@ -177,10 +167,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
                 base.patch(theme::faint()),
             ));
         }
-        // The × only appears under the pointer, or on the shell showing — and
-        // only when it was not truncated away.
+        // Every tab has its ×, unless it was truncated away.
         let close_rect = Rect::new(x + width - 3, y, 2, 1);
-        if (hovered || is_active) && visible == width {
+        if visible == width {
             app.regions.shell_closes.push((close_rect, i));
             let close_style = if app.is_hovered(close_rect) {
                 base.fg(theme::RED)
